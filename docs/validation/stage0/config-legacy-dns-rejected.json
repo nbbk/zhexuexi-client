@@ -1,0 +1,1 @@
+{"dns":{"final":"dns-direct","rules":[{"domain_suffix":[".cn"],"server":"dns-direct"}],"servers":["https://223.5.5.5/dns-query"]},"inbounds":[{"listen":"127.0.0.1","listen_port":1080,"tag":"mixed-in","type":"mixed"}],"log":{"level":"info"},"outbounds":[{"tag":"direct","type":"direct"}]}

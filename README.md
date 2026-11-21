@@ -43,7 +43,7 @@ B 线：哲学系客户端（apps/flutter_client，Flutter + sing-box）
 
 ## 状态
 
-方案与建仓阶段：只做了方案与建仓，**不写应用代码、不打包**。开发按 [DEV-PLAN.md](DEV-PLAN.md) §8 的进度表走，约 9–13 周（A 线先行、B 线并行，验收不过就顺延）。
+阶段 0 已完成（2026-11-22）：环境搭好（Flutter 3.50.1 / Dart 3.14.0 / JDK 17 / Android SDK 36），插件二选一选定 `flutter_sing_box` 3.1.0（内置 sing-box 1.14.4），最小验证本机能做的部分全部通过（`flutter test` 11/11、`flutter analyze` 零问题、sing-box 1.14.4 本地回环 + Clash API 全通），Flutter 工程架子 `apps/flutter_client/` 已建（四个 tab 占位、品牌变量、节点模型、userinfo 解析、核心封装占位），CI 已接线（YAML 解析通过，未真跑）。**未接真实面板/节点，未在真机上跑过，未编出 APK**——本机沙箱的 MITM 代理与 Java TLS 不兼容，Gradle 在本机下不到依赖（见 `docs/versions.md`），APK 真编出来留到阶段 1 前在 CI 上验。开发按 [DEV-PLAN.md](DEV-PLAN.md) §8 的进度表走，约 9–13 周（A 线先行、B 线并行，验收不过就顺延）。
 
 ## 硬性边界
 

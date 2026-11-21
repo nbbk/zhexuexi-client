@@ -1,10 +1,10 @@
 # 哲学系客户端 — GitHub 免费 CI
 #
-# TODO（阶段 0 建工程后接线）：Flutter 工程还没建，本文件里的构建命令是
-# 标准占位命令（flutter build windows / flutter build apk），工作流本身
-# （触发、矩阵、签名、产物上传）已按 §12 写好。阶段 0 建好 apps/flutter_client
-# 后，把下面的 working-directory 改成工程目录，并把品牌注入步骤接上
-# brand.json（§11.1），再真跑一次 CI。
+# 阶段 0 已接线（2026-11-22）：working-directory 已改成 apps/flutter_client，
+# Flutter 钉死 3.50.1，品牌注入写 apps/flutter_client/assets/brand.json，
+# Windows 签名的 $pfx 未定义 bug 已修，产物路径已改成工程内相对路径。
+# CI 真跑留到阶段 1 前再验——本机沙箱的 MITM 代理与 Java TLS 不兼容，
+# Gradle 在本机下不到依赖（见 docs/versions.md），不要声称 CI 跑过。
 #
 # 免费说明（§12.0）：本仓是公开仓，GitHub Actions 不计分钟数、免费。
 # 私有仓才有免费额度上限；fork 到别的公开仓，CI 照样免费跑。
@@ -40,6 +40,7 @@ jobs:
     defaults:
       run:
         shell: pwsh
+        working-directory: apps/flutter_client
     steps:
       - name: 拉代码
         uses: actions/checkout@v4
@@ -50,25 +51,30 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: 装 Flutter（版本阶段 0 钉死最新稳定版）
+      - name: 装 Flutter（版本见 docs/versions.md，阶段 0 钉死 3.50.1）
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: "3.24.0"
+          flutter-version: "3.50.1"
           channel: stable
           cache: true
 
-      - name: 品牌注入（占位，阶段 0 接线）
-        # 阶段 0：把 workflow 输入 brand_name / version 写成 brand.json，
-        # 再由 Flutter 编译前读它生成应用名、图标、主色、订阅地址（§11.1）。
-        # 现在只做一件事：没有 brand.json 就用默认值建一个，不让构建中途停。
+      - name: 品牌注入（§11.1）
+        # 只改包内默认 brand.json 的 app_name；颜色/Logo/订阅地址等其他
+        # 品牌变量在阶段 1 由远程配置中心下发，不在这里填。
+        # 没传 brand_name 时不动包内文件，直接用默认值构建。
         run: |
-          if (-not (Test-Path brand.json)) {
-            @{ app_name = "${{ inputs.brand_name || '哲学系' }}"; version = "${{ inputs.version }}" } | ConvertTo-Json | Out-File brand.json -Encoding utf8
+          $brandName = "${{ inputs.brand_name }}"
+          if ($brandName -ne '') {
+            $brandFile = "assets/brand.json"
+            $brand = Get-Content $brandFile -Raw | ConvertFrom-Json
+            $brand.brand.app_name = $brandName
+            $brand | ConvertTo-Json -Depth 5 | Out-File $brandFile -Encoding utf8
+            Write-Host "品牌注入完成：应用名=$brandName"
+          } else {
+            Write-Host "品牌注入跳过：用包内默认 brand.json"
           }
-          Write-Host "品牌注入完成（占位）：应用名=${{ inputs.brand_name || '哲学系' }}"
 
       - name: 编 Windows
-        # TODO（阶段 0）：working-directory 改成 apps/flutter_client。
         run: flutter build windows --release
 
       - name: Windows 签名（OV 证书，Secrets 取）
@@ -83,6 +89,7 @@ jobs:
             Write-Host "提示：没填 Windows 证书 Secrets，先出未签名包测试，正式发布前补填。"
             exit 0
           }
+          $pfx = Join-Path $env:TEMP "zhexuexi-cert.pfx"
           [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERT_BASE64))
           Get-ChildItem build\windows\x64\runner\Release\*.exe | ForEach-Object {
             signtool sign /f $pfx /p $env:WINDOWS_CERT_PASSWORD /tr http://timestamp.digicert.com /td sha256 /fd sha256 $_.FullName
@@ -100,8 +107,8 @@ jobs:
         with:
           name: windows-${{ inputs.version || github.ref_name }}
           path: |
-            build/windows/x64/runner/Release/*.exe
-            build/windows/x64/runner/Release/*.sha256
+            apps/flutter_client/build/windows/x64/runner/Release/*.exe
+            apps/flutter_client/build/windows/x64/runner/Release/*.sha256
           retention-days: 90
 
   build-android:
@@ -110,6 +117,7 @@ jobs:
     defaults:
       run:
         shell: pwsh
+        working-directory: apps/flutter_client
     steps:
       - name: 拉代码
         uses: actions/checkout@v4
@@ -120,22 +128,27 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: 装 Flutter（版本阶段 0 钉死最新稳定版）
+      - name: 装 Flutter（版本见 docs/versions.md，阶段 0 钉死 3.50.1）
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: "3.24.0"
+          flutter-version: "3.50.1"
           channel: stable
           cache: true
 
-      - name: 品牌注入（占位，阶段 0 接线）
+      - name: 品牌注入（§11.1，与 Windows job 相同）
         run: |
-          if (-not (Test-Path brand.json)) {
-            @{ app_name = "${{ inputs.brand_name || '哲学系' }}"; version = "${{ inputs.version }}" } | ConvertTo-Json | Out-File brand.json -Encoding utf8
+          $brandName = "${{ inputs.brand_name }}"
+          if ($brandName -ne '') {
+            $brandFile = "assets/brand.json"
+            $brand = Get-Content $brandFile -Raw | ConvertFrom-Json
+            $brand.brand.app_name = $brandName
+            $brand | ConvertTo-Json -Depth 5 | Out-File $brandFile -Encoding utf8
+            Write-Host "品牌注入完成：应用名=$brandName"
+          } else {
+            Write-Host "品牌注入跳过：用包内默认 brand.json"
           }
-          Write-Host "品牌注入完成（占位）：应用名=${{ inputs.brand_name || '哲学系' }}"
 
       - name: 编 Android APK
-        # TODO（阶段 0）：working-directory 改成 apps/flutter_client。
         # keystore 由 Secrets 还原到本地，构建命令用 --release 签名；
         # 没填 keystore Secrets 时只编 debug 包供测试，不出正式包。
         env:
@@ -160,6 +173,6 @@ jobs:
         with:
           name: android-${{ inputs.version || github.ref_name }}
           path: |
-            build/app/outputs/flutter-apk/*.apk
-            build/app/outputs/flutter-apk/*.sha256
+            apps/flutter_client/build/app/outputs/flutter-apk/*.apk
+            apps/flutter_client/build/app/outputs/flutter-apk/*.sha256
           retention-days: 90
