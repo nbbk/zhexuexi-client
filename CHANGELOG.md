@@ -27,3 +27,9 @@
 - DEV-PLAN.md 新增 §10 用户拍板定稿（2026-11-22）：证书与密钥全由助手负责（Windows OV 代码签名证书代办、Android keystore 生成并备份两份、配置中心 Ed25519 私钥离线保管，费用明细记账给用户看，用户不用提供任何证书）；登录共存（MVP 免登录默认 + 账号密码登录可选，同一面板用户、同一份流量与到期，切换/登出/令牌撤销流程写死）；安全与隐私决策清单 8 条（助手定，逐条写明）；防报毒与安装顺畅专项（安全让路于安装，OV 签名 + SmartScreen 信誉积累，Android 只申请 VPN + 网络权限）；苹果费用第一期不产生（不做 iOS/macOS，不采购 99 美元账号）；服务器配置表（面板机/中转机/落地机，最低与建议两档，数字是估算、Phase 0 实测后修正）。
 - 同步改 §9 相关项：D12/D14 改为助手负责，9.2.1/9.2.3/9.2.7/9.2.9、§4.4 SmartScreen、§6 检查清单、§8 第 7 周同步改成本节口径。
 - 未做：应用代码、打包、真机验证。
+
+### v0.0.5 GitHub 免费 CI 与 Windows 一键构建器（2026-11-22）
+
+- DEV-PLAN.md 新增 §12 GitHub 免费 CI 与 Windows 一键构建器（2026-11-22 用户定）：公开仓 GitHub Actions 不计分钟数、免费，默认用 GitHub 托管 runner（windows-latest）编 Win + Android，不用先租服务器；之前 §11.3“没 CI 额度、不能走公有 CI”是错的，那个约束来自私有仓 lottery-4d-quant，不适用于本公开仓，§11.3 与 D11-1 已按 §12 修正，自建构建机降为备选。工作流 `.github/workflows/build.yml`（手动触发 + 推 v* tag 触发，build-windows 与 build-android 并行，6 个 Secrets 签名，产物 upload-artifact）；换仓三步（fork/克隆 → 新仓填 Secrets → 点 Run workflow），工作流与代码绝不写死账号、仓库名、域名、订阅地址。Windows 一键构建器 `windows/setup-builder.ps1` + `setup-builder.bat` + `windows/README.md`：下载后右键以管理员身份运行，自动装 Git、Flutter、JDK 17、Android SDK（自动接受 license）、设环境变量、flutter doctor 校验、可选注册自托管 runner、开机自启（任务计划程序），装完显示“构建器已就绪”并给验证清单；Android SDK 全程助手/脚本搞定，用户不用手动装。
+- 本版文件状态：build.yml 与 setup-builder 脚本只做静态核对，未真机跑过；Flutter 工程还没建，build.yml 里的构建命令是标准占位，阶段 0 建工程后接线；CI 未真跑过。
+- 未做：应用代码、打包、真机验证。
