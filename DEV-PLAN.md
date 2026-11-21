@@ -1182,9 +1182,9 @@ sing-box 落地没有按用户统计接口（官方发布的二进制默认不�
 - **两端一起发，不单独发一端。** Win 好了、Android 坏了，两个都不发，等修好一起发，避免用户装到新旧混搭的版本。
 - **构建日志可查、脱敏：** 日志存在面板发布记录里，密钥、令牌、签名密码绝不打日志（见 §11.6）；日志只保留最近 20 次发布，超了删旧的。
 
-### 11.3 构建机方案（关键约束，二选一，用户定）
+### 11.3 构建机方案（2026-11-22 修正：以 §12 GitHub 免费 CI 为主，本节的自建构建机降为备选）
 
-> 硬约束：GitHub Actions 免费额度用户此前已定没有，不能走公有 CI；构建机必须自己解决。Android 构建可在同一台 Windows 构建机上跑（装 Android SDK + Flutter），不用另起一台。
+> 修正说明：本节初版写“GitHub Actions 免费额度没有，不能走公有 CI”是错的——那个约束来自用户私有仓 lottery-4d-quant，不适用于本公开仓。公开仓库的 GitHub Actions 不计分钟数、免费，见 §12.0。**默认走 §12 的 GitHub 托管 runner（windows-latest），不用先租服务器、不用先配自建构建机。** 本节的方案 A/B 只在“用户想在自己电脑上编”时才用，是备选，不是必选项。§11.7 的 D11-1 也随之改为“构建机选 GitHub 托管 / A / B”，见 §12.7。
 
 |  | 方案 A：用户自己的 Windows 电脑挂构建器 | 方案 B：单独一台 Windows 构建服务器 |
 |---|---|---|
@@ -1224,9 +1224,153 @@ sing-box 落地没有按用户统计接口（官方发布的二进制默认不�
 
 | 编号 | 待拍板 | 选项 |
 |---|---|---|
-| D11-1 | 构建机选 A 还是 B | A 用户 Windows 电脑挂构建器（0 成本，关机不能构建）/ B 单独一台 Windows 构建服务器（最低 2 核 / 4GB / 40GB SSD，长期在线、随时发布） |
+| D11-1 | 构建机选 GitHub 托管 / A / B（2026-11-22 修正） | GitHub 托管 runner（默认，免费，见 §12）/ A 用户 Windows 电脑挂构建器（0 成本，关机不能构建）/ B 单独一台 Windows 构建服务器（最低 2 核 / 4GB / 40GB SSD，长期在线、随时发布） |
 | D11-2 | 下载页放哪里 | 面板服务器（省事，与面板同机）/ 独立域名（与面板分开，换面板不影响下载）/ R2 对象存储（已有远程备份在用 R2，下载走对象存储最稳）三选一 |
 | D11-3 | 发布频率限制 | 每天最多发布几次（防误点连发，建议每天最多 3 次，超了要管理员二次确认） |
+
+## §12 GitHub 免费 CI 与 Windows 一键构建器（2026-11-22 用户定）
+
+> 用户原话：GitHub 免费的 CI 要做，并且还要可以克隆到别的用户仓库去做；Win 系统助手做好所有工作，用户只要下载到 Win 系统就能构建和自启构建器，把用户当小白，用最简单方便的方式交付；Android SDK 助手自己搞定，用户不会弄。
+>
+> 一句话定稿：**公开仓的 GitHub Actions 就是免费的，默认用它编；想在自己电脑上编，下载一个文件、双击、等它装完，就能编、就能自启。**
+
+### 12.0 关键事实：免费 CI 是真的，之前那句“没额度”不适用于本仓
+
+- **公开仓库的 GitHub Actions 不计分钟数，免费。** 本仓 `nbbk/zhexuexi-client` 是公开仓，用 GitHub 托管的 `windows-latest` runner 编 Win 与 Android，不花钱、不用先租服务器。
+- 之前 §11.3 初版写的“GitHub Actions 免费额度没有，不能走公有 CI”是**错的**——那个约束来自用户私有仓 `lottery-4d-quant`（私有仓才有免费额度上限），不适用于这个公开仓。§11.3 与 D11-1 已按本节修正：默认走 GitHub 托管 runner，自建构建机降为备选。
+- **换仓也免费：** 只要新仓也是公开仓，fork / 克隆过去，CI 照样免费跑；新仓改成私有仓，才受私有仓免费额度限制（每月 2000 分钟，Windows runner 按 10 倍计分钟，见 GitHub 计费说明，阶段 0 再核实当时的数字）。
+- **费用红线：** 免费 CI 只负责“构建”这一件事。Windows OV 代码签名证书（§10.1，助手代办，约数百美元/年）与苹果开发者账号（第二期才用，99 美元/年）是另外的钱，不在 CI 免费范围内，别混在一起算。
+
+### 12.1 免费 CI 设计：`.github/workflows/build.yml`
+
+工作流文件在仓里：`.github/workflows/build.yml`（本版已推，见 §12.8 文件清单）。
+
+**触发方式（三选一，默认第一种）：**
+
+1. **手动点 Run workflow（默认）：** 仓库页面 Actions → build → Run workflow，填两个输入就跑——应用名（`brand_name`，默认 `哲学系`）、版本号（`version`，留空自动取最新 tag +1）。适合助手在仓里直接发版。
+2. **推 tag：** 往仓里推 `vX.Y.Z` tag 时自动触发，版本号就是 tag 本身；适合“打 tag 即发版”。
+3. **面板点发布调 GitHub API 触发（§11 的默认触发，接线在阶段 3）：** 面板“品牌发布”页点【发布】→ 调 GitHub API `POST /repos/{owner}/{repo}/actions/workflows/build.yml/dispatches` → 同一条工作流跑起来。面板里只存一个 GitHub token（Fine-grained，只给 Actions 写权限，存在面板加密配置里，不进仓、不进日志）。
+
+**构建矩阵（一次跑出两个端，版本号一致）：**
+
+| 任务 | runner | 产什么 |
+|---|---|---|
+| build-windows | `windows-latest`（GitHub 托管） | Windows exe + msix，OV 证书签名 |
+| build-android | `windows-latest`（GitHub 托管，同一条工作流，Android SDK 由 runner 上的 Java + Flutter 动作自动配好，用户不用手动装） | APK，v2 + v3 双签名 |
+
+- 两个任务并行跑，哪个先好等哪个；**两端一起发，不单独发一端**（§11.2 的规矩不变：Win 好了、Android 坏了，两个都不发）。
+- 产物去向：先上传到工作流的 Artifacts（`upload-artifact`，保留 90 天），再由发布步骤写进 Release（推 tag 时自动建 Release，手动触发时由助手点一下建 Release）与下载页（位置见 §11.7 D11-2，三选一）。
+
+**签名步骤（密钥从仓库 Secrets 取，绝不写进代码、不打日志）：**
+
+| Secret 名 | 是什么 | 谁填 |
+|---|---|---|
+| `ANDROID_KEYSTORE_BASE64` | Android keystore 文件的 base64（§10.1 助手生成） | 助手 |
+| `ANDROID_KEYSTORE_PASSWORD` | keystore 密码 | 助手 |
+| `ANDROID_KEY_ALIAS` | key alias | 助手 |
+| `ANDROID_KEY_PASSWORD` | key 密码 | 助手 |
+| `WINDOWS_CERT_BASE64` | Windows OV 证书 .pfx 的 base64（§10.1 助手代办） | 助手 |
+| `WINDOWS_CERT_PASSWORD` | 证书密码 | 助手 |
+
+- 工作流里只读 Secrets，不回显、不打印、不写进产物；签名失败的包不上 Release、不上下载页（§11.6 的规矩不变）。
+- **换仓时 Secrets 也要换：** 新仓的 Secrets 是空的，fork 过去不会带走旧仓的 Secrets（GitHub 设计就是这样，防密钥泄露），须在新仓重新填一遍，见 §12.2。
+
+**失败通知：** 工作流失败时 GitHub 自动发邮件给仓库管理员；面板点发布触发的，还要在面板发布记录里标红、发 Telegram 推送（§11.5 的通知不变）。
+
+### 12.2 可克隆到别的用户仓库去做：换仓三步，开箱即跑
+
+**硬规矩：工作流与代码里绝不写死任何一个会变的值。**
+
+- 不写死账号、仓库名、域名、订阅地址、应用名、Logo 路径。仓库名用 `${{ github.repository }}`，应用名、版本号用 workflow 输入，域名与订阅地址用 `brand.json`（§11.1，构建时注入）或 Secrets。
+- 品牌变量（应用名 / Logo / 域名 / 订阅）从 `brand.json` 或 workflow 输入取，不进代码；换品牌只换输入值，不改工作流文件。
+
+**换仓三步（写进 README，新用户照着做就行）：**
+
+1. **Fork / 克隆：** 点仓库右上角 Fork，或 `git clone https://github.com/nbbk/zhexuexi-client.git` 再推到自己的新仓。Fork 过去工作流文件、Logo、方案文档全在。
+2. **填 4 个密钥：** 新仓页面 Settings → Secrets and variables → Actions → New repository secret，按 §12.1 的表填 6 个 Secrets（Android 4 个 + Windows 2 个）。没有证书的先只填 Android 4 个，Windows 包先不签名也能编出来测试（正式发布前再补签名，见 §10.1）。
+3. **点 Run workflow：** Actions → build → Run workflow → 填应用名与版本号 → Run。等它跑完，Artifacts 里下载 exe 与 APK。
+
+- **Fork 不会带走 Secrets：** 这是 GitHub 的安全设计，不是 bug。旧仓的密钥永远不会跟着 fork 走，新仓必须重新填，填错了构建会报“签名失败”，按工作流日志的中文提示重填。
+- **换仓后要改的只有一处：** 面板点发布触发用的仓库地址（`owner/repo`）改成新仓的，其余不用动。
+
+### 12.3 Windows 一键构建器（自建 runner 备选，给想在自己电脑上编的用户）
+
+> 定位：**备选，不是必选项。** 默认用 §12.1 的 GitHub 托管 runner 就够了；只有“想在自己电脑上编、或 GitHub 托管 runner 不够用”时，才用本节的一键构建器。
+
+**交付物（本版已推，见 §12.8）：** `windows/setup-builder.bat` + `windows/setup-builder.ps1` + `windows/README.md`，都在客户端仓里。
+
+**用户要做的事只有三步（小白标准）：**
+
+1. 下载 `windows` 文件夹（或整个仓库 zip），解压到任意位置。
+2. 右键 `setup-builder.bat` → **以管理员身份运行**（双击也行，它会自己请求管理员权限）。
+3. 等它装完，看到 **“构建器已就绪”**，按屏幕上的验证清单跑一遍。装完不用再点别的。
+
+**脚本自动做的事（用户一个都不用手动点，全部脚本自动下载安装）：**
+
+| 步骤 | 脚本做什么 | 用户看到什么 |
+|---|---|---|
+| 1 检查 | 检查 Windows 版本（须 Win 10 1903+ / Win 11）、检查 winget、检查是否管理员 | “正在检查你的电脑…” |
+| 2 装 Git | winget 装 Git（没有 winget 时自动先装 App Installer），装完把 Git 加进 PATH | “正在安装 Git…” |
+| 3 装 Flutter / Dart | 下载固定版本 Flutter SDK（版本写死在脚本头，阶段 0 再钉死最新稳定版），解压到 `C:\dev\flutter`，加进 PATH | “正在安装 Flutter…” |
+| 4 装 JDK | 装 Temurin JDK 17（Flutter 与 Android 构建要用），设 `JAVA_HOME` | “正在安装 Java…” |
+| 5 装 Android SDK | 下载 Android cmdline tools，自动装 `platform-tools`、`build-tools`、`platforms;android-34`，**自动接受全部 license（`yes \| sdkmanager --licenses`），用户不用一个个点同意**；设 `ANDROID_HOME` 与 `ANDROID_SDK_ROOT` | “正在安装 Android SDK（这一步最久，约 10–20 分钟，别关窗口）…” |
+| 6 校验 | 跑 `flutter doctor`，缺什么当场报出来，不缺就继续 | “正在检查安装结果…” |
+| 7 注册 runner（可选） | 问用户要不要注册 GitHub 自托管 runner：要就粘贴 runner token（GitHub 仓库 Settings → Actions → Runners → New self-hosted runner 里复制），脚本自动下载 runner、注册、装成服务；不要就跳过，只装环境，以后想注册再跑一次脚本 | “要不要注册构建器？要就粘贴 token，不要直接回车跳过” |
+| 8 开机自启 | 用 Windows 任务计划程序建一个开机任务（登录后自动启动 runner），不用用户自己去服务里找 | “正在设置开机自启…” |
+| 9 就绪 | 打印就绪清单（装了什么、版本号、怎么验证、怎么卸载） | **“构建器已就绪”** |
+
+- **每一步中文提示，失败即停并打印原因，不静默跳过。** 哪一步失败，屏幕上就写“第 X 步失败了，原因是……，怎么办：……”，用户把这段话发给助手就能定位，不用自己猜。
+- **默认值回车即用：** 安装路径、Flutter 版本、Android 版本都有默认值，直接回车就是默认值，不用填。
+- **卸载与重装：** `windows/README.md` 里写清——卸载是删任务计划 + 删 `C:\dev\flutter`、`C:\dev\android-sdk` 与 runner 文件夹，再跑一次脚本就是重装；重装不会删已编好的包（产物在仓库的 `build/` 里，不在脚本目录）。
+
+### 12.4 Android SDK：助手搞定，用户不用弄
+
+- **GitHub CI 上：** Android SDK 由工作流里的 `setup-java` + `flutter-action` 自动配好，构建机不用用户装，见 `build.yml`。
+- **自己电脑上：** `setup-builder.ps1` 第 5 步自动下载、自动装、自动接受 license、自动设环境变量，用户全程不用点 SDK Manager、不用找路径、不用手动接受 license。
+- **SDK 版本钉死：** cmdline tools、build-tools、platforms 的版本号写死在脚本头与 `build.yml` 里，阶段 0 再核实一次最新稳定版并钉死；以后升级 SDK 只改这两个文件里的版本号，不用用户重新学一遍。
+
+### 12.5 小白交付标准（本节所有交付物都要过这一关）
+
+1. **每一步只做一件事：** 一个脚本只装环境 + 注册 runner，不顺带做别的事；一个工作流只构建 + 签名，不顺带改配置。
+2. **每一步有中文提示：** 脚本每一步先打一行中文“正在做什么…”，做完打“好了，下一步…”，失败打“失败了，原因是…，怎么办…”。不打英文报错当提示，英文报错只贴在中文提示后面当证据。
+3. **默认值回车即用：** 所有要填的东西都有默认值，直接回车就是默认值；没有默认值的才停下来问，问的时候写清“填什么、格式是什么、不知道就填什么”。
+4. **装完给验证清单：** 见 §12.6，装完按清单逐项打勾，全打勾才算装好，有一项不过就按清单里的办法修，不用重新从头装。
+
+### 12.6 装好了怎么验证（两张清单）
+
+**GitHub 免费 CI 验证清单（跑一次就行）：**
+
+- [ ] 仓库 Actions 页能看到 build 工作流，没有报“workflow 无效”。
+- [ ] 点 Run workflow，填应用名 `哲学系`、版本号留空，点 Run，工作流开始跑（状态从排队 → 进行中）。
+- [ ] 两个任务（build-windows、build-android）都跑完，状态是绿色对勾。
+- [ ] Artifacts 里能下载到 exe 与 APK（本版是占位构建，Flutter 工程还没建，见 §12.8，跑通的是工作流本身，不是真包）。
+- [ ] 故意填错一个 Secret 再跑一次，构建报“签名失败”而不是静默通过（证明 Secrets 真的在起作用）。
+
+**Windows 一键构建器验证清单（装完当场跑）：**
+
+- [ ] 屏幕上出现“构建器已就绪”。
+- [ ] 新开一个 PowerShell，跑 `flutter doctor`，显示 `No issues found` 或只剩 Chrome / Visual Studio 的提示（那两个不影响编 Win 与 Android）。
+- [ ] 跑 `git --version`、`java -version`、`flutter --version` 都有输出，没有“找不到命令”。
+- [ ] `echo $env:ANDROID_HOME` 有输出，指向 `C:\dev\android-sdk`。
+- [ ] 任务计划程序里能看到构建器的开机任务（名字叫 `ZhexuexiBuilder`）。
+- [ ] 重启电脑一次，登录后任务计划里的构建器自动起来了（runner 状态 Online）。
+
+### 12.7 待拍板清单（本节，用户未定前相关工作停在清单写明的范围）
+
+| 编号 | 待拍板 | 选项 |
+|---|---|---|
+| D12-1 | 构建机默认走哪条 | GitHub 托管 runner（默认，免费，推荐）/ A 用户 Windows 电脑挂构建器 / B 单独 Windows 构建服务器。D11-1 已并入本项，不再单独拍 |
+| D12-2 | 面板点发布调 GitHub API 的 token 权限 | Fine-grained token 只给 Actions 写权限（推荐）/ Classic token 给 repo 权限（权限过大，不推荐）。阶段 3 接线前定 |
+| D12-3 | Windows 签名证书不到位时，CI 构建的包怎么处理 | 先不签名也能编出来测试、正式发布前再补签名（默认）/ 没证书就不出包（更严，但测试也编不出来）。阶段 0 定 |
+
+### 12.8 本版已推的文件（真实文件，不只是方案）
+
+| 文件 | 是什么 | 状态 |
+|---|---|---|
+| `.github/workflows/build.yml` | GitHub 免费 CI 工作流：手动触发（brand_name、version 输入）+ 推 `v*` tag 触发，build-windows 与 build-android 并行，Secrets 签名，产物 upload-artifact | **已推本版；TODO 占位：Flutter 工程还没建（阶段 0 建），构建命令先写标准命令（`flutter build windows` / `flutter build apk`），文件头注释写明“阶段 0 建工程后接线”，CI 本身未真跑过** |
+| `windows/setup-builder.ps1` | Windows 一键构建器主脚本：装 Git、Flutter、JDK 17、Android SDK（自动接受 license）、设环境变量、flutter doctor 校验、可选注册自托管 runner、开机自启 | **已推本版；未真机跑过（本机无 Windows、无 pwsh），只做静态核对，阶段 0 要在干净 Win 11 真机上跑一遍** |
+| `windows/setup-builder.bat` | 双击入口：请求管理员权限后调 `setup-builder.ps1` | 已推本版；同上，未真机跑过 |
+| `windows/README.md` | 小白用法：下载 → 右键以管理员身份运行 → 等装完 → 验证清单 → 卸载与重装 | 已推本版 |
 
 ---
 
