@@ -1367,7 +1367,7 @@ sing-box 落地没有按用户统计接口（官方发布的二进制默认不�
 
 | 文件 | 是什么 | 状态 |
 |---|---|---|
-| `.github/workflows/build.yml` | GitHub 免费 CI 工作流：手动触发（brand_name、version 输入）+ 推 `v*` tag 触发，build-windows 与 build-android 并行，Secrets 签名，产物 upload-artifact | **已推本版；TODO 占位：Flutter 工程还没建（阶段 0 建），构建命令先写标准命令（`flutter build windows` / `flutter build apk`），文件头注释写明“阶段 0 建工程后接线”，CI 本身未真跑过** |
+| `.github/workflows/build.yml` | GitHub 免费 CI 工作流：手动触发（brand_name、version 输入）+ 推 `v*` tag 触发，build-windows 与 build-android 并行，Secrets 签名，产物 upload-artifact | **未推上仓（见下）：文件已写好在本地 `~/workspace/zhexuexi-client-kit/.github/workflows/build.yml`，YAML 解析通过；2026-11-22 推送时 GitHub token 报 403（缺 Workflows 写权限），Contents API 与 Git Data API 都推不进 `.github/workflows/`。须用户在 GitHub 仓库 Settings → Actions → General 允许 Actions，或给 token 加 Workflows 权限后重推；也可以在网页上手动新建 `.github/workflows/build.yml` 把本地文件内容粘贴进去** |
 | `windows/setup-builder.ps1` | Windows 一键构建器主脚本：装 Git、Flutter、JDK 17、Android SDK（自动接受 license）、设环境变量、flutter doctor 校验、可选注册自托管 runner、开机自启 | **已推本版；未真机跑过（本机无 Windows、无 pwsh），只做静态核对，阶段 0 要在干净 Win 11 真机上跑一遍** |
 | `windows/setup-builder.bat` | 双击入口：请求管理员权限后调 `setup-builder.ps1` | 已推本版；同上，未真机跑过 |
 | `windows/README.md` | 小白用法：下载 → 右键以管理员身份运行 → 等装完 → 验证清单 → 卸载与重装 | 已推本版 |
