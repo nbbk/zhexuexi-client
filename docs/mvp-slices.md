@@ -33,5 +33,5 @@
 - [x] 切片 4（2026-11-23）：节点测速＋自动选节点。flutter test 123/123、analyze 零问题；真 1.14.4 `check`＋`run` 冒烟全过（Proxy default=日本-直连）。delay 接口成功路径只在假服务器上验过，真机/真节点未验（见 CHANGELOG）。
 - [x] 切片 5（2026-11-23）：我的页。flutter test 151/151、analyze 零问题；新增 connectivity_plus 7.3.2（Wi-Fi 检测）。手动刷新＋每天自动更新一次（仅 Wi-Fi）＋更新失败常驻显示原因；公告走面板 public-info；换绑/退出登录接线。
 - [x] 切片 6（2026-11-23）：设置页＋模式与规则＋DNS 防泄漏。flutter test 185/185、analyze 零问题；真 1.14.4 `check` 6/6＋`run` 冒烟 4 份全过（TUN 开启的只做 `check`，建 TUN 设备要权限，真机再验）。
-- [x] 切片 7（2026-11-23）：远程配置中心＋品牌远程替换。flutter test 208/208、analyze 零问题；三地址链（面板/Worker/GitHub Raw）＋Ed25519 验签（真密钥 fixture 验过）＋本地缓存最后一份好配置；订阅 404 先拉远程配置再重试换地址（令牌不变）；设置页检查更新接通；公告优先走远程配置；强制更新拦大开关。面板接口 D10 未拍板、Worker 路由未加，GitHub Raw 的 client-config.json 尚未发布；私钥只有 /tmp 里一份，须按 D14 备两份离线备份。
-- [ ] 切片 8：流量限流展示＋打包验收。
+- [x] 切片 7（2026-11-23）：远程配置中心＋品牌远程替换。flutter test 208/208、analyze 零问题；三地址链（面板/Worker/GitHub Raw）＋Ed25519 验签（真密钥 fixture 验过）＋本地缓存最后一份好配置；订阅 404 先拉远程配置再重试换地址（令牌不变）；设置页检查更新接通；公告优先走远程配置；强制更新拦大开关。面板接口 D10 未拍板、Worker 路由未加，GitHub Raw 的 client-config.json 尚未发布。密钥事故：私钥只放 /tmp，2026-11-23 03:05 查实已被清空丢了，见切片 8 轮换。
+- [x] 切片 8（2026-11-23）：流量限流展示＋打包验收。flutter test 225/225、analyze 零问题。密钥轮换：新公钥进客户端、新私钥存 `~/workspace/user/remote-config-private-key.pem`（600），fixture 已重签；限流展示只按 userinfo 头算（≥80% 提醒、超量只说“可能停用”），我的页进度条＋状态文案、首页状态行，口径写明“仅中转、直连不限流”；远程配置加 `download_url`、强制更新弹窗显示可复制的下载地址；新增 `docs/release-checklist.md` 与首份发布记录 `docs/releases/v0.1.0-mvp.md`。MVP 8 片全部完成。未核实：真面板联调、真机、APK/Win 真机安装、CI 首次跑、远程配置中心真端、品牌替换真机效果。

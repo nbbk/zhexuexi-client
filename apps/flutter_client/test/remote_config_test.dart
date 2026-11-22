@@ -284,6 +284,7 @@ void main() {
       expect(config.panelDomain, 'panel.example.com');
       expect(config.subscriptionUrl, contains('sub.example.com/x9f2'));
       expect(config.announcement?.id, '20261123-test');
+      expect(config.downloadUrl, 'https://example.com/download');
       expect(
         config.subscriptionBackupUrls,
         ['https://sub2.example.com/x9f2'],
@@ -807,6 +808,24 @@ void main() {
       expect(config(force: true, min: '0.1.0').forceUpdateRequired, isFalse);
       expect(config(force: true, min: '0.0.9').forceUpdateRequired, isFalse);
       expect(config(force: false, min: '9.9.9').forceUpdateRequired, isFalse);
+    });
+  });
+
+  group('download_url（切片 8）', () {
+    test('顶层 download_url 解析与 round-trip', () {
+      final json = _payload()
+        ..['download_url'] = 'https://example.com/download';
+      final config = RemoteConfig.fromJson(json);
+      expect(config.downloadUrl, 'https://example.com/download');
+      expect(
+        RemoteConfig.fromJson(config.toJson()).downloadUrl,
+        'https://example.com/download',
+      );
+    });
+
+    test('没给 download_url 时为空串，升级弹窗只说明原因、不写地址', () {
+      expect(RemoteConfig.fromJson(_payload()).downloadUrl, '');
+      expect(RemoteConfig.defaults().downloadUrl, '');
     });
   });
 

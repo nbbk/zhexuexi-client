@@ -9,18 +9,18 @@
 
 用法：
   # 生成一对新密钥（私钥只存你指定的路径，绝不进仓库）：
-  python3 sign.py generate-key --private /tmp/remote-config-private.pem
+  python3 sign.py generate-key --private ~/workspace/user/remote-config-private-key.pem
   # 输出 base64 公钥：把它编译进客户端（lib/brand/remote_config_keys.dart）。
 
   # 看一把私钥对应的公钥（换公钥时用）：
-  python3 sign.py pubkey --key /tmp/remote-config-private.pem
+  python3 sign.py pubkey --key ~/workspace/user/remote-config-private-key.pem
 
   # 签一份配置（payload.json 是不含 signature 的配置内容）：
-  python3 sign.py sign --key /tmp/remote-config-private.pem \
+  python3 sign.py sign --key ~/workspace/user/remote-config-private-key.pem \
       --config payload.json --out client-config.json
   # --bump：沿用上一份信封的 config_version + 1（改配置必升版本，
   # 客户端只接受比本地缓存新的版本）：
-  python3 sign.py sign --key /tmp/remote-config-private.pem \
+  python3 sign.py sign --key ~/workspace/user/remote-config-private-key.pem \
       --config payload.json --out client-config.json --bump prev.json
 
   # 验一份信封（公钥是编译进客户端的那把 base64）：

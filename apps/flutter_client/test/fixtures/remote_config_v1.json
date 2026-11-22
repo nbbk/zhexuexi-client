@@ -30,5 +30,6 @@
     "tun_default": false,
     "show_traffic": true
   },
-  "signature": "1HccQSvfFAWK5LuMDF+gkXCcE48CLxGZ80McqoX2S+Nu/W/VvNhPxqk5R5Qy4ZugbAvzENLxp1Xw329aSwe9Bw=="
+  "download_url": "https://example.com/download",
+  "signature": "KGCTYwwtbfO6+JyGIFc0JPqZfZBIWxACkIUbzwJRSTuX44jwwa9ork31nRzVIy0SMpx1B9UqsjH0dR9nq961Dg=="
 }

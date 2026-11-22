@@ -169,6 +169,47 @@ String formatDateTime(DateTime date) {
   return '$y-$m-$d $hh:$mm';
 }
 
+/// 流量限流状态（切片 8）：只按 userinfo 头里已有的数判断，
+/// 面板没给的状态（停用原因、重置日期、限流百分比）一律不猜
+///（panel-adapter.md §2.3）。
+enum TrafficLimitStatus {
+  /// 不限量、没拉到用量、或已用占比不到 80%：不用提醒。
+  none,
+
+  /// 已用 ≥80% 且未超量：接近限额，提醒一次（文案里写清后果）。
+  approaching,
+
+  /// 已用完 / 已超量：面板可能已停用该订阅——只说“可能”，
+  /// 停用只表现为节点连不上 + 用量已满，客户端看不到停用状态本身。
+  exceeded,
+}
+
+/// 限流状态判定：不限量（total 为 null 或 0）或已用未知时一律 none；
+/// 剩余 ≤0 时 exceeded；已用占比 ≥80% 时 approaching。
+TrafficLimitStatus trafficLimitStatus(SubscriptionUserinfo? info) {
+  if (info == null || info.isUnlimited) return TrafficLimitStatus.none;
+  final remaining = info.remaining;
+  if (remaining == null) return TrafficLimitStatus.none;
+  if (remaining <= 0) return TrafficLimitStatus.exceeded;
+  final ratio = info.usedRatio;
+  if (ratio != null && ratio >= 0.8) return TrafficLimitStatus.approaching;
+  return TrafficLimitStatus.none;
+}
+
+/// 限流状态文案：none 时返回 null（界面不显示这一行）。
+/// approaching 写已用百分比；exceeded 写“可能已停用”，不写成定论。
+String? trafficLimitText(SubscriptionUserinfo? info) {
+  switch (trafficLimitStatus(info)) {
+    case TrafficLimitStatus.approaching:
+      final percent = ((info!.usedRatio ?? 0) * 100).round();
+      return '已用 $percent%，接近限额，超量后节点可能停用';
+    case TrafficLimitStatus.exceeded:
+      return '已超量：面板可能已停用该订阅，节点连不上时请联系管理员';
+    case TrafficLimitStatus.none:
+      return null;
+  }
+}
+
 /// 日期转 `yyyy-MM-dd`（不引 intl，只为这一处显示）。
 String formatDateYmd(DateTime date) {
   final y = date.year.toString().padLeft(4, '0');

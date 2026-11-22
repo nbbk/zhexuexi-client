@@ -124,5 +124,14 @@
 - 接线：设置页“检查更新”接通（拉到新版报“已更新到配置 vN”，已是最新报版本，拉不到报“正在用上次的配置”，关于里加“远程配置版本”一行）；公告优先用远程配置里的 `announcement`，没有再走面板 public-info；强制更新（`force_update` + `min_app_version`，只用于旧版解析不了新订阅格式这种真断裂场景）：当前版本低于最低版本时首页大开关拦住、弹升级说明，下载地址随打包验收（切片 8）接入。
 - 签名工具与文档：`tools/remote-config/sign.py`（generate-key / pubkey / sign / verify，只依赖 Python 标准库 + openssl；`--bump` 沿用上一份信封的版本号 +1）+ `tools/remote-config/README.md`（密钥保管与三地址发布步骤、换域名操作清单）；契约文档 `docs/api/remote-config.md`（信封格式、签名规则、地址链、版本规则与缓存、订阅地址换了之后的行为；面板接口与 Worker 路由今天还没接，只有 GitHub Raw 这条路是发布方现在就能走通的）。
 - 测试：`flutter test` 208/208 全过（基线 185＋新增 23：远程配置 22、设置页检查更新 1），`flutter analyze` 零问题。关键覆盖：规范 JSON 与 Python 逐字节一致、临时密钥对签验往返、真密钥 fixture（`test/fixtures/remote_config_v1.json`，用 sign.py + 真私钥签、openssl 验过，Dart 用编译进客户端的公钥验签通过，改一个字就不过）、地址链顺序与验签失败跳过、版本不回退、缓存 round-trip 与坏缓存清除、404 重试成功/失败/备用地址三条、远程公告优先、强制更新判定、设置页检查更新两种结果。测试里又踩一遍老坑：testWidgets 体里裸 `await` 真实文件 IO 会死锁，读 fixture 必须包进 `tester.runAsync`。未改 sing-box 配置生成逻辑，不用真 sing-box 冒烟。
-- 未核实：真面板联调（等用户给测试订阅）、真机、APK、Win 构建；远程配置中心真端（面板接口 D10 未拍板、Worker 路由未加，GitHub Raw 的 client-config.json 文件尚未发布）、品牌替换真机效果；私钥只有 /tmp 里一份（`/tmp/zhexuexi-remote-config-private.pem`），须按 D14 备两份离线备份、密码分开保管，否则 /tmp 清掉就再也签不了配置。
+- 未核实：真面板联调（等用户给测试订阅）、真机、APK、Win 构建；远程配置中心真端（面板接口 D10 未拍板、Worker 路由未加，GitHub Raw 的 client-config.json 文件尚未发布）、品牌替换真机效果。密钥事故见切片 8：切片 7 的私钥只放 /tmp，2026-11-23 03:05 查实已被清空丢了，已在切片 8 轮换密钥对。
 - 未做：限流展示＋打包验收（切片 8）。
+
+### MVP 切片 8：流量限流展示＋打包验收（2026-11-23）
+
+- 密钥轮换（切片 7 遗留事故）：切片 7 的 Ed25519 私钥只放在 /tmp（`/tmp/zhexuexi-remote-config-private.pem`），2026-11-23 03:05 查实 /tmp 已被清空、全盘搜不到私钥，已编译进客户端的旧公钥再也签不出能用的配置。本片用 `tools/remote-config/sign.py generate-key` 生成新密钥对：新公钥 `RR7Xm49vs+h18Ny8QLQZLjGkoqZHAoGr+oxbYQ087tE=` 编译进 `lib/brand/remote_config_keys.dart`，新私钥存 `~/workspace/user/remote-config-private-key.pem`（600 权限，持久目录，绝不进仓库）；`test/fixtures/remote_config_v1.json` 用新私钥重签（openssl 验过）；`tools/remote-config/README.md` 与 `sign.py` 里的保管路径改成持久路径并注明“不要放 /tmp，会被清掉”。用户还须自己再存一份离线备份。
+- 流量限流展示（`lib/core/userinfo.dart` 新增 `trafficLimitStatus` / `trafficLimitText`，只按 userinfo 头里已有的数判断）：已用 ≥80% 且未超量显示“已用 N%，接近限额，超量后节点可能停用”；已用完 / 已超量显示“已超量：面板可能已停用该订阅，节点连不上时请联系管理员”（只说“可能”，停用状态本身客户端看不到，不写成定论）；不限量、没拉到用量、已用未知时不显示。我的页订阅卡片加进度条 + 状态文案，首页三格下方加同一状态行；口径文案写明“限流只按中转流量算，直连不限流（节点侧按人计量未上线）”——A 线 Phase 1 未通过，直连流量展示的前提不满足，界面写明“仅中转”。
+- 打包验收：远程配置顶层加 `download_url` 字段（`RemoteConfig.downloadUrl`，`fromJson`/`toJson` round-trip，契约见 `docs/api/remote-config.md`）；强制更新弹窗显示成可复制的文本（不引 url_launcher），配置里没给时只说明原因、不写地址；`test/fixtures/remote_config_v1.json` 加 `download_url` 并用新私钥重签。新增 `docs/release-checklist.md`（打包前检查、打 tag 走 CI、签名 Secrets、下载页与远程配置、回滚、发布记录）与首份发布记录 `docs/releases/v0.1.0-mvp.md`（按 DEV-PLAN §6.3，发布提交 SHA 推仓后补记）。CI（`.github/workflows/build.yml`，阶段 0 已接线，打 tag `v*` 编 Windows exe + Android APK）本次未改，首次跑须验证。
+- 测试：`flutter test` 225/225 全过（基线 208＋新增 17：限流状态 7、download_url 2、我的页限流展示 4、首页状态行与升级弹窗 4），`flutter analyze` 零问题。未改 sing-box 配置生成逻辑，不用真 sing-box 冒烟。
+- 未核实：真面板联调（等用户给测试订阅）、真机、APK 与 Win 包的真机安装、CI 首次跑（两 job 是否都绿、产物是否可用）、远程配置中心真端、品牌替换真机效果；TUN 真机、Wi-Fi 检测真机、公告经 Worker 域名、delay 成功路径真机同前。
+- MVP 8 片至此全部完成。下一件（主线顺序）：香港plus 开 HTTPS。

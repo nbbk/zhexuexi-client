@@ -10,6 +10,8 @@ import 'package:flutter_sing_box/flutter_sing_box.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:zhexuexi_client/brand/brand_config.dart';
+import 'package:zhexuexi_client/brand/remote_config.dart';
 import 'package:zhexuexi_client/core/clash_api_client.dart';
 import 'package:zhexuexi_client/core/config_validator.dart';
 import 'package:zhexuexi_client/core/core_provider.dart';
@@ -18,6 +20,7 @@ import 'package:zhexuexi_client/core/singbox_core.dart';
 import 'package:zhexuexi_client/core/userinfo.dart';
 import 'package:zhexuexi_client/features/home/home_page.dart';
 import 'package:zhexuexi_client/services/nodes_notifier.dart';
+import 'package:zhexuexi_client/services/remote_config_notifier.dart';
 
 /// 插件 fake：只记调用、不碰平台通道，状态由测试手动推。
 class _FakePlugin extends FlutterSingBox {
@@ -92,6 +95,47 @@ Node _node(String name, {NodeSource source = NodeSource.direct}) => Node(
   sni: 'example.com',
 );
 
+/// 远程配置桩：只返回给定的配置，不拉网络、不读缓存。
+class _StubRemoteConfigNotifier extends RemoteConfigNotifier {
+  _StubRemoteConfigNotifier(this._config);
+
+  final RemoteConfig _config;
+
+  @override
+  RemoteConfigState build() => RemoteConfigState(
+        config: _config,
+        source: RemoteConfigSource.fresh,
+      );
+}
+
+/// 强制更新的配置（当前版本 0.1.0 < 最低 0.2.0，带下载地址）。
+RemoteConfig _forceUpdateConfig() => RemoteConfig(
+      configVersion: 2,
+      minAppVersion: '0.2.0',
+      forceUpdate: true,
+      forceUpdateMessage: '当前版本无法解析新订阅格式，请升级到最新版。',
+      downloadUrl: 'https://example.com/download',
+      brand: BrandConfig.defaults(),
+      panelDomain: 'panel.example.com',
+      panelApiBase: '',
+      minPanelVersion: '1.3.29',
+      subscriptionUrl: '',
+      subscriptionBackupUrls: const [],
+      subscriptionFormat: 'singbox',
+      features: const RemoteConfigFeatures(),
+    );
+
+/// 限流测试用的 userinfo：已用 usedMB / 总量 totalMB（MB）。
+SubscriptionUserinfo _limitedInfo({required int usedMB, int totalMB = 1024}) {
+  final expire = DateTime.now().add(const Duration(days: 45));
+  return SubscriptionUserinfo(
+    upload: usedMB * 1024 * 1024,
+    download: 0,
+    total: totalMB * 1024 * 1024,
+    expire: expire.millisecondsSinceEpoch ~/ 1000,
+  );
+}
+
 void main() {
   late Directory tmpDir;
   late String configPath;
@@ -131,6 +175,7 @@ void main() {
     List<Node> nodes = const [],
     SubscriptionUserinfo? userinfo,
     String? selected,
+    RemoteConfig? remoteConfig,
   }) async {
     // 首页内容一屏放不下时 ListView 只构建可见子项，到期格与模式段
     // 会在 800x600 默认视口下不可见；测试用高视口一次全渲染。
@@ -151,6 +196,10 @@ void main() {
           clashApiClientProvider.overrideWithValue(
             ClashApiClient(baseUrl: closedApiBaseUrl),
           ),
+          if (remoteConfig != null)
+            remoteConfigProvider.overrideWith(
+              () => _StubRemoteConfigNotifier(remoteConfig),
+            ),
         ],
         child: MaterialApp(
           home: Scaffold(
@@ -329,5 +378,55 @@ void main() {
             as Map<String, dynamic>;
     expect((decoded['route'] as Map)['final'], 'direct');
     expect(((decoded['route'] as Map)['rules'] as List), isEmpty);
+  });
+
+  // 切片 8：限流状态行与强制更新下载地址。
+  testWidgets('已用 85%：首页显示接近限额状态行', (tester) async {
+    await pumpHome(tester, userinfo: _limitedInfo(usedMB: 870));
+    expect(
+      find.text('已用 85%，接近限额，超量后节点可能停用'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('已超量：首页显示超量状态行', (tester) async {
+    await pumpHome(tester, userinfo: _limitedInfo(usedMB: 1100));
+    expect(
+      find.text('已超量：面板可能已停用该订阅，节点连不上时请联系管理员'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('强制更新：升级说明里显示可复制的下载地址', (tester) async {
+    await pumpHome(tester, remoteConfig: _forceUpdateConfig());
+    expect(find.text('当前版本过低，请升级后使用'), findsOneWidget);
+    await tester.tap(find.text('查看详情'));
+    await tester.pumpAndSettle();
+    expect(find.text('需要升级客户端'), findsOneWidget);
+    expect(find.text('下载地址（长按复制）：'), findsOneWidget);
+    expect(find.text('https://example.com/download'), findsOneWidget);
+  });
+
+  testWidgets('强制更新：配置里没给下载地址时只说明原因', (tester) async {
+    final config = _forceUpdateConfig();
+    final noUrl = RemoteConfig(
+      configVersion: config.configVersion,
+      minAppVersion: config.minAppVersion,
+      forceUpdate: true,
+      forceUpdateMessage: config.forceUpdateMessage,
+      brand: config.brand,
+      panelDomain: config.panelDomain,
+      panelApiBase: config.panelApiBase,
+      minPanelVersion: config.minPanelVersion,
+      subscriptionUrl: config.subscriptionUrl,
+      subscriptionBackupUrls: config.subscriptionBackupUrls,
+      subscriptionFormat: config.subscriptionFormat,
+      features: config.features,
+    );
+    await pumpHome(tester, remoteConfig: noUrl);
+    await tester.tap(find.text('查看详情'));
+    await tester.pumpAndSettle();
+    expect(find.text('需要升级客户端'), findsOneWidget);
+    expect(find.text('下载地址（长按复制）：'), findsNothing);
   });
 }

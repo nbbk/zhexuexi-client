@@ -15,6 +15,7 @@
   "min_app_version": "1.0.0",
   "force_update": false,
   "force_update_message": "当前版本无法解析新订阅格式，请升级到最新版。",
+  "download_url": "https://example.com/download",
   "brand": {
     "app_name": "哲学系",
     "logo_url": "https://config.example.com/zhexuexi/logo.png",
@@ -49,6 +50,7 @@
 |---|---|---|
 | `config_version` | 配置版本号，单调递增 | 客户端只接受比本地缓存新的版本，不回退 |
 | `min_app_version` / `force_update` | 最低可用客户端版本 / 是否强制更新 | 低于最低版本时首页弹升级提示；`force_update` 为真时大开关拦住、弹全屏升级说明，不让继续用旧版连 |
+| `download_url` | 强制更新时给用户看的下载地址（官网下载页） | 升级弹窗里显示成可复制的文本；配置里没给时弹窗只说明原因、不写地址 |
 | `brand.*` | 应用名、Logo 地址、主色、强调色、客服链接 | 重启客户端即生效，不用重新打包（Logo 是远程图，首次加载后缓存；离线用包内默认 Logo） |
 | `panel.subscription_url` / `subscription_backup_urls` | 当前订阅地址 + 备用订阅地址 | 下次订阅更新即用新地址；旧地址 404 时自动试备用地址（令牌不变、只换地址） |
 | `panel.panel_domain` / `panel_api_base` | 面板域名与接口地址 | 面板换域名后改这里，客户端不用重装 |
@@ -131,5 +133,6 @@ shared_preferences 的 `remote_config_extra_urls` 里追加地址
   订阅地址换了要下次订阅更新才生效（正在跑的节点不断线）。
 - 强制更新只用于“旧版客户端解析不了新订阅格式”这种真断裂场景，
   不要拿来当日常推送手段。`force_update` 为真且当前版本低于
-  `min_app_version` 时，首页大开关拦住、弹升级说明；下载地址随
-  打包验收（切片 8）接入，目前只说明原因、不假装能下载。
+  `min_app_version` 时，首页大开关拦住、弹升级说明；下载地址是
+  顶层 `download_url`（切片 8 接入），升级弹窗里显示成可复制的
+  文本，配置里没给时只说明原因、不写地址。

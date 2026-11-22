@@ -23,6 +23,7 @@ class RemoteConfig {
     required this.minAppVersion,
     required this.forceUpdate,
     this.forceUpdateMessage,
+    this.downloadUrl = '',
     required this.brand,
     required this.panelDomain,
     required this.panelApiBase,
@@ -64,6 +65,7 @@ class RemoteConfig {
       minAppVersion: json['min_app_version'] as String? ?? '0.1.0',
       forceUpdate: json['force_update'] as bool? ?? false,
       forceUpdateMessage: json['force_update_message'] as String?,
+      downloadUrl: json['download_url'] as String? ?? '',
       brand: brand,
       panelDomain: panel['panel_domain'] as String? ?? brand.panelDomain,
       panelApiBase: panel['panel_api_base'] as String? ?? '',
@@ -99,6 +101,11 @@ class RemoteConfig {
 
   /// 强制更新时给用户看的说明。
   final String? forceUpdateMessage;
+
+  /// 强制更新时给用户看的下载地址（切片 8 接入）：
+  /// 官网下载页地址；配置里没给时为空，升级弹窗只说明原因、
+  /// 不写地址。下载页本身由发布流程维护（见 docs/release-checklist.md）。
+  final String downloadUrl;
 
   /// 品牌变量（应用名、Logo、主色、强调色、客服链接、订阅地址）。
   final BrandConfig brand;
@@ -143,6 +150,7 @@ class RemoteConfig {
         'force_update': forceUpdate,
         if (forceUpdateMessage != null)
           'force_update_message': forceUpdateMessage,
+        if (downloadUrl.isNotEmpty) 'download_url': downloadUrl,
         'brand': {
           'app_name': brand.appName,
           'logo_url': brand.logoUrl,

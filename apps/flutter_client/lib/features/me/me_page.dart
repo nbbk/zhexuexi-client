@@ -238,8 +238,28 @@ class _MePageState extends ConsumerState<MePage> {
                   const SizedBox(height: 4),
                   Text('到期日：${expireText(info)}'),
                   const SizedBox(height: 4),
+                  // 限流展示（切片 8）：进度条 + 状态文案，只按 userinfo 头
+                  // 里已有的数算；不限量或没拉到用量时不显示这一段。
+                  if (info != null && info.usedRatio != null) ...[
+                    const SizedBox(height: 8),
+                    LinearProgressIndicator(value: info.usedRatio),
+                    if (trafficLimitText(info) != null) ...[
+                      const SizedBox(height: 8),
+                      Text(
+                        trafficLimitText(info)!,
+                        style: TextStyle(
+                          color: trafficLimitStatus(info) ==
+                                  TrafficLimitStatus.exceeded
+                              ? Theme.of(context).colorScheme.error
+                              : Theme.of(context).colorScheme.onSurface,
+                        ),
+                      ),
+                    ],
+                  ],
+                  const SizedBox(height: 4),
                   Text(
-                    '流量口径：仅中转（直连流量不计入）',
+                    '流量口径：仅中转（直连流量不计入）；限流只按中转流量算，'
+                    '直连不限流（节点侧按人计量未上线）',
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ],

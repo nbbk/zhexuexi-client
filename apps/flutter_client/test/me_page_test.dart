@@ -109,6 +109,16 @@ SubscriptionUserinfo _info() {
   );
 }
 
+SubscriptionUserinfo _limitedInfo({required int usedMB, int totalMB = 1024}) {
+  final expire = DateTime.now().add(const Duration(days: 45));
+  return SubscriptionUserinfo(
+    upload: usedMB * 1024 * 1024,
+    download: 0,
+    total: totalMB * 1024 * 1024,
+    expire: expire.millisecondsSinceEpoch ~/ 1000,
+  );
+}
+
 Future<_StubNodesNotifier> _pumpPage(
   WidgetTester tester,
   NodesState state, {
@@ -165,7 +175,10 @@ void main() {
     expect(find.text('已用 / 总量：300 MB / 1 GB'), findsOneWidget);
     expect(find.textContaining('（剩'), findsOneWidget);
     expect(find.text('上次更新：2026-11-23 08:30'), findsOneWidget);
-    expect(find.text('流量口径：仅中转（直连流量不计入）'), findsOneWidget);
+    expect(
+      find.text('流量口径：仅中转（直连流量不计入）；限流只按中转流量算，直连不限流（节点侧按人计量未上线）'),
+      findsOneWidget,
+    );
   });
 
   testWidgets('无 userinfo 头：三格显示“—”不编数据', (tester) async {
@@ -271,5 +284,59 @@ void main() {
     await tester.tap(find.text('取消'));
     await tester.pumpAndSettle();
     expect(stub.calls, isNot(contains('clear')));
+  });
+
+  // 切片 8：限流展示（进度条 + 状态文案），只按 userinfo 头算。
+  testWidgets('已用 85%：进度条 + 接近限额提示', (tester) async {
+    await _pumpPage(
+      tester,
+      NodesState(
+        status: NodesStatus.loaded,
+        userinfo: _limitedInfo(usedMB: 870),
+      ),
+    );
+    expect(find.byType(LinearProgressIndicator), findsOneWidget);
+    expect(
+      find.text('已用 85%，接近限额，超量后节点可能停用'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('已超量：超量提示，不写成“已停用”定论', (tester) async {
+    await _pumpPage(
+      tester,
+      NodesState(
+        status: NodesStatus.loaded,
+        userinfo: _limitedInfo(usedMB: 1100),
+      ),
+    );
+    expect(find.byType(LinearProgressIndicator), findsOneWidget);
+    expect(
+      find.text('已超量：面板可能已停用该订阅，节点连不上时请联系管理员'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('不限量：不显示进度条与限流提示', (tester) async {
+    await _pumpPage(
+      tester,
+      NodesState(
+        status: NodesStatus.loaded,
+        userinfo: _limitedInfo(usedMB: 100, totalMB: 0),
+      ),
+    );
+    expect(find.byType(LinearProgressIndicator), findsNothing);
+    expect(find.textContaining('接近限额'), findsNothing);
+    expect(find.textContaining('已超量'), findsNothing);
+  });
+
+  testWidgets('无 userinfo 头：不显示进度条与限流提示', (tester) async {
+    await _pumpPage(
+      tester,
+      const NodesState(status: NodesStatus.loaded),
+    );
+    expect(find.byType(LinearProgressIndicator), findsNothing);
+    expect(find.textContaining('接近限额'), findsNothing);
+    expect(find.textContaining('已超量'), findsNothing);
   });
 }

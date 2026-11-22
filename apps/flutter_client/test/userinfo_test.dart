@@ -155,4 +155,63 @@ void main() {
       expect(remainingText(info(total: 1000)), '—');
     });
   });
+
+  group('trafficLimitStatus / trafficLimitText（切片 8）', () {
+    test('79% 不提醒', () {
+      final info = SubscriptionUserinfo.parse(
+        'upload=790; download=0; total=1000; expire=1890000000',
+      )!;
+      expect(trafficLimitStatus(info), TrafficLimitStatus.none);
+      expect(trafficLimitText(info), isNull);
+    });
+
+    test('80% 接近限额，文案带百分比', () {
+      final info = SubscriptionUserinfo.parse(
+        'upload=800; download=0; total=1000; expire=1890000000',
+      )!;
+      expect(trafficLimitStatus(info), TrafficLimitStatus.approaching);
+      expect(trafficLimitText(info), '已用 80%，接近限额，超量后节点可能停用');
+    });
+
+    test('85% 接近限额', () {
+      final info = SubscriptionUserinfo.parse(
+        'upload=850; download=0; total=1000; expire=1890000000',
+      )!;
+      expect(trafficLimitStatus(info), TrafficLimitStatus.approaching);
+      expect(trafficLimitText(info), contains('已用 85%'));
+    });
+
+    test('已用完（剩余 0）算超量，文案只说“可能停用”不写成定论', () {
+      final info = SubscriptionUserinfo.parse(
+        'upload=1000; download=0; total=1000; expire=1890000000',
+      )!;
+      expect(trafficLimitStatus(info), TrafficLimitStatus.exceeded);
+      expect(
+        trafficLimitText(info),
+        '已超量：面板可能已停用该订阅，节点连不上时请联系管理员',
+      );
+    });
+
+    test('超量（已用 > 总量）算超量', () {
+      final info = SubscriptionUserinfo.parse(
+        'upload=600; download=500; total=1000; expire=1890000000',
+      )!;
+      expect(trafficLimitStatus(info), TrafficLimitStatus.exceeded);
+    });
+
+    test('不限量不提醒', () {
+      final info = SubscriptionUserinfo.parse(
+        'upload=900; download=0; total=0; expire=1890000000',
+      )!;
+      expect(trafficLimitStatus(info), TrafficLimitStatus.none);
+      expect(trafficLimitText(info), isNull);
+    });
+
+    test('没有头或已用未知不提醒，不编数据', () {
+      expect(trafficLimitStatus(null), TrafficLimitStatus.none);
+      expect(trafficLimitText(null), isNull);
+      final info = SubscriptionUserinfo.parse('expire=1890000000')!;
+      expect(trafficLimitStatus(info), TrafficLimitStatus.none);
+    });
+  });
 }

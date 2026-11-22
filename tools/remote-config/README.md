@@ -9,16 +9,19 @@
 
 ```sh
 # 生成一对新密钥（私钥只存你指定的路径，绝不进仓库）：
-python3 sign.py generate-key --private /tmp/remote-config-private.pem
+python3 sign.py generate-key --private ~/workspace/user/remote-config-private-key.pem
 # 输出 base64 公钥：把它编译进客户端 lib/brand/remote_config_keys.dart。
 # 换公钥才须重新打包（公钥几乎不换）。
 
 # 看一把私钥对应的公钥（换公钥时用）：
-python3 sign.py pubkey --key /tmp/remote-config-private.pem
+python3 sign.py pubkey --key ~/workspace/user/remote-config-private-key.pem
 ```
 
 密钥保管（DEV-PLAN D14）：私钥由助手出、助手保管，各备两份离线备份，
 密码分开保管；绝不进仓库、不进面板、不进 Worker 代码。
+**私钥不要放 /tmp**：2026-11-23 03:05 切片 7 的私钥因只放在 /tmp 被
+清空丢了，已编译进客户端的公钥随之作废，只能轮换密钥对。
+持久路径是 `~/workspace/user/remote-config-private-key.pem`（600 权限）。
 `.gitignore` 已把 `*.pem` / `*.key` / `ed25519-private.pem` /
 `remote-config-private.key` 排除在外，误放也会被拦住。
 
@@ -26,12 +29,12 @@ python3 sign.py pubkey --key /tmp/remote-config-private.pem
 
 ```sh
 # payload.json 是不含 signature 的配置内容（字段见 docs/api/remote-config.md）。
-python3 sign.py sign --key /tmp/remote-config-private.pem \
+python3 sign.py sign --key ~/workspace/user/remote-config-private-key.pem \
     --config payload.json --out client-config.json
 
 # --bump：沿用上一份信封的 config_version + 1（改配置必升版本，
 # 客户端只接受比本地缓存新的版本，不回退）：
-python3 sign.py sign --key /tmp/remote-config-private.pem \
+python3 sign.py sign --key ~/workspace/user/remote-config-private-key.pem \
     --config payload.json --out client-config.json --bump prev.json
 
 # 验一份信封（公钥是编译进客户端的那把 base64）：

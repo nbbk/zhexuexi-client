@@ -155,18 +155,33 @@ class _HomePageState extends ConsumerState<HomePage> {
 
   /// 强制更新说明（切片 7）：配置要求强制更新，且当前版本低于最低版本。
   /// 只用于旧版解析不了新订阅格式这种真断裂场景，不拿来当日常推送。
-  /// 下载地址随打包验收（切片 8）接入，这里只说明原因、不假装能下载。
+  /// 下载地址（切片 8）：远程配置的 `download_url`，有就显示成可复制
+  /// 的文本（不引 url_launcher，不在本机假装能打开浏览器）；
+  /// 配置里没给时不写地址，只说明原因。
   Future<void> _showForceUpdateDialog() async {
     final config = ref.read(remoteConfigProvider).config;
+    final downloadUrl = config.downloadUrl;
     if (!mounted) return;
     await showDialog<void>(
       context: context,
       barrierDismissible: false,
       builder: (context) => AlertDialog(
         title: const Text('需要升级客户端'),
-        content: Text(
-          config.forceUpdateMessage ??
-              '当前版本无法解析新订阅格式，请升级到最新版。',
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              config.forceUpdateMessage ??
+                  '当前版本无法解析新订阅格式，请升级到最新版。',
+            ),
+            if (downloadUrl.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              const Text('下载地址（长按复制）：'),
+              const SizedBox(height: 4),
+              SelectableText(downloadUrl),
+            ],
+          ],
         ),
         actions: [
           TextButton(
@@ -370,6 +385,20 @@ class _HomePageState extends ConsumerState<HomePage> {
           style: theme.textTheme.bodySmall,
           textAlign: TextAlign.center,
         ),
+        // 限流状态行（切片 8）：只在接近限额 / 已超量时出现，
+        // 文案与我的页订阅卡片同一套口径。
+        if (trafficLimitText(info) != null) ...[
+          const SizedBox(height: 4),
+          Text(
+            trafficLimitText(info)!,
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: trafficLimitStatus(info) == TrafficLimitStatus.exceeded
+                  ? theme.colorScheme.error
+                  : theme.colorScheme.onSurface,
+            ),
+            textAlign: TextAlign.center,
+          ),
+        ],
         const SizedBox(height: 16),
         // 模式切换（三档，切换后重载配置，失败回滚旧模式）。
         SegmentedButton<String>(
