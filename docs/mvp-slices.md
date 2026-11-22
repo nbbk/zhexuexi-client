@@ -33,5 +33,5 @@
 - [x] 切片 4（2026-11-23）：节点测速＋自动选节点。flutter test 123/123、analyze 零问题；真 1.14.4 `check`＋`run` 冒烟全过（Proxy default=日本-直连）。delay 接口成功路径只在假服务器上验过，真机/真节点未验（见 CHANGELOG）。
 - [x] 切片 5（2026-11-23）：我的页。flutter test 151/151、analyze 零问题；新增 connectivity_plus 7.3.2（Wi-Fi 检测）。手动刷新＋每天自动更新一次（仅 Wi-Fi）＋更新失败常驻显示原因；公告走面板 public-info；换绑/退出登录接线。
 - [x] 切片 6（2026-11-23）：设置页＋模式与规则＋DNS 防泄漏。flutter test 185/185、analyze 零问题；真 1.14.4 `check` 6/6＋`run` 冒烟 4 份全过（TUN 开启的只做 `check`，建 TUN 设备要权限，真机再验）。
-- [ ] 切片 7：远程配置中心＋品牌远程替换。
+- [x] 切片 7（2026-11-23）：远程配置中心＋品牌远程替换。flutter test 208/208、analyze 零问题；三地址链（面板/Worker/GitHub Raw）＋Ed25519 验签（真密钥 fixture 验过）＋本地缓存最后一份好配置；订阅 404 先拉远程配置再重试换地址（令牌不变）；设置页检查更新接通；公告优先走远程配置；强制更新拦大开关。面板接口 D10 未拍板、Worker 路由未加，GitHub Raw 的 client-config.json 尚未发布；私钥只有 /tmp 里一份，须按 D14 备两份离线备份。
 - [ ] 切片 8：流量限流展示＋打包验收。

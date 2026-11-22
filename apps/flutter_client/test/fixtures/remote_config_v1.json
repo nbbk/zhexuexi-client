@@ -1,0 +1,34 @@
+{
+  "config_version": 1,
+  "updated_at": "2026-11-23T02:00:00+08:00",
+  "min_app_version": "0.1.0",
+  "force_update": false,
+  "brand": {
+    "app_name": "哲学系",
+    "logo_url": "https://config.example.com/zhexuexi/logo.png",
+    "primary_color": "#16324F",
+    "accent_color": "#E8A317",
+    "support_url": "https://example.com/support"
+  },
+  "panel": {
+    "panel_domain": "panel.example.com",
+    "min_panel_version": "1.3.29",
+    "subscription_url": "https://sub.example.com/x9f2/sub_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "subscription_backup_urls": [
+      "https://sub2.example.com/x9f2"
+    ],
+    "subscription_format": "singbox"
+  },
+  "announcement": {
+    "id": "20261123-test",
+    "title": "测试公告",
+    "body": "这是一条测试公告。",
+    "url": "https://example.com/notice/test"
+  },
+  "features": {
+    "auto_select": true,
+    "tun_default": false,
+    "show_traffic": true
+  },
+  "signature": "1HccQSvfFAWK5LuMDF+gkXCcE48CLxGZ80McqoX2S+Nu/W/VvNhPxqk5R5Qy4ZugbAvzENLxp1Xw329aSwe9Bw=="
+}

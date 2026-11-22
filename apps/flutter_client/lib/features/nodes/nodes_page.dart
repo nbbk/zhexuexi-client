@@ -116,6 +116,34 @@ class _NodesPageState extends ConsumerState<NodesPage> {
             ],
           ),
         ),
+        // 订阅地址刚被远程配置换过（切片 7）：顶部显示一句，点叉关掉。
+        if (state.addressNotice != null)
+          Container(
+            width: double.infinity,
+            margin: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: Colors.blue.shade50,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    state.addressNotice!,
+                    style: TextStyle(color: Colors.blue.shade900),
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.close),
+                  tooltip: '关闭提示',
+                  onPressed: () => ref
+                      .read(nodesProvider.notifier)
+                      .dismissAddressNotice(),
+                ),
+              ],
+            ),
+          ),
         // 测速失败的原因（核心未启动等）与自动选择的解释常驻显示，
         // 不只闪一下 SnackBar：用户回来看得到“为什么”。
         if (state.speedTestError != null)

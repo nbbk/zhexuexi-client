@@ -100,6 +100,31 @@ class SubscriptionService {
     await clearToken();
   }
 
+  /// 只换订阅地址的 base（不含令牌），令牌不动。
+  /// 远程配置换地址时用（切片 7）：令牌存在面板里，跟订阅路径走，
+  /// 只换地址、不换令牌，用户无感知。
+  Future<void> updateBaseUrl(String base) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_baseUrlKey, base.replaceAll(RegExp(r'/+$'), ''));
+  }
+
+  /// 取一条订阅地址的 base（去掉令牌那一段）。
+  /// 完整订阅链接的最后一段是令牌（`sub_` 开头），去掉它；
+  /// 不是完整链接（最后一段不是令牌）时原样当 base 用。
+  /// 远程配置里的备用地址可能是不带令牌的 base，也可能带了占位令牌，
+  /// 两种都认。
+  static String baseOf(String url) {
+    final uri = Uri.tryParse(url.trim());
+    if (uri == null || !uri.hasScheme || uri.host.isEmpty) return '';
+    final segments = uri.pathSegments;
+    if (segments.isEmpty) return uri.origin;
+    final last = segments.last;
+    final baseSegments =
+        last.startsWith('sub_') ? segments.sublist(0, segments.length - 1) : segments;
+    if (baseSegments.isEmpty) return uri.origin;
+    return uri.replace(pathSegments: baseSegments).toString().replaceAll(RegExp(r'/+$'), '');
+  }
+
   /// 拉一次订阅。
   ///
   /// [subscriptionUrl] 是面板给的完整订阅地址（不含令牌，令牌拼在路径里，

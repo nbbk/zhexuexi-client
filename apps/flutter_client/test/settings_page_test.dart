@@ -5,6 +5,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_sing_box/flutter_sing_box.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -16,6 +17,8 @@ import 'package:zhexuexi_client/core/node_model.dart';
 import 'package:zhexuexi_client/core/singbox_core.dart';
 import 'package:zhexuexi_client/features/settings/settings_page.dart';
 import 'package:zhexuexi_client/services/nodes_notifier.dart';
+import 'package:zhexuexi_client/services/remote_config_notifier.dart';
+import 'package:zhexuexi_client/services/remote_config_service.dart';
 
 /// 插件 fake：只记调用、不碰平台通道，状态由测试手动推。
 class _FakePlugin extends FlutterSingBox {
@@ -116,6 +119,7 @@ void main() {
     WidgetTester tester, {
     List<Node> nodes = const [],
     String? selected,
+    List<Override> extraOverrides = const [],
   }) async {
     // 设置页内容很长（高级展开后更多），用高视口一次全渲染。
     tester.view.physicalSize = const Size(800, 3000);
@@ -128,6 +132,7 @@ void main() {
           nodesProvider.overrideWith(
             () => _StubNodesNotifier(nodes: nodes, selected: selected),
           ),
+          ...extraOverrides,
         ],
         child: const MaterialApp(
           home: Scaffold(body: SettingsPage()),
@@ -310,14 +315,60 @@ void main() {
     expect(node.latencyMs, isNull);
   });
 
-  testWidgets('检查更新：说明随远程配置中心接入，不假装已检查', (
+  testWidgets('检查更新：拉不到配置时报检查失败，不假装已检查', (
     tester,
   ) async {
-    await pumpSettings(tester);
-    await tester.tap(find.text('检查更新'));
-    await tester.pumpAndSettle();
+    // 地址链为空：一次都不拉，直接 failed。
+    final failing = RemoteConfigService(configUrls: const []);
+    await pumpSettings(
+      tester,
+      extraOverrides: [
+        remoteConfigServiceProvider.overrideWithValue(failing),
+      ],
+    );
+    await tapAsync(tester, find.text('检查更新'));
     expect(find.textContaining('当前版本 0.1.0'), findsOneWidget);
-    expect(find.textContaining('切片 7'), findsOneWidget);
+    expect(find.textContaining('检查失败，请检查网络后重试'), findsOneWidget);
+  });
+
+  testWidgets('检查更新：拉到新版时报已更新到配置版本', (tester) async {
+    // 真密钥签名的 fixture（test/fixtures/remote_config_v1.json，
+    // v1）：假 Dio 返回它，服务用编译进客户端的公钥验签。
+    // 读文件是真实 IO，必须包进 runAsync（假异步区里裸 await
+    // 真实 IO 永远等不到完成，见 readWrittenConfig 的注释）。
+    late final String envelope;
+    await tester.runAsync(() async {
+      envelope = await File(
+        'test/fixtures/remote_config_v1.json',
+      ).readAsString();
+    });
+    final dio = Dio();
+    dio.interceptors.add(
+      InterceptorsWrapper(
+        onRequest: (options, handler) {
+          handler.resolve(
+            Response<String>(
+              requestOptions: options,
+              statusCode: 200,
+              data: envelope,
+            ),
+          );
+        },
+      ),
+    );
+    final service = RemoteConfigService(
+      dio: dio,
+      configUrls: const ['http://127.0.0.1:18081/client-config.json'],
+    );
+    await pumpSettings(
+      tester,
+      extraOverrides: [
+        remoteConfigServiceProvider.overrideWithValue(service),
+      ],
+    );
+    await tapAsync(tester, find.text('检查更新'));
+    expect(find.textContaining('当前版本 0.1.0'), findsOneWidget);
+    expect(find.textContaining('已更新到配置 v1'), findsOneWidget);
   });
 
   test('清除测速缓存（Notifier 层）：延迟与上次测速时间清零，节点不动', () {

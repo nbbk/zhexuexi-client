@@ -12,6 +12,8 @@ import '../../core/singbox_core.dart';
 import '../../services/custom_rules_notifier.dart';
 import '../../services/diagnostics_service.dart';
 import '../../services/nodes_notifier.dart';
+import '../../services/remote_config_notifier.dart';
+import '../../services/remote_config_service.dart';
 import '../../services/routing_mode_notifier.dart';
 import '../../services/settings_notifier.dart';
 
@@ -23,8 +25,8 @@ import '../../services/settings_notifier.dart';
 /// - 高级（默认折叠）：TUN 开关、DNS 配置查看（防泄漏已开启、不可
 ///   关闭）、自定义规则、分应用代理（Android 专属，后续版本，置灰）、
 ///   诊断（导出诊断包、连接检测）、清除缓存；
-/// - 关于：客户端版本、sing-box 核心版本、面板版本要求、检查更新
-///   （检查更新随远程配置中心接入，切片 7；这里不假装已检查过）。
+/// - 关于：客户端版本、sing-box 核心版本、面板版本要求、远程配置版本、
+///   检查更新（切片 7 接远程配置中心：拉到新版就换品牌与订阅地址）。
 ///
 /// 开关只记本地状态的是两处（通知、开机自启 / 后台保活）：偏好已
 /// 存 shared_preferences，功能本身后续版本接入，行内副标题写明，
@@ -204,14 +206,27 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     _showSnack('已清除测速缓存');
   }
 
-  /// 检查更新：更新通道随远程配置中心接入（切片 7），这里不假装
-  /// 已经检查过，只说明当前版本与后续安排。
+  /// 检查更新（切片 7）：拉一次远程配置，按结果给提示。
+  /// - 有新版：品牌已同步，订阅地址下次更新时生效；
+  /// - 已是最新：报当前配置版本；
+  /// - 拉不到：用上次的配置，不报错、不静默。
   Future<void> _checkUpdate() async {
+    final result = await ref.read(remoteConfigProvider.notifier).refresh();
+    if (!mounted) return;
+    final message = switch (result.status) {
+      RemoteConfigRefreshStatus.updated =>
+        '已更新到配置 v${result.config.configVersion}。品牌已同步，订阅地址下次更新时生效。',
+      RemoteConfigRefreshStatus.upToDate =>
+        '已是最新配置（v${result.config.configVersion}）。',
+      RemoteConfigRefreshStatus.offlineCached =>
+        '配置中心暂时连不上，正在用上次的配置（v${result.config.configVersion}）。',
+      RemoteConfigRefreshStatus.failed => '检查失败，请检查网络后重试。',
+    };
     await showDialog<void>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('检查更新'),
-        content: const Text('当前版本 0.1.0。\n检查更新随远程配置中心（切片 7）接入，暂不在客户端内检查。'),
+        content: Text('当前版本 0.1.0。\n$message'),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(),
@@ -245,6 +260,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     final settings = ref.watch(settingsProvider);
     final modeState = ref.watch(routingModeProvider);
     final rules = ref.watch(customRulesProvider);
+    final remoteState = ref.watch(remoteConfigProvider);
 
     return ListView(
       padding: const EdgeInsets.all(16),
@@ -391,8 +407,15 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
         ),
         const ListTile(title: Text('面板版本要求'), trailing: Text('≥ 1.3.29')),
         ListTile(
+          title: const Text('远程配置版本'),
+          trailing: Text(
+            'v${remoteState.config.configVersion}'
+            '${remoteState.offline ? '（上次的配置）' : ''}',
+          ),
+        ),
+        ListTile(
           title: const Text('检查更新'),
-          subtitle: const Text('随远程配置中心接入'),
+          subtitle: const Text('拉一次远程配置，品牌与订阅地址跟着换'),
           onTap: _checkUpdate,
         ),
       ],

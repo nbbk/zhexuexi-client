@@ -7,6 +7,7 @@ import '../core/node_model.dart';
 import '../core/singbox_config.dart';
 import '../core/singbox_core.dart';
 import '../core/userinfo.dart';
+import 'remote_config_notifier.dart';
 import 'subscription_parser.dart';
 import 'subscription_service.dart';
 
@@ -47,6 +48,7 @@ class NodesState {
     this.selectionReason,
     this.speedTestAt,
     this.autoSelectEnabled = false,
+    this.addressNotice,
   });
 
   /// 节点列表。
@@ -98,6 +100,11 @@ class NodesState {
   /// 有明显更快的节点才自动切换。
   final bool autoSelectEnabled;
 
+  /// 订阅地址刚被远程配置换过时的提示（切片 7）：
+  /// “订阅地址已变，已自动切换到新地址”，节点页顶部显示一次，
+  /// 用户关掉后清空。成功换地址才有，平时为 null。
+  final String? addressNotice;
+
   /// 中转节点（名字以 -中转结尾）。
   List<Node> get relayNodes =>
       nodes.where((n) => n.source == NodeSource.relay).toList();
@@ -140,6 +147,7 @@ class NodesState {
     Object? selectionReason = _unset,
     Object? speedTestAt = _unset,
     bool? autoSelectEnabled,
+    Object? addressNotice = _unset,
   }) {
     return NodesState(
       nodes: nodes ?? this.nodes,
@@ -166,6 +174,9 @@ class NodesState {
           ? this.speedTestAt
           : speedTestAt as DateTime?,
       autoSelectEnabled: autoSelectEnabled ?? this.autoSelectEnabled,
+      addressNotice: addressNotice == _unset
+          ? this.addressNotice
+          : addressNotice as String?,
     );
   }
 }
@@ -253,6 +264,11 @@ class NodesNotifier extends Notifier<NodesState> {
   }
 
   /// 拉一次订阅并更新列表。未绑定时保持 initial 状态（界面显示绑定入口）。
+  ///
+  /// 订阅 404（令牌查无此人）时不直接报“订阅已失效”：先拉远程配置
+  /// （切片 7），配置里有新订阅地址就换地址重试一次（令牌不变，
+  /// 只换地址）；新地址也拉不到才报原错。重试成功时节点页顶部
+  /// 显示一句“订阅地址已变，已自动切换到新地址”。
   Future<void> refresh() async {
     final service = ref.read(subscriptionServiceProvider);
     final url = await service.readSubscriptionUrl();
@@ -262,26 +278,12 @@ class NodesNotifier extends Notifier<NodesState> {
     }
     state = state.copyWith(status: NodesStatus.loading);
     try {
-      final result = await service.fetchNodes(subscriptionUrl: url);
-      // 刷新后节点是新对象，延迟清零重测；选中名字还在就保留，
-      // 不在了回落默认规则；自动选择开关保持。
-      final prevSelected = state.selectedNodeName;
-      final stillThere = prevSelected != null &&
-          result.nodes.any((n) => n.name == prevSelected);
-      final selected = stillThere
-          ? prevSelected
-          : SingboxConfigBuilder.defaultNodeName(result.nodes);
-      state = NodesState(
-        nodes: result.nodes,
-        failedCount: result.failedCount,
-        userinfo: result.userinfo,
-        status: NodesStatus.loaded,
-        lastUpdated: DateTime.now(),
-        format: result.format,
-        selectedNodeName: selected,
-        autoSelectEnabled: state.autoSelectEnabled,
-      );
+      await _loadFrom(url);
     } on SubscriptionException catch (e) {
+      if (e.kind == SubscriptionErrorKind.invalid) {
+        final switched = await _retryWithRemoteConfig(url);
+        if (switched) return;
+      }
       state = state.copyWith(
         status: NodesStatus.error,
         errorMessage: e.message,
@@ -292,6 +294,78 @@ class NodesNotifier extends Notifier<NodesState> {
         status: NodesStatus.error,
         errorMessage: '网络不通，检查订阅地址',
       );
+    }
+  }
+
+  /// 用指定地址拉一次订阅并写进状态（成功时清掉错误提示）。
+  /// 抛 [SubscriptionException] 由调用方处理。
+  Future<void> _loadFrom(String url) async {
+    final service = ref.read(subscriptionServiceProvider);
+    final result = await service.fetchNodes(subscriptionUrl: url);
+    // 刷新后节点是新对象，延迟清零重测；选中名字还在就保留，
+    // 不在了回落默认规则；自动选择开关保持。
+    final prevSelected = state.selectedNodeName;
+    final stillThere = prevSelected != null &&
+        result.nodes.any((n) => n.name == prevSelected);
+    final selected = stillThere
+        ? prevSelected
+        : SingboxConfigBuilder.defaultNodeName(result.nodes);
+    state = NodesState(
+      nodes: result.nodes,
+      failedCount: result.failedCount,
+      userinfo: result.userinfo,
+      status: NodesStatus.loaded,
+      lastUpdated: DateTime.now(),
+      format: result.format,
+      selectedNodeName: selected,
+      autoSelectEnabled: state.autoSelectEnabled,
+      addressNotice: state.addressNotice,
+    );
+  }
+
+  /// 订阅 404 后的重试：拉远程配置，按“主订阅地址 → 备用地址”
+  /// 的顺序试新地址（只换 base、令牌不变），第一个拉通的就用。
+  /// 成功返回 true（状态已写好，含换地址提示）；都没拉通返回 false，
+  /// 本地绑定不动，调用方报原来的 404 错误。
+  Future<bool> _retryWithRemoteConfig(String oldUrl) async {
+    // 走 notifier 的 refresh：缓存与界面上的品牌/订阅地址一起换，
+    // 不只换 service 里的缓存。
+    final configResult =
+        await ref.read(remoteConfigProvider.notifier).refresh();
+    final config = configResult.config;
+    final oldBase = SubscriptionService.baseOf(oldUrl);
+    final service = ref.read(subscriptionServiceProvider);
+    final candidates = <String>[
+      config.subscriptionUrl,
+      ...config.subscriptionBackupUrls,
+    ];
+    for (final candidate in candidates) {
+      final base = SubscriptionService.baseOf(candidate);
+      if (base.isEmpty || base == oldBase) continue;
+      await service.updateBaseUrl(base);
+      try {
+        final url = await service.readSubscriptionUrl();
+        if (url == null) continue;
+        await _loadFrom(url);
+        state = state.copyWith(
+          addressNotice: '订阅地址已变，已自动切换到新地址',
+        );
+        return true;
+      } on SubscriptionException {
+        continue;
+      } catch (_) {
+        continue;
+      }
+    }
+    // 候选地址都没拉通：把本地绑定换回旧地址，别留一个半截的新地址。
+    await service.updateBaseUrl(oldBase);
+    return false;
+  }
+
+  /// 关掉节点页顶部的“订阅地址已变”提示。
+  void dismissAddressNotice() {
+    if (state.addressNotice != null) {
+      state = state.copyWith(addressNotice: null);
     }
   }
 

@@ -11,6 +11,7 @@ import '../../core/singbox_core.dart';
 import '../../core/userinfo.dart';
 import '../../services/custom_rules_notifier.dart';
 import '../../services/nodes_notifier.dart';
+import '../../services/remote_config_notifier.dart';
 import '../../services/routing_mode_notifier.dart';
 import '../../services/settings_notifier.dart';
 
@@ -83,10 +84,15 @@ class _HomePageState extends ConsumerState<HomePage> {
 
   /// 大开关：已启动时停核心；未启动时先按当前模式生成配置（校验失败
   /// 保留旧配置、不启动），再启动核心。没有节点时不启动，提示先绑定订阅。
+  /// 强制更新时（切片 7）不启动，只弹升级说明。
   Future<void> _onToggle() async {
     if (_busy ||
         _status == CoreStatus.starting ||
         _status == CoreStatus.stopping) {
+      return;
+    }
+    if (ref.read(remoteConfigProvider).forceUpdateRequired) {
+      await _showForceUpdateDialog();
       return;
     }
     final core = ref.read(coreServiceProvider);
@@ -147,6 +153,37 @@ class _HomePageState extends ConsumerState<HomePage> {
     if (!ok && mounted) _showSnack('切换失败，已保持原模式');
   }
 
+  /// 强制更新说明（切片 7）：配置要求强制更新，且当前版本低于最低版本。
+  /// 只用于旧版解析不了新订阅格式这种真断裂场景，不拿来当日常推送。
+  /// 下载地址随打包验收（切片 8）接入，这里只说明原因、不假装能下载。
+  Future<void> _showForceUpdateDialog() async {
+    final config = ref.read(remoteConfigProvider).config;
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: const Text('需要升级客户端'),
+        content: Text(
+          config.forceUpdateMessage ??
+              '当前版本无法解析新订阅格式，请升级到最新版。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('知道了'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 配置中心重试（离线提示条上的“重试”）：拉一次远程配置，
+  /// 拉到了提示条自动消失，拉不到还留着。
+  Future<void> _retryConfig() async {
+    await ref.read(remoteConfigProvider.notifier).refresh();
+  }
+
   void _showSnack(String message) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
@@ -191,6 +228,7 @@ class _HomePageState extends ConsumerState<HomePage> {
     final theme = Theme.of(context);
     final nodesState = ref.watch(nodesProvider);
     final modeState = ref.watch(routingModeProvider);
+    final remoteState = ref.watch(remoteConfigProvider);
     final info = nodesState.userinfo;
     final currentNode = nodesState.selectedNode;
     final switching = _status == CoreStatus.starting ||
@@ -203,6 +241,45 @@ class _HomePageState extends ConsumerState<HomePage> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
+        // 远程配置状态条（切片 7）：拉不到配置时给一句提示，不静默；
+        // 强制更新时拦住大开关（点开关弹升级说明）。
+        if (remoteState.forceUpdateRequired)
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.system_update_outlined),
+              title: const Text('当前版本过低，请升级后使用'),
+              subtitle: Text(
+                '最低可用版本 ${remoteState.config.minAppVersion}',
+              ),
+              trailing: TextButton(
+                onPressed: _showForceUpdateDialog,
+                child: const Text('查看详情'),
+              ),
+            ),
+          ),
+        if (remoteState.offline)
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.cloud_off_outlined),
+              title: const Text('配置中心暂时连不上，正在用上次的配置'),
+              trailing: TextButton(
+                onPressed: _retryConfig,
+                child: const Text('重试'),
+              ),
+            ),
+          ),
+        if (remoteState.source == RemoteConfigSource.bundled)
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.cloud_off_outlined),
+              title: const Text('首次启动需要联网拉取配置'),
+              subtitle: const Text('拉不到配置也能先手动粘贴订阅使用'),
+              trailing: TextButton(
+                onPressed: _retryConfig,
+                child: const Text('重试'),
+              ),
+            ),
+          ),
         // 公告栏（阶段 1 接面板公告；切片 5 前占位）。
         const Card(
           child: ListTile(
