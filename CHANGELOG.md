@@ -102,4 +102,16 @@
 - 换绑：弹窗粘贴新链接调 `bindAndRefresh`，错了原因显示在弹窗里、不关弹窗；退出登录：确认后调 `clear()` 清绑定与本地配置（面板侧用户不受影响）。
 - 测试：`flutter test` 151/151 全过（基线 123＋新增 28：我的页 10、自动更新 7、公告 6、三格共享文案 5），`flutter analyze` 零问题。测试里修了一个真坑：ListView 下面的卡片在测试视口外不会构建，点之前要用 `scrollUntilVisible` 滚到可见（`ensureVisible` 找不到未构建的 widget）。未改 sing-box 配置生成逻辑，不用真 sing-box 冒烟。
 - 未核实：真面板联调（等用户给测试订阅）、真机、APK、Win 构建；Wi-Fi 检测（connectivity_plus）在真机上尚未验过；公告接口经 Worker 域名是否通尚未验过（拉不到时回退缓存/“暂无公告”）。
-- 未做：设置页＋规则＋DNS 防泄漏（切片 6）、远程配置中心＋品牌替换（切片 7）、限流展示＋打包验收（切片 8）。
+- 未做：远程配置中心＋品牌替换（切片 7）、限流展示＋打包验收（切片 8）。
+
+### MVP 切片 6：设置页＋模式与规则＋DNS 防泄漏（2026-11-23）
+
+- 设置页（`lib/features/settings/settings_page.dart`，占位改成真实页，两层）：常用——分流模式三段式（与首页同一套 `RoutingModeNotifier`，改一处两处都变）、订阅自动更新开关（关掉后 App 启动与我的页打开时不再自动拉，手动刷新不受影响）、通知开关、语言（暂只简体中文，置灰）、开机自启（Windows 才显示）/ 后台保活（Android 才显示）；高级（默认折叠）——TUN 开关、DNS 配置查看、自定义规则、分应用代理（Android 专属，后续版本，置灰）、诊断（导出诊断包、连接检测）、清除缓存；关于——客户端版本 0.1.0、sing-box 核心版本、面板版本要求 ≥ 1.3.29、检查更新（随远程配置中心接入，切片 7；这里不假装已检查过）。
+- 自定义规则（`lib/core/custom_rule.dart` + `lib/services/custom_rules_notifier.dart`）：一条规则 = 域名后缀 + 动作（走代理 / 直连）+ 开关，存 shared_preferences（JSON 列表，只含域名与动作）；域名规整（大小写、前导 `*.` / `.` 剥掉，带协议/路径/端口/空格/通配、单段顶级域拒绝）；规则插在内置规则前面（先命中先走，用户优先），DNS 映射同样在前（走代理的域名走 `dns-proxy`，直连的走 `dns-direct`），三种模式都生效（全局模式下自定义直连是唯一的例外口，直连模式下自定义代理是唯一的例外口）；没有节点时走代理的规则不进配置（没有 `Proxy` 组可指），直连的照常进；关闭的规则保留在列表里但不进配置。
+- TUN 开关（`lib/services/settings_notifier.dart` 的 `tun` + `SingboxConfigBuilder.build` 的 `tunEnabled`）：开启后配置里加一条 `tun` 入站（tun0、mtu 9000、172.19.0.1/30、auto_route、strict_route、gvisor 栈）；设置页切换时有节点就立即重写配置（核心在跑时重载），写失败拨回原开关；没节点时只记偏好，下次生成配置时生效。开机自启 / 后台保活 / 通知开关只存偏好（系统级接线与推送功能后续版本接入，行内副标题写明，不让用户以为点了就有用）。
+- DNS 防泄漏（设置页可查看、不可关闭）：DNS 摘要由 `SingboxConfigBuilder.dnsSummary` 一处出（DoH 1.1.1.1 直连、DoH dns.google 经代理、DoT 8.8.8.8:853 兜底、仅 IPv4、不回落明文 UDP 53、防泄漏已开启不可关闭），设置页直接渲染这份，不另写一份文案。DNS 本身沿用切片 2 的形状，没改。
+- 诊断（`lib/services/diagnostics_service.dart`）：导出诊断包是纯文本（客户端版本、系统版本、核心版本与状态、模式、订阅是否绑定、节点数、当前节点名、延迟、DNS 摘要、TUN 与自定义规则数、最近错误），输入结构里根本没有订阅链接、令牌与节点地址三样，想塞也塞不进来；连接检测只查本机两件事（核心在跑没跑、Clash API 127.0.0.1:9090 通不通），不发外网请求；清除缓存只清已测的节点延迟结果（`NodesNotifier.clearSpeedResults`），节点列表与配置不动。
+- 接线：`CoreService.applyNodes` 加 `customRules` 与 `tunEnabled` 参数（默认空/关，老调用不受影响）；首页大开关与模式切换（成功与回滚两路）都把设置页的规则与 TUN 带进配置；订阅自动更新入口先读设置开关。
+- 测试：`flutter test` 185/185 全过（基线 151＋新增 34：自定义规则 13、诊断 5、配置生成补 4、设置页 12），`flutter analyze` 零问题。真 1.14.4 校验：6 份配置（规则/全局/直连 × 有节点/空配置，带自定义规则；另 2 份 TUN 开启）`check` 全过；`run` 冒烟 4 份（TUN 关闭的 4 份）均起得来，Clash API 返回版本、无 FATAL/ERROR；生成配置抽查：自定义规则在 route 与 DNS 规则最前面、动作映射对、DNS 三台服务器 detour 与 server 设置与 1.3.37/1.3.38 教训一致（直连 DNS 与 DoT 不写 detour，代理 DNS detour 是大写 `Proxy`）。TUN 开启的配置只做了 `check`（建 TUN 设备要权限，真机再验）。测试里修了两个真问题：① 自定义规则 id 只用毫秒时间戳时，同毫秒内建的两条规则 id 相同、删一条会把两条都删掉——改成微秒时间戳 + 自增序号；② widget 测试体是 fake-async 区，裸 `await` 真实 IO（读文件、`SharedPreferences.getInstance()`）会死锁——真实 IO 一律包进 `tester.runAsync`（首页测试的 tapSwitch 同款做法）。
+- 未核实：真面板联调（等用户给测试订阅）、真机、APK、Win 构建；TUN 在真机上是否起得来尚未验过（只做了 `check`）；Wi-Fi 检测与公告经 Worker 域名同切片 5。
+- 未做：远程配置中心＋品牌替换（切片 7）、限流展示＋打包验收（切片 8）。

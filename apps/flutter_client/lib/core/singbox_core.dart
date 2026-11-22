@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter_sing_box/flutter_sing_box.dart';
 
 import 'config_validator.dart';
+import 'custom_rule.dart';
 import 'node_model.dart';
 import 'routing_mode.dart';
 import 'singbox_config.dart';
@@ -135,15 +136,21 @@ class CoreService {
   /// [SingboxConfigBuilder.build]），默认规则模式。
   /// [selectedNodeName]（切片 4）：selector `Proxy` 的默认出站，
   /// 没给时按默认规则（第一个直连节点，没有时第一个）。
+  /// [customRules]（切片 6）：已启用的自定义规则，插在内置规则前面。
+  /// [tunEnabled]（切片 6）：为 true 时配置里加一条 tun 入站。
   Future<ConfigApplyResult> applyNodes(
     List<Node> nodes, {
     RoutingMode mode = RoutingMode.rule,
     String? selectedNodeName,
+    List<CustomRule> customRules = const [],
+    bool tunEnabled = false,
   }) async {
     final built = SingboxConfigBuilder.build(
       nodes,
       mode: mode,
       selectedNodeName: selectedNodeName,
+      customRules: customRules,
+      tunEnabled: tunEnabled,
     );
     final errors = await _validator.validate(built.config);
     if (errors.isNotEmpty) {

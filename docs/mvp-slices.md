@@ -32,6 +32,6 @@
 - [x] 切片 3（2026-11-23）：首页大开关＋流量三格＋模式切换。flutter test 93/93、analyze 零问题；真 1.14.4 `check` 6/6＋`run` 冒烟全过，`/traffic` 真流出帧。
 - [x] 切片 4（2026-11-23）：节点测速＋自动选节点。flutter test 123/123、analyze 零问题；真 1.14.4 `check`＋`run` 冒烟全过（Proxy default=日本-直连）。delay 接口成功路径只在假服务器上验过，真机/真节点未验（见 CHANGELOG）。
 - [x] 切片 5（2026-11-23）：我的页。flutter test 151/151、analyze 零问题；新增 connectivity_plus 7.3.2（Wi-Fi 检测）。手动刷新＋每天自动更新一次（仅 Wi-Fi）＋更新失败常驻显示原因；公告走面板 public-info；换绑/退出登录接线。
-- [ ] 切片 6：设置页＋模式与规则＋DNS 防泄漏。
+- [x] 切片 6（2026-11-23）：设置页＋模式与规则＋DNS 防泄漏。flutter test 185/185、analyze 零问题；真 1.14.4 `check` 6/6＋`run` 冒烟 4 份全过（TUN 开启的只做 `check`，建 TUN 设备要权限，真机再验）。
 - [ ] 切片 7：远程配置中心＋品牌远程替换。
 - [ ] 切片 8：流量限流展示＋打包验收。

@@ -6,6 +6,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:zhexuexi_client/core/custom_rule.dart';
 import 'package:zhexuexi_client/core/node_model.dart';
 import 'package:zhexuexi_client/core/routing_mode.dart';
 import 'package:zhexuexi_client/core/singbox_config.dart';
@@ -559,6 +560,119 @@ void main() {
         _outboundsByTag(result.config)['Proxy']!['default'],
         '乙-直连',
       );
+    });
+  });
+
+  group('自定义规则与 TUN（切片 6）', () {
+    Node ruleNode(String name, NodeSource source) => Node(
+      name: name,
+      protocol: NodeProtocol.vless,
+      address: '203.0.113.1',
+      port: 443,
+      source: source,
+      uuidOrPassword: '11111111-2222-3333-4444-555555555555',
+      tls: true,
+    );
+
+    test('自定义规则插在内置规则前面；DNS 映射同样在前', () {
+      final rules = [
+        const CustomRule(
+          id: '1',
+          domain: 'example.com',
+          action: CustomRuleAction.direct,
+        ),
+        const CustomRule(
+          id: '2',
+          domain: 'work.example.net',
+          action: CustomRuleAction.proxy,
+        ),
+      ];
+      final result = SingboxConfigBuilder.build(
+        [ruleNode('甲-直连', NodeSource.direct)],
+        customRules: rules,
+      );
+      final route = result.config['route'] as Map<String, dynamic>;
+      final routeRules = (route['rules'] as List).cast<Map<String, dynamic>>();
+      expect(routeRules[0]['domain_suffix'], ['example.com']);
+      expect(routeRules[0]['outbound'], 'direct');
+      expect(routeRules[1]['domain_suffix'], ['work.example.net']);
+      expect(routeRules[1]['outbound'], 'Proxy');
+      expect(
+        routeRules[2]['domain_suffix'],
+        SingboxConfigBuilder.tiktokSuffixes,
+      );
+
+      final dns = result.config['dns'] as Map<String, dynamic>;
+      final dnsRules = (dns['rules'] as List).cast<Map<String, dynamic>>();
+      expect(dnsRules[0]['domain_suffix'], ['example.com']);
+      expect(dnsRules[0]['server'], 'dns-direct');
+      expect(dnsRules[1]['domain_suffix'], ['work.example.net']);
+      expect(dnsRules[1]['server'], 'dns-proxy');
+    });
+
+    test('关闭的规则不进配置；没有节点时走代理的规则不进', () {
+      final disabled = SingboxConfigBuilder.build(
+        [ruleNode('甲-直连', NodeSource.direct)],
+        customRules: [
+          const CustomRule(
+            id: '1',
+            domain: 'example.com',
+            action: CustomRuleAction.direct,
+            enabled: false,
+          ),
+        ],
+      );
+      expect(jsonEncode(disabled.config).contains('example.com'), isFalse);
+
+      final noNodes = SingboxConfigBuilder.build(
+        [],
+        customRules: [
+          const CustomRule(
+            id: '1',
+            domain: 'proxy.example.com',
+            action: CustomRuleAction.proxy,
+          ),
+          const CustomRule(
+            id: '2',
+            domain: 'direct.example.com',
+            action: CustomRuleAction.direct,
+          ),
+        ],
+      );
+      final route = noNodes.config['route'] as Map<String, dynamic>;
+      final routeRules = (route['rules'] as List).cast<Map<String, dynamic>>();
+      expect(routeRules.length, 2);
+      expect(routeRules[0]['domain_suffix'], ['direct.example.com']);
+    });
+
+    test('tunEnabled=true 加一条 tun 入站；=false 不写', () {
+      final off = SingboxConfigBuilder.build([
+        ruleNode('甲-直连', NodeSource.direct),
+      ]);
+      final offInbounds = off.config['inbounds'] as List;
+      expect(offInbounds.length, 1);
+
+      final on = SingboxConfigBuilder.build(
+        [ruleNode('甲-直连', NodeSource.direct)],
+        tunEnabled: true,
+      );
+      final onInbounds = on.config['inbounds'] as List;
+      expect(onInbounds.length, 2);
+      final tun = onInbounds[1] as Map<String, dynamic>;
+      expect(tun['type'], 'tun');
+      expect(tun['tag'], 'tun-in');
+      expect(tun['auto_route'], isTrue);
+    });
+
+    test('DNS 摘要含 DoH 双路、DoT 兜底、仅 IPv4、不回落明文、防泄漏不可关闭', () {
+      final text = SingboxConfigBuilder.dnsSummary
+          .map((e) => '${e.label}：${e.value}')
+          .join('\n');
+      expect(text, contains('1.1.1.1'));
+      expect(text, contains('dns.google'));
+      expect(text, contains('8.8.8.8:853'));
+      expect(text, contains('ipv4_only'));
+      expect(text, contains('不可关闭'));
     });
   });
 }

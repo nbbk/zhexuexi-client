@@ -310,6 +310,24 @@ class NodesNotifier extends Notifier<NodesState> {
     await refresh();
   }
 
+  /// 清除测速缓存（切片 6 设置页“清除缓存”）：全部节点的延迟与
+  /// 失败标记清零，上次测速时间清掉；节点列表本身不动。后台重测
+  /// 开关保持（下次重测 tick 还会再测一轮）。
+  void clearSpeedResults() {
+    final nodes = state.nodes;
+    for (final node in nodes) {
+      node.latencyMs = null;
+      node.latencyFailed = false;
+    }
+    state = state.copyWith(
+      nodes: List.of(nodes),
+      speedTestedCount: 0,
+      speedTestTotal: 0,
+      speedTestError: null,
+      speedTestAt: null,
+    );
+  }
+
   /// 退出登录 / 换绑时清除绑定与列表。
   Future<void> clear() async {
     final service = ref.read(subscriptionServiceProvider);

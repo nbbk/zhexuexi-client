@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'custom_rule.dart';
 import 'node_model.dart';
 import 'routing_mode.dart';
 
@@ -127,6 +128,20 @@ class SingboxConfigBuilder {
     'ip-api.com',
   ];
 
+  /// DNS 配置摘要（设置页“DNS 配置查看”直接渲染这份，不另写一份
+  /// 文案：两处写同一份 DNS 说明迟早会写岔）。
+  ///
+  /// 防泄漏是固定行为不是开关：DNS 只走 DoH / DoT，不回落明文
+  /// UDP 53；摘要最后一行写明“不可关闭”，设置页不给关掉它的入口。
+  static const List<({String label, String value})> dnsSummary = [
+    (label: '直连解析', value: 'DoH https://1.1.1.1/dns-query'),
+    (label: '代理 DNS', value: 'DoH https://dns.google/dns-query（经代理出站）'),
+    (label: '兜底', value: 'DoT 8.8.8.8:853'),
+    (label: '解析策略', value: '仅 IPv4（ipv4_only）'),
+    (label: '明文 UDP 53', value: '不回落（无 UDP 服务器）'),
+    (label: '防泄漏', value: '已开启，不可关闭'),
+  ];
+
 /// 从节点列表生成完整 sing-box 配置。
 ///
 /// [mode] 只改 route 段与 DNS 规则的解析路径，不改节点出站：
@@ -145,10 +160,24 @@ class SingboxConfigBuilder {
 /// 生成时被跳过时，回落到默认规则（第一个直连节点，没有时第一个）。
 /// 注意这里认的是节点名不是 tag：重名节点加 ` (2)` 后缀的去重
 /// 在生成时做，调用方不用自己算 tag。
+///
+/// [customRules]（切片 6）：用户自定义规则（只取已启用的），按
+/// 动作插在内置规则前面（先命中先走，用户规则优先）：走代理的域
+/// 名 → `Proxy`，直连的域名 → `direct`；DNS 规则同样插在前面
+/// （走代理的域名走 `dns-proxy`，直连的域名走 `dns-direct`），
+/// 三种模式都生效（全局模式下自定义直连是唯一的例外口，直连模式
+/// 下自定义代理是唯一的例外口）。没有节点时走代理的自定义规则
+/// 不进配置（没有 `Proxy` 组可指），直连的照常进。
+///
+/// [tunEnabled]（切片 6）：为 true 时加一条 `tun` 入站（系统级
+/// TUN 接管流量，gvisor 栈 + 自动路由）；为 false 时不写 tun 入站。
+/// TUN 只改入站，不改出站与规则。
 static SingboxConfigResult build(
   List<Node> nodes, {
   RoutingMode mode = RoutingMode.rule,
   String? selectedNodeName,
+  List<CustomRule> customRules = const [],
+  bool tunEnabled = false,
 }) {
     final skipped = <String>[];
     final outbounds = <Map<String, dynamic>>[];
@@ -195,6 +224,21 @@ static SingboxConfigResult build(
 
     // route 规则与 final 按模式走（见 build 的文档注释）。
     final routeRules = <Map<String, dynamic>>[];
+    // 自定义规则插在最前面（先命中先走，用户规则优先于内置规则）；
+    // 走代理的规则没有节点时不进（没有 Proxy 组可指），直连的照常进。
+    for (final rule in customRules) {
+      if (!rule.enabled) continue;
+      if (rule.action == CustomRuleAction.proxy &&
+          nodeTags.isEmpty) {
+        continue;
+      }
+      routeRules.add({
+        'domain_suffix': [rule.domain],
+        'outbound': rule.action == CustomRuleAction.proxy
+            ? 'Proxy'
+            : 'direct',
+      });
+    }
     final String routeFinal;
     switch (mode) {
       case RoutingMode.rule:
@@ -239,6 +283,41 @@ static SingboxConfigResult build(
         ? 'dns-direct'
         : 'dns-proxy';
 
+    // 自定义规则的 DNS 映射插在最前面（只按动作分，不按模式分：
+    // 用户明确说走代理的域名就走代理 DNS、说直连的就走直连 DNS，
+    // 哪怕当前是全局或直连模式——那正是自定义规则存在的意义）。
+    // 走代理的自定义规则没有节点时同样不进（dns-proxy 的 detour
+    // 指不到 Proxy 组；无节点时 dns-proxy 的 server 是 IP 8.8.8.8，
+    // 规则写进去也不会炸，但解析路径会与 route 不一致，故跳过）。
+    final dnsRules = <Map<String, dynamic>>[];
+    for (final rule in customRules) {
+      if (!rule.enabled) continue;
+      if (rule.action == CustomRuleAction.proxy &&
+          nodeTags.isEmpty) {
+        continue;
+      }
+      dnsRules.add({
+        'domain_suffix': [rule.domain],
+        'server': rule.action == CustomRuleAction.proxy
+            ? 'dns-proxy'
+            : 'dns-direct',
+      });
+    }
+    dnsRules.addAll([
+      {
+        'domain_suffix': ['.cn'],
+        'server': cnDnsServer,
+      },
+      {
+        'domain_suffix': tiktokSuffixes,
+        'server': proxyDnsServer,
+      },
+      {
+        'domain_suffix': ipCheckSuffixes,
+        'server': proxyDnsServer,
+      },
+    ]);
+
     return SingboxConfigResult(
       skipped: skipped,
       config: {
@@ -280,20 +359,7 @@ static SingboxConfigResult build(
               // DoT 兜底走直连，同样不写 detour。
             },
           ],
-          'rules': [
-            {
-              'domain_suffix': ['.cn'],
-              'server': cnDnsServer,
-            },
-            {
-              'domain_suffix': tiktokSuffixes,
-              'server': proxyDnsServer,
-            },
-            {
-              'domain_suffix': ipCheckSuffixes,
-              'server': proxyDnsServer,
-            },
-          ],
+          'rules': dnsRules,
           // sing-box 没有 DNS 服务器间的自动故障转移；DoT 服务器挂在 final
           // 上当兜底：规则都不命中时走 DoT 直连解析。
           'final': 'dns-dot',
@@ -307,6 +373,21 @@ static SingboxConfigResult build(
             'listen': '127.0.0.1',
             'listen_port': mixedPort,
           },
+          // TUN 入站（切片 6，tunEnabled 时才写）：系统级 TUN 接管
+          // 流量，gvisor 栈 + 自动路由；不写时就是原来的 mixed 入站。
+          // 注意 run 冒烟只跑 tun 关闭的配置：tun 入站启动时要建
+          // TUN 设备，没权限的机器上会失败，真机再验。
+          if (tunEnabled)
+            {
+              'type': 'tun',
+              'tag': 'tun-in',
+              'interface_name': 'tun0',
+              'mtu': 9000,
+              'address': '172.19.0.1/30',
+              'auto_route': true,
+              'strict_route': true,
+              'stack': 'gvisor',
+            },
         ],
         'outbounds': outbounds,
         'route': {

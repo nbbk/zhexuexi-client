@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'nodes_notifier.dart';
+import 'settings_notifier.dart';
 
 /// 订阅自动更新（切片 5：每天自动更新一次，仅 Wi-Fi 下）。
 ///
@@ -96,7 +97,11 @@ final subscriptionAutoRefreshProvider = Provider<SubscriptionAutoRefresh>(
 
 /// App 启动与我的页打开时各调一次：条件满足就自动拉一次订阅，
 /// 不满足什么都不做。`ref` 须是能读 provider 的引用。
+///
+/// 设置页的订阅自动更新开关关掉时直接返回（切片 6）：开关默认开，
+/// 关掉后只停自动拉，手动刷新不受影响。
 Future<void> maybeAutoRefreshSubscription(WidgetRef ref) async {
+  if (!ref.read(settingsProvider).autoUpdate) return;
   final service = ref.read(subscriptionAutoRefreshProvider);
   final notifier = ref.read(nodesProvider.notifier);
   final hasBinding =

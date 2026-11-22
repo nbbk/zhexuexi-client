@@ -9,8 +9,10 @@ import '../../core/node_model.dart';
 import '../../core/routing_mode.dart';
 import '../../core/singbox_core.dart';
 import '../../core/userinfo.dart';
+import '../../services/custom_rules_notifier.dart';
 import '../../services/nodes_notifier.dart';
 import '../../services/routing_mode_notifier.dart';
+import '../../services/settings_notifier.dart';
 
 /// 首页：一个大开关 + 当前节点 + 实时速率 + 流量三格 + 模式切换 + 公告栏。
 ///
@@ -114,6 +116,10 @@ class _HomePageState extends ConsumerState<HomePage> {
         // 带着当前选中的节点生成配置：节点页选过的节点，启动后还用它，
         // 不然每次启动都回到默认规则（第一个直连节点）。
         selectedNodeName: nodesState.selectedNodeName,
+        // 自定义规则与 TUN 开关跟着一起进配置（切片 6）：启动不能把
+        // 设置页配好的规则与 TUN 丢掉。
+        customRules: ref.read(customRulesProvider.notifier).activeRules,
+        tunEnabled: ref.read(settingsProvider).tun,
       );
       if (!result.ok) {
         _showSnack('配置生成失败，已保持上次连接');

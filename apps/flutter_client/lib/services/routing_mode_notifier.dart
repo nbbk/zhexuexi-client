@@ -3,7 +3,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/core_provider.dart';
 import '../core/routing_mode.dart';
+import 'custom_rules_notifier.dart';
 import 'nodes_notifier.dart';
+import 'settings_notifier.dart';
 
 /// 模式状态：当前模式＋是否正在切换＋最近一次切换失败的原因。
 class RoutingModeState {
@@ -63,6 +65,10 @@ class RoutingModeNotifier extends Notifier<RoutingModeState> {
     final nodes = ref.read(nodesProvider).nodes;
     final selected = ref.read(nodesProvider).selectedNodeName;
     final core = ref.read(coreServiceProvider);
+    // 自定义规则与 TUN 开关跟着模式一起进配置：模式切换不能把
+    // 设置页配好的规则与 TUN 丢掉；回滚那次同样要带。
+    final customRules = ref.read(customRulesProvider.notifier).activeRules;
+    final tunEnabled = ref.read(settingsProvider).tun;
     try {
       final result = await core.applyNodes(
         nodes,
@@ -70,6 +76,8 @@ class RoutingModeNotifier extends Notifier<RoutingModeState> {
         // 带着当前选中的节点生成配置：模式切换不能把节点页选过的节点
         // 换回默认规则；回滚那次同样要带。
         selectedNodeName: selected,
+        customRules: customRules,
+        tunEnabled: tunEnabled,
       );
       if (!result.ok) {
         state = state.copyWith(
@@ -86,6 +94,8 @@ class RoutingModeNotifier extends Notifier<RoutingModeState> {
           nodes,
           mode: prev,
           selectedNodeName: selected,
+          customRules: customRules,
+          tunEnabled: tunEnabled,
         );
       } catch (_) {}
       state = state.copyWith(
