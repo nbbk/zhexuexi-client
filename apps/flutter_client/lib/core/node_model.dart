@@ -52,6 +52,8 @@ class Node {
     this.tls = false,
     this.sni,
     this.wsPath,
+    this.wsHost,
+    this.method,
     this.group,
     this.isPlainText = false,
   });
@@ -82,6 +84,13 @@ class Node {
 
   /// WebSocket 路径。
   final String? wsPath;
+
+  /// WebSocket Host 头（面板 sing-box JSON 的 transport.headers.Host、
+  /// Clash 的 ws-opts.headers.Host、链接的 host 参数；没有时不写）。
+  final String? wsHost;
+
+  /// Shadowsocks 加密方式（如 aes-256-gcm；VLESS/VMess/Trojan 不用）。
+  final String? method;
 
   /// 分组名（面板分组只决定包含哪些落地，订阅正文里没有分组名）。
   final String? group;

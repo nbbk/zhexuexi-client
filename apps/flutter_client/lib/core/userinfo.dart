@@ -5,6 +5,13 @@
 /// 四个字段全是整数：upload/download/total 是字节数，expire 是 Unix 秒时间戳。
 /// 注意：这是**中转口径**——直连流量不经过中转机，不在头里（面板 1.3.27
 /// 已验证小火箭到期显示正常，但直连流量要靠节点侧计量，见方案 §0）。
+///
+/// 缺失语义（panel-adapter.md §2.3，三个层次都要分清，绝不能混成 0）：
+/// - 整个头没有（三项全都没有时面板不返回这个头）→ [parse] 返回 null，
+///   界面显示“—”，**没有头 ≠ 用量为 0**；
+/// - 头里缺某个字段（例如管理面板模式下只有 `expire`，没有 upload /
+///   download）→ 该字段为 null，界面对应格显示“—”，不编数据；
+/// - 字段值非法（不是整数）→ 按缺失处理，同样为 null。
 class SubscriptionUserinfo {
   const SubscriptionUserinfo({
     required this.upload,
@@ -13,61 +20,74 @@ class SubscriptionUserinfo {
     required this.expire,
   });
 
-  /// 已用上行字节数。
-  final int upload;
+  /// 已用上行字节数；头里没有该字段时为 null。
+  final int? upload;
 
-  /// 已用下行字节数。
-  final int download;
+  /// 已用下行字节数；头里没有该字段时为 null。
+  final int? download;
 
-  /// 总流量字节数（0 表示不限量）。
-  final int total;
+  /// 总流量字节数；头里没有该字段时为 null。值为 0 表示不限量。
+  final int? total;
 
-  /// 到期 Unix 秒时间戳（0 表示永不过期）。
-  final int expire;
+  /// 到期 Unix 秒时间戳；头里没有该字段时为 null。值为 0 表示永不过期。
+  final int? expire;
 
-  /// 已用（上行 + 下行）。
-  int get used => upload + download;
+  /// 已用（上行 + 下行）；任一分量缺失时为 null。
+  int? get used =>
+      upload == null || download == null ? null : upload! + download!;
 
-  /// 剩余字节数；total 为 0（不限量）时返回 null。
-  int? get remaining => total == 0 ? null : total - used;
-
-  /// 已用占比 0.0–1.0；total 为 0 时返回 null。
-  double? get usedRatio {
-    if (total == 0) return null;
-    if (used <= 0) return 0;
-    return (used / total).clamp(0.0, 1.0);
+  /// 剩余字节数；total 为 null（头里没给）或 0（不限量）或已用未知时为 null。
+  /// 超量时为负数，调用方按“已超量”展示。
+  int? get remaining {
+    final u = used;
+    if (total == null || total == 0 || u == null) return null;
+    return total! - u;
   }
 
-  /// 是否已到期（expire 为 0 表示永不过期）。
+  /// 是否不限量：total 为 null（头里没给）或 0。
+  bool get isUnlimited => total == null || total == 0;
+
+  /// 已用占比 0.0–1.0；不限量或已用未知时为 null。
+  double? get usedRatio {
+    final u = used;
+    if (total == null || total == 0 || u == null) return null;
+    if (u <= 0) return 0;
+    return (u / total!).clamp(0.0, 1.0);
+  }
+
+  /// 是否已到期（expire 为 null 或 0 表示永不过期）。
   bool get isExpired =>
-      expire != 0 && DateTime.now().millisecondsSinceEpoch ~/ 1000 >= expire;
+      expire != null &&
+      expire != 0 &&
+      DateTime.now().millisecondsSinceEpoch ~/ 1000 >= expire!;
 
-  /// 到期日期；expire 为 0 时返回 null。
-  DateTime? get expireDate => expire == 0
+  /// 到期日期；expire 为 null 或 0 时返回 null。
+  DateTime? get expireDate => expire == null || expire == 0
       ? null
-      : DateTime.fromMillisecondsSinceEpoch(expire * 1000);
+      : DateTime.fromMillisecondsSinceEpoch(expire! * 1000);
 
-  /// 解析响应头；缺字段按 0 兜底（面板 1.3.24 起四个字段都会下发）。
-  static SubscriptionUserinfo parse(String? headerValue) {
-    var upload = 0;
-    var download = 0;
-    var total = 0;
-    var expire = 0;
-    if (headerValue != null && headerValue.isNotEmpty) {
-      for (final part in headerValue.split(';')) {
-        final kv = part.trim().split('=');
-        if (kv.length != 2) continue;
-        final value = int.tryParse(kv[1].trim()) ?? 0;
-        switch (kv[0].trim()) {
-          case 'upload':
-            upload = value;
-          case 'download':
-            download = value;
-          case 'total':
-            total = value;
-          case 'expire':
-            expire = value;
-        }
+  /// 解析响应头；没有头（null 或空串）返回 null。缺字段与非法值按
+  /// 该字段缺失处理，不按 0 兜底（见文件头注释）。
+  static SubscriptionUserinfo? parse(String? headerValue) {
+    if (headerValue == null || headerValue.trim().isEmpty) return null;
+    int? upload;
+    int? download;
+    int? total;
+    int? expire;
+    for (final part in headerValue.split(';')) {
+      final kv = part.trim().split('=');
+      if (kv.length != 2) continue;
+      final value = int.tryParse(kv[1].trim());
+      if (value == null) continue;
+      switch (kv[0].trim()) {
+        case 'upload':
+          upload = value;
+        case 'download':
+          download = value;
+        case 'total':
+          total = value;
+        case 'expire':
+          expire = value;
       }
     }
     return SubscriptionUserinfo(
@@ -81,4 +101,32 @@ class SubscriptionUserinfo {
   @override
   String toString() =>
       'SubscriptionUserinfo(used=$used, total=$total, expire=$expire)';
+}
+
+/// 字节数转人类可读串：`123 B` / `1.5 KB` / `2.3 MB` / `1.2 GB`。
+/// 负数按 0 算（调用方先判超量再格式化）。
+String formatBytes(int bytes) {
+  if (bytes <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  var value = bytes.toDouble();
+  var unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit++;
+  }
+  final text = value == value.truncateToDouble()
+      ? value.toInt().toString()
+      : value.toStringAsFixed(1);
+  return '$text ${units[unit]}';
+}
+
+/// 速率（字节/秒）转人类可读串：`1.5 KB/s`。
+String formatSpeed(int bytesPerSecond) => '${formatBytes(bytesPerSecond)}/s';
+
+/// 日期转 `yyyy-MM-dd`（不引 intl，只为这一处显示）。
+String formatDateYmd(DateTime date) {
+  final y = date.year.toString().padLeft(4, '0');
+  final m = date.month.toString().padLeft(2, '0');
+  final d = date.day.toString().padLeft(2, '0');
+  return '$y-$m-$d';
 }

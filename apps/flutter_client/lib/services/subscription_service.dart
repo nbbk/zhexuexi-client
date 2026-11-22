@@ -1,17 +1,22 @@
 import 'package:dio/dio.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
+import '../core/node_model.dart';
 import '../core/userinfo.dart';
+import 'subscription_parser.dart';
 
-/// 订阅拉取服务（阶段 0 占位实现）。
+/// 订阅拉取服务（切片 1：拉取＋三种格式解析＋回退链）。
 ///
 /// 约定（见 docs/api/panel-adapter.md）：
 /// - 每次拉订阅必须显式带 `?format=singbox`（UA 不含任何嗅探命中子串时，
 ///   不带 format 会拿到默认 base64）；
 /// - UA 用 `Zhexuexi/0.1.0`（不含 clash/stash/mihomo/sing-box/sfa/sfi/sfm）；
 /// - 令牌只存系统密钥库（flutter_secure_storage），绝不写明文文件、不进日志；
+/// - 订阅地址（不含令牌）存 shared_preferences，令牌与地址分开存；
 /// - `subscription-userinfo` 头是中转口径，直连流量不在头里。
-/// 节点解析（sing-box JSON / Clash YAML / base64）在阶段 1 按格式逐个实现。
+/// - 拉取失败回退链：singbox → base64 → clash；但 404/410/429/400 是
+///   令牌或地址问题，不回退，直接报给用户。
 class SubscriptionService {
   SubscriptionService({Dio? dio, FlutterSecureStorage? storage})
       : _dio = dio ?? Dio(),
@@ -21,6 +26,9 @@ class SubscriptionService {
   final FlutterSecureStorage _storage;
 
   static const String _tokenKey = 'subscription_token';
+
+  /// 订阅地址（不含令牌，例如 `https://example.com/x9f2`）。
+  static const String _baseUrlKey = 'subscription_base_url';
 
   /// 当前 UA（版本号随发布走，阶段 1 与 pubspec version 同步）。
   static const String userAgent = 'Zhexuexi/0.1.0';
@@ -34,6 +42,51 @@ class SubscriptionService {
 
   /// 清除订阅令牌（换绑 / 退出登录时调用）。
   Future<void> clearToken() => _storage.delete(key: _tokenKey);
+
+  /// 保存一条完整订阅链接：拆成地址（不含令牌，进 shared_preferences）
+  /// 与令牌（进系统密钥库）。令牌是路径最后一段，形如 `sub_` + 64 位十六进制。
+  Future<void> saveSubscriptionLink(String link) async {
+    final uri = Uri.parse(link.trim());
+    final segments = uri.pathSegments;
+    if (segments.isEmpty) {
+      throw const SubscriptionException(
+        kind: SubscriptionErrorKind.invalid,
+        message: '订阅链接不对，找不到令牌',
+      );
+    }
+    final token = segments.last;
+    if (!token.startsWith('sub_')) {
+      throw const SubscriptionException(
+        kind: SubscriptionErrorKind.invalid,
+        message: '订阅链接不对，令牌应以 sub_ 开头',
+      );
+    }
+    final base = uri.replace(pathSegments: segments.sublist(0, segments.length - 1)).toString();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_baseUrlKey, base);
+    await saveToken(token);
+  }
+
+  /// 读已绑定的完整订阅地址（地址 + 令牌拼回）；未绑定返回 null。
+  /// 先判地址再读令牌：未绑定时不碰安全存储通道。
+  Future<String?> readSubscriptionUrl() async {
+    final prefs = await SharedPreferences.getInstance();
+    final base = prefs.getString(_baseUrlKey);
+    if (base == null || base.isEmpty) return null;
+    final token = await readToken();
+    if (token == null || token.isEmpty) return null;
+    return '$base/$token';
+  }
+
+  /// 是否已绑定订阅（地址与令牌都在）。
+  Future<bool> hasBinding() async => await readSubscriptionUrl() != null;
+
+  /// 清除绑定（地址与令牌一起清）。
+  Future<void> clearBinding() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_baseUrlKey);
+    await clearToken();
+  }
 
   /// 拉一次订阅。
   ///
@@ -65,6 +118,122 @@ class SubscriptionService {
       statusCode: response.statusCode ?? 0,
     );
   }
+
+  /// 拉订阅并解析成节点列表（含回退链）。
+  ///
+  /// 顺序：singbox → base64 → clash。某一格式返回 200 但正文解析失败时
+  /// 试下一格式；404/410/429/400 直接抛，不回退。
+  /// 返回节点、解析失败数、userinfo 头与最终生效的格式。
+  Future<NodeListResult> fetchNodes({required String subscriptionUrl}) async {
+    SubscriptionException? lastError;
+    for (final format in const [
+      SubscriptionFormat.singbox,
+      SubscriptionFormat.base64,
+      SubscriptionFormat.clash,
+    ]) {
+      try {
+        return await _fetchAndParse(subscriptionUrl, format);
+      } on SubscriptionException catch (e) {
+        // 令牌/地址问题不回退；网络问题与解析失败才试下一格式。
+        if (e.kind != SubscriptionErrorKind.network &&
+            e.kind != SubscriptionErrorKind.parseFailed) {
+          rethrow;
+        }
+        lastError = e;
+      }
+    }
+    throw lastError ??
+        const SubscriptionException(
+          kind: SubscriptionErrorKind.parseFailed,
+          message: '订阅解析失败，三种格式都读不懂',
+        );
+  }
+
+  Future<NodeListResult> _fetchAndParse(
+    String subscriptionUrl,
+    SubscriptionFormat format,
+  ) async {
+    final formatParam = switch (format) {
+      SubscriptionFormat.singbox => 'singbox',
+      SubscriptionFormat.base64 => 'base64',
+      SubscriptionFormat.clash => 'clash',
+    };
+    final uri = Uri.parse(subscriptionUrl).replace(
+      queryParameters: {
+        ...Uri.parse(subscriptionUrl).queryParameters,
+        'format': formatParam,
+      },
+    );
+    try {
+      final response = await _dio.get<String>(
+        uri.toString(),
+        options: Options(
+          responseType: ResponseType.plain,
+          headers: {'User-Agent': userAgent},
+          sendTimeout: const Duration(seconds: 15),
+          receiveTimeout: const Duration(seconds: 15),
+        ),
+      );
+      final body = response.data ?? '';
+      final parsed = parseSubscription(body, format);
+      // 0 个节点且有解析失败 = 该格式没读懂正文，继续回退；
+      // 合法空订阅是 0 节点 0 失败，不触发回退。
+      if (parsed.nodes.isEmpty && parsed.failedCount > 0) {
+        throw const SubscriptionException(
+          kind: SubscriptionErrorKind.parseFailed,
+          message: '订阅正文解析失败',
+        );
+      }
+      return NodeListResult(
+        nodes: parsed.nodes,
+        failedCount: parsed.failedCount,
+        userinfo: SubscriptionUserinfo.parse(
+          response.headers.value('subscription-userinfo'),
+        ),
+        format: format,
+      );
+    } on FormatException {
+      throw const SubscriptionException(
+        kind: SubscriptionErrorKind.parseFailed,
+        message: '订阅正文解析失败',
+      );
+    } on DioException catch (e) {
+      throw _mapDioError(e);
+    }
+  }
+
+  SubscriptionException _mapDioError(DioException e) {
+    final status = e.response?.statusCode;
+    final retryAfter = e.response?.headers.value('retry-after');
+    switch (status) {
+      case 404:
+        return const SubscriptionException(
+          kind: SubscriptionErrorKind.invalid,
+          message: '订阅已失效，请重新绑定',
+        );
+      case 410:
+        return const SubscriptionException(
+          kind: SubscriptionErrorKind.expired,
+          message: '订阅已到期',
+        );
+      case 429:
+        return SubscriptionException(
+          kind: SubscriptionErrorKind.rateLimited,
+          message: '请求太频繁，请稍后再试',
+          retryAfterSeconds: int.tryParse(retryAfter ?? '') ?? 600,
+        );
+      case 400:
+        return const SubscriptionException(
+          kind: SubscriptionErrorKind.badRequest,
+          message: '订阅请求参数不对，请联系管理员',
+        );
+      default:
+        return const SubscriptionException(
+          kind: SubscriptionErrorKind.network,
+          message: '网络不通，检查订阅地址',
+        );
+    }
+  }
 }
 
 /// 一次订阅拉取的结果。
@@ -78,8 +247,71 @@ class SubscriptionFetchResult {
   /// 订阅正文（sing-box JSON，阶段 1 再解析成节点列表）。
   final String body;
 
-  /// 流量与到期（中转口径）。
-  final SubscriptionUserinfo userinfo;
+  /// 流量与到期（中转口径；没有 userinfo 头时为 null）。
+  final SubscriptionUserinfo? userinfo;
 
   final int statusCode;
+}
+
+/// 拉订阅并解析后的节点列表结果。
+class NodeListResult {
+  const NodeListResult({
+    required this.nodes,
+    required this.failedCount,
+    required this.userinfo,
+    required this.format,
+  });
+
+  /// 解析出的节点。
+  final List<Node> nodes;
+
+  /// 解析失败的节点个数。
+  final int failedCount;
+
+  /// 流量与到期（中转口径；没有 userinfo 头时为 null）。
+  final SubscriptionUserinfo? userinfo;
+
+  /// 最终生效的订阅格式。
+  final SubscriptionFormat format;
+}
+
+/// 订阅失败的种类（界面按种类给不同的提示，不把技术细节推给用户）。
+enum SubscriptionErrorKind {
+  /// 令牌查无此人（404）：订阅已失效，请重新绑定。
+  invalid,
+
+  /// 令牌已过期（410）：订阅已到期。
+  expired,
+
+  /// 同一 IP 连续失败被锁（429）：退避重试，带 Retry-After。
+  rateLimited,
+
+  /// 请求参数非法（400）：开发侧问题。
+  badRequest,
+
+  /// 网络不通 / 超时。
+  network,
+
+  /// 正文三种格式都解析失败。
+  parseFailed,
+}
+
+/// 订阅拉取/解析失败时抛出的异常（带种类，界面按种类提示）。
+class SubscriptionException implements Exception {
+  const SubscriptionException({
+    required this.kind,
+    required this.message,
+    this.retryAfterSeconds,
+  });
+
+  final SubscriptionErrorKind kind;
+
+  /// 给用户看的提示（不含技术细节）。
+  final String message;
+
+  /// 429 时面板给的退避秒数（默认 600）。
+  final int? retryAfterSeconds;
+
+  @override
+  String toString() => 'SubscriptionException($kind: $message)';
 }

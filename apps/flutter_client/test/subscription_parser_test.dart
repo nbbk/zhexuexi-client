@@ -1,0 +1,199 @@
+// 切片 1：三种订阅格式解析的回归测试。
+//
+// fixture 全部用脱敏数据（example.com / 203.0.113.x / 假 UUID），形状按
+// 面板 1.3.37 的实际输出（sing-box JSON 新 DNS 格式）与 panel-adapter.md
+// §6 的字段清单编。
+import 'dart:io';
+
+import 'package:flutter_test/flutter_test.dart';
+import 'package:zhexuexi_client/core/node_model.dart';
+import 'package:zhexuexi_client/services/subscription_parser.dart';
+
+Future<String> _fixture(String name) =>
+    File('test/fixtures/$name').readAsString();
+
+void main() {
+  group('sing-box JSON（面板 1.3.37 形状）', () {
+    test('4 个节点 + 1 个坏节点，组出站不计失败', () async {
+      final body = await _fixture('singbox_137.json');
+      final result = parseSingboxJson(body);
+      expect(result.nodes.length, 4);
+      expect(result.failedCount, 1);
+
+      final vless = result.nodes[0];
+      expect(vless.name, '智利-直连');
+      expect(vless.protocol, NodeProtocol.vless);
+      expect(vless.address, 'cl04.example.com');
+      expect(vless.port, 24443);
+      expect(vless.source, NodeSource.direct);
+      expect(vless.tls, isTrue);
+      expect(vless.sni, 'cl04.example.com');
+      expect(vless.transport, 'ws');
+      expect(vless.wsPath, '/example-path');
+      expect(vless.isPlainText, isFalse);
+
+      final trojan = result.nodes[1];
+      expect(trojan.name, '香港-中转');
+      expect(trojan.protocol, NodeProtocol.trojan);
+      expect(trojan.source, NodeSource.relay);
+      expect(trojan.tls, isTrue);
+
+      final vmess = result.nodes[2];
+      expect(vmess.name, '日本-直连');
+      expect(vmess.protocol, NodeProtocol.vmess);
+      expect(vmess.tls, isFalse);
+      expect(vmess.isPlainText, isTrue);
+      expect(vmess.wsPath, '/example-path2');
+
+      final ss = result.nodes[3];
+      expect(ss.name, '新加坡-中转');
+      expect(ss.protocol, NodeProtocol.shadowsocks);
+      expect(ss.source, NodeSource.relay);
+      expect(ss.isPlainText, isTrue);
+    });
+
+    test('空配置：0 个节点，不算失败', () {
+      final result = parseSingboxJson('{"outbounds": []}');
+      expect(result.nodes, isEmpty);
+      expect(result.failedCount, 0);
+    });
+
+    test('没有 outbounds 数组：抛 FormatException（调用方走回退链）', () {
+      expect(() => parseSingboxJson('{}'), throwsFormatException);
+      expect(() => parseSingboxJson('not json'), throwsFormatException);
+    });
+
+    test('dns / route 段不影响解析（只读 outbounds）', () async {
+      final body = await _fixture('singbox_137.json');
+      final result = parseSingboxJson(body);
+      // dns-direct / dns-proxy 是 DNS 服务器，不是节点。
+      expect(
+        result.nodes.any((n) => n.name.contains('dns')),
+        isFalse,
+      );
+    });
+  });
+
+  group('Clash YAML', () {
+    test('4 个节点 + 1 个坏节点，proxy-groups/rules/dns 不读', () async {
+      final body = await _fixture('clash.yaml');
+      final result = parseClashYaml(body);
+      expect(result.nodes.length, 4);
+      expect(result.failedCount, 1);
+
+      final vless = result.nodes[0];
+      expect(vless.name, '智利-直连');
+      expect(vless.protocol, NodeProtocol.vless);
+      expect(vless.tls, isTrue);
+      expect(vless.sni, 'cl04.example.com');
+      expect(vless.transport, 'ws');
+      expect(vless.wsPath, '/example-path');
+
+      final vmess = result.nodes[2];
+      expect(vmess.protocol, NodeProtocol.vmess);
+      expect(vmess.tls, isFalse);
+      expect(vmess.isPlainText, isTrue);
+
+      // 策略组里的名字不是节点，不重复计入。
+      expect(
+        result.nodes.where((n) => n.name == '自动选择'),
+        isEmpty,
+      );
+    });
+
+    test('没有 proxies 数组：抛 FormatException', () {
+      expect(() => parseClashYaml('port: 7890\n'), throwsFormatException);
+    });
+  });
+
+  group('base64 / plain 链接列表', () {
+    test('base64：5 个节点 + 1 行垃圾，HY2 保留', () async {
+      final body = await _fixture('links_base64.txt');
+      final result = parseLinkList(body);
+      expect(result.nodes.length, 5);
+      expect(result.failedCount, 1);
+      expect(
+        result.nodes.map((n) => n.protocol),
+        contains(NodeProtocol.hysteria2),
+      );
+    });
+
+    test('plain：与 base64 同样的 5 个节点', () async {
+      final body = await _fixture('links_plain.txt');
+      final result = parseLinkList(body);
+      expect(result.nodes.length, 5);
+      expect(result.failedCount, 1);
+
+      final vless = result.nodes[0];
+      expect(vless.name, '智利-直连');
+      expect(vless.tls, isTrue);
+      expect(vless.wsPath, '/example-path');
+
+      final vmess = result.nodes[1];
+      expect(vmess.name, '日本-直连');
+      expect(vmess.address, '203.0.113.12');
+      expect(vmess.port, 8080);
+      expect(vmess.isPlainText, isTrue);
+
+      final hy2 = result.nodes[4];
+      expect(hy2.protocol, NodeProtocol.hysteria2);
+      expect(hy2.tls, isTrue);
+    });
+
+    test('空行跳过不计失败', () {
+      final result = parseLinkList('\n\nvless://11111111-2222-3333-4444-555555555555@203.0.113.10:443#测试-直连\n\n');
+      expect(result.nodes.length, 1);
+      expect(result.failedCount, 0);
+    });
+  });
+
+  group('单条链接解析', () {
+    test('vless 无 TLS 是明文，sni 为空时取 host', () {
+      final node = parseNodeLink(
+        'vless://11111111-2222-3333-4444-555555555555@203.0.113.10:8080?type=ws&path=%2Fexample-path&host=ws.example.com#测试-直连',
+      );
+      expect(node, isNotNull);
+      expect(node!.tls, isFalse);
+      expect(node.isPlainText, isTrue);
+      expect(node.sni, 'ws.example.com');
+      expect(node.wsPath, '/example-path');
+    });
+
+    test('ss 三种写法都能解', () {
+      // base64(method:password)@host:port
+      final a = parseNodeLink(
+        'ss://YWVzLTI1Ni1nY206ZXhhbXBsZS1zcy1wYXNzd29yZA==@203.0.113.13:8388#新加坡-中转',
+      );
+      expect(a, isNotNull);
+      expect(a!.protocol, NodeProtocol.shadowsocks);
+      expect(a.uuidOrPassword, 'example-ss-password');
+      // base64(method:password@host:port) 整体
+      final b = parseNodeLink(
+        'ss://YWVzLTI1Ni1nY206ZXhhbXBsZS1zcy1wYXNzd29yZEAyMDMuMC4xMTMuMTM6ODM4OA==#新加坡-中转',
+      );
+      expect(b, isNotNull);
+      expect(b!.address, '203.0.113.13');
+      expect(b.port, 8388);
+      // 明文 method:password@host:port
+      final c = parseNodeLink(
+        'ss://aes-256-gcm:example-ss-password@203.0.113.13:8388#新加坡-中转',
+      );
+      expect(c, isNotNull);
+      expect(c!.address, '203.0.113.13');
+    });
+
+    test('垃圾链接返回 null', () {
+      expect(parseNodeLink('this-is-not-a-link'), isNull);
+      expect(parseNodeLink('vless://@203.0.113.10:443#无UUID-直连'), isNull);
+      expect(parseNodeLink('unknown://abc@203.0.113.10:443#测试-直连'), isNull);
+    });
+  });
+
+  group('格式猜测', () {
+    test('JSON → singbox；含 proxies: → clash；其他 → base64', () {
+      expect(detectFormat('{"outbounds": []}'), SubscriptionFormat.singbox);
+      expect(detectFormat('proxies:\n  - name: x\n'), SubscriptionFormat.clash);
+      expect(detectFormat('dmxlc3M6Ly9hYmM='), SubscriptionFormat.base64);
+    });
+  });
+}

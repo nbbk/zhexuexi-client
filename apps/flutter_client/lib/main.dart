@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:material_ui/material_ui.dart';
 
 import 'brand/brand_config.dart';
+import 'core/core_provider.dart';
 import 'features/home/home_page.dart';
 import 'features/me/me_page.dart';
 import 'features/nodes/nodes_page.dart';
@@ -16,16 +19,33 @@ void main() {
   runApp(const ProviderScope(child: ZhexuexiApp()));
 }
 
-class ZhexuexiApp extends StatefulWidget {
+class ZhexuexiApp extends ConsumerStatefulWidget {
   const ZhexuexiApp({super.key});
 
   @override
-  State<ZhexuexiApp> createState() => _ZhexuexiAppState();
+  ConsumerState<ZhexuexiApp> createState() => _ZhexuexiAppState();
 }
 
-class _ZhexuexiAppState extends State<ZhexuexiApp> {
+class _ZhexuexiAppState extends ConsumerState<ZhexuexiApp> {
   late final Future<BrandConfig> _brandFuture =
       RemoteConfigService().loadEffective();
+
+  @override
+  void initState() {
+    super.initState();
+    // 核心初始化（订阅插件状态流、把磁盘上最后一份配置读回内存）：
+    // 切片 3 首页大开关靠它推状态；失败不阻断界面，大开关点开时
+    // 会再报具体原因。
+    unawaited(_initCore());
+  }
+
+  Future<void> _initCore() async {
+    try {
+      await ref.read(coreServiceProvider).init();
+    } catch (_) {
+      // 初始化失败不抛到界面上：start() 时按“没有可用配置”再报错。
+    }
+  }
 
   int _tabIndex = 0;
 

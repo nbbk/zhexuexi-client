@@ -204,6 +204,16 @@ subscription-userinfo: upload=123456789; download=987654321; total=107374182400;
 
 #### 6.1.1 DNS 段：legacy 格式，逐字段列出
 
+> **2026-11-22 补（面板 1.3.37）：** 面板已改成新格式，两台 DoH 服务器是
+> `{"tag": "dns-direct", "type": "https", "server": "doh.pub", "server_port": 443, "detour": "direct"}` 与
+> `{"tag": "dns-proxy", "type": "https", "server": "dns.google", "server_port": 443, "detour": "proxy"}`，
+> route 加了 `"default_domain_resolver": "dns-direct"`，`address` 字段已去掉。
+> 下面是 1.3.29 时的 legacy 原文，留作旧版本对照；**客户端仍按 §6.1.1 末尾的结论自己生成 DNS，不透传面板 DNS 段**（新格式也不透传，DNS 与路由由客户端自己生成，切片 2）。
+>
+> **2026-11-22 再补（面板 1.3.37 的 detour 在 run 时不成立）：** 客户端切片 2 用真 sing-box 1.14.4 `run` 实测发现，面板这份 DNS `check -c` 能过但启动即失败：
+> `FATAL … start dns/https[dns-direct]: detour to an empty direct outbound makes no sense`。
+> 两条原因：① `detour: "direct"` 在 1.14.4 启动时就被拒（直连解析不要写 detour）；② `detour: "proxy"` 指向的出站 tag 不存在（面板 selector 的 tag 是大写 `Proxy`，detour 按 tag 逐字匹配，小写 `proxy` 找不到出站）。即面板 1.3.37 下发的 sing-box JSON 直接喂给 1.14.4 核心是跑不起来的，须面板侧修（去掉 `detour: direct`、把 `detour: proxy` 改成 `Proxy`）。**客户端不受影响**（客户端从不透传面板 DNS 段，自己生成的 DNS 已按这三条规则写，`check`＋`run` 全过）；但面板自己的订阅在 FlClash / SFA 等直接跑订阅的客户端上同样会起不来，修面板时顺带验 `run` 不要只验 `check`。
+
 面板 sing-box JSON 里的 `dns` 段原文（字段名与取值逐字照录）：
 
 ```json

@@ -1,0 +1,7 @@
+vless://11111111-2222-3333-4444-555555555555@203.0.113.10:443?security=tls&sni=cl04.example.com&type=ws&path=%2Fexample-path&host=cl04.example.com#智利-直连
+vmess://eyJ2IjogIjIiLCAicHMiOiAi5pel5pysLeebtOi_niIsICJhZGQiOiAiMjAzLjAuMTEzLjEyIiwgInBvcnQiOiAiODA4MCIsICJpZCI6ICIxMTExMTExMS0yMjIyLTMzMzMtNDQ0NC01NTU1NTU1NTU1NTUiLCAiYWlkIjogIjAiLCAibmV0IjogIndzIiwgInR5cGUiOiAibm9uZSIsICJob3N0IjogImpwLmV4YW1wbGUuY29tIiwgInBhdGgiOiAiL2V4YW1wbGUtcGF0aDIiLCAidGxzIjogIiJ9
+trojan://example-password@203.0.113.11:443?security=tls&sni=hk.example.com#香港-中转
+ss://YWVzLTI1Ni1nY206ZXhhbXBsZS1zcy1wYXNzd29yZA==@203.0.113.13:8388#新加坡-中转
+hysteria2://example-hy2-password@203.0.113.14:443?sni=hy2.example.com#日本-直连
+this-is-not-a-link
+

@@ -65,3 +65,15 @@
 - Windows 服务安装/UAC/崩溃恢复/卸载全链路：须 Windows 真机。
 - 插件在 Android 上的真实 libbox 行为（只核对了版本号，未跑真机）。
 - CI 真跑（GitHub Actions）：Flutter 工程刚建，构建命令须先在 CI 上实跑一次，阶段 0 只做到 YAML 解析通过。
+
+## 阶段 1 接线结论（切片 2，2026-11-22，已核对插件源码）
+
+- **配置怎么进核心**：插件没有“设置配置”的 API。配置体由应用写插件的 `using_config.json`（`ProfileStorage.getUsingConfig()`，Android 取应用文档目录、Windows 取应用缓存目录），原子写（临时文件＋改名）。Android 与 Windows 的原生侧启动时都从这个文件读配置内容。
+- **启动要求已选档案**：Android 启动时要求 MMKV 里有一个已选档案（`getSelectedProfile()` 为 null 时报 EmptyConfiguration、起不来），与配置内容无关。应用首次启动时建一个名为“哲学系”的本地档案（只写元数据，配置体仍是 `using_config.json`）。MMKV 初始化时序（插件 `init()` 时是否已就绪）须真机验证。
+- **重载 = 重启**：`serviceReload()` 在插件里实现为重启（Android：`restart()` 停＋起；Windows：helper restart）。换配置有短暂断开，不是无缝热重载。切片 2 的保证是“校验失败不写文件、不调重载，旧配置继续跑”，不是“换配置不断连”。
+- **校验**：插件内置官方 sing-box 1.14 JSON Schema（`SingBoxSchemaValidator`，asset 约 470KB，纯离线，`instance()` 缓存复用），`validateSync` 逐项核对；另加结构检查（legacy `address`、tag 重复、`default_domain_resolver` 缺失）。schema 加载失败按校验失败处理（宁可不换配置）。
+- **DNS detour 的三条 run 时规则**（真 sing-box 1.14.4 `run` 实测，`check` 查不出来）：
+  1. `detour` 指到 `direct` 出站时启动即拒：`detour to an empty direct outbound makes no sense`——直连解析不要写 detour；
+  2. `detour` 填的是出站 **tag**，逐字匹配——写小写 `proxy` 而 selector 叫 `Proxy` 时报 `outbound detour not found: proxy`；
+  3. 域名形式的 DNS 服务器地址（如 `dns.google`）在没有 detour 时启动时无人解析（`missing domain resolver for domain server address`）——有 detour 时经 detour 解析，没有 detour 时服务器地址须用 IP。
+  客户端生成器已按这三条写（见 `lib/core/singbox_config.dart` 注释）。

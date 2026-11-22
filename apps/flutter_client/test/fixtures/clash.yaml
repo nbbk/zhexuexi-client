@@ -1,0 +1,66 @@
+dns:
+  enable: true
+  listen: 0.0.0.0:1053
+  ipv6: false
+  nameserver:
+    - https://doh.pub/dns-query
+proxies:
+  - name: "智利-直连"
+    type: vless
+    server: cl04.example.com
+    port: 24443
+    uuid: 11111111-2222-3333-4444-555555555555
+    udp: true
+    tls: true
+    servername: cl04.example.com
+    network: ws
+    ws-opts:
+      path: /example-path
+      headers:
+        Host: cl04.example.com
+  - name: "香港-中转"
+    type: trojan
+    server: 203.0.113.1
+    port: 443
+    password: example-password
+    udp: true
+    tls: true
+    servername: hk.example.com
+    network: tcp
+  - name: "日本-直连"
+    type: vmess
+    server: 203.0.113.2
+    port: 8080
+    uuid: 11111111-2222-3333-4444-555555555555
+    alterId: 0
+    cipher: auto
+    udp: true
+    tls: false
+    network: ws
+    ws-opts:
+      path: /example-path2
+  - name: "新加坡-中转"
+    type: ss
+    server: 203.0.113.3
+    port: 8388
+    cipher: aes-256-gcm
+    password: example-ss-password
+    udp: true
+  - name: "坏节点-直连"
+    type: vless
+    server: 203.0.113.9
+    uuid: 11111111-2222-3333-4444-555555555555
+    udp: true
+    tls: false
+    network: tcp
+proxy-groups:
+  - name: "自动选择"
+    type: url-test
+    proxies:
+      - "智利-直连"
+      - "香港-中转"
+    url: http://www.gstatic.com/generate_204
+    interval: 300
+rules:
+  - DOMAIN-SUFFIX,tiktok.com,自动选择
+  - MATCH,DIRECT

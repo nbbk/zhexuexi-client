@@ -44,3 +44,36 @@
 - 本机编不出 APK（已查到根因）：沙箱 MITM 代理与 Java TLS 不兼容——curl 走代理能到 `plugins.gradle.org`（200），Java（`HttpsURLConnection` 与 Gradle 的 Apache HttpClient）握手直接超时/reset；TLS 1.2、导入沙箱 CA 进 JDK cacerts、配 Gradle 代理均无效。排查中修好的本机问题：Gradle 发行版 curl 预置（注意 Java 的 `user.home` 是 `/root` 不是 `$HOME`，哈希目录以 wrapper 实际建出的为准）、Gradle daemon 通信 Broken pipe（两侧加 `-Djava.net.preferIPv4Stack=true`，daemon 侧已写进项目 `android/gradle.properties`）、模板默认堆 8G 改 2G。详见 `docs/versions.md`。
 - 未做：真实面板/节点对接（订阅解析、配置生成、核心启动在阶段 1）、Android 真机验证、Windows 真机验证、CI 真跑。
 - 待用户拍板：`flutter_sing_box` 是 GPL-3.0，客户端源码公开范围须拍板，拍板前不要对外发布源码。
+
+### MVP 切片 1：订阅拉取＋三种格式解析＋节点列表（2026-11-22）
+
+- 切片规划见 `docs/mvp-slices.md`（共 8 片，按依赖排：1 订阅解析＋列表 → 2 配置生成＋核心接线 → 3 首页大开关＋流量三格 → 4 测速＋自动选节点 → 5 我的页 → 6 设置页＋规则＋DNS → 7 远程配置中心＋品牌替换 → 8 限流展示＋打包验收）。
+- 新增 `lib/services/subscription_parser.dart`：sing-box JSON（只读 `outbounds` 节点出站，selector/urltest/direct/block 跳过不计失败）、Clash YAML（只读 `proxies`，proxy-groups/rules/dns 不读）、base64/plain 链接列表（vless/vmess/trojan/ss/hysteria2/tuic；HY2/TUIC 只在 base64/plain 里保留，面板 sing-box/Clash 里没有）。单个节点解析失败只计 `failedCount`，不丢整个订阅；整段正文无法识别抛 `FormatException`。
+- `SubscriptionService` 加 `fetchNodes`：拉取回退链 singbox → base64 → clash（0 节点且有解析失败算该格式没读懂，继续回退；合法空订阅是 0 节点 0 失败）；状态码映射 404→“订阅已失效，请重新绑定”、410→“订阅已到期”、429→退避（Retry-After，默认 600 秒）、400→开发侧问题；404/410/429/400 不回退。`saveSubscriptionLink` 把完整链接拆成地址（shared_preferences）与令牌（系统密钥库）分开存。
+- 新增 `lib/services/nodes_notifier.dart`（Riverpod `nodesProvider`，全项目共用）：拉取、绑定并刷新、清除；节点按名字后缀分中转/直连两组。
+- 节点页改成真实列表：搜索框与两个按钮常驻；未绑定显示粘贴订阅链接入口（临时入口，切片 5 的“我的”页接管）；加载/失败/成功三种状态；失败横条“解析失败 N 个”；明文节点标“明文”角标；未测速显示“未测速”（测速在切片 4）。测速与自动选择按钮现置灰。
+- 文档：`docs/api/panel-adapter.md` §6.1.1 加 1.3.37 补记（面板 DNS 已是新格式；客户端仍自己生成 DNS，不透传面板 DNS 段）。
+- 测试：新增 `test/subscription_parser_test.dart`、`test/subscription_service_test.dart`（Dio 拦截器伪造响应、内存假安全存储）、`test/nodes_page_test.dart`（provider 桩覆盖）与 4 个 fixture（singbox_137.json / clash.yaml / links_base64.txt / links_plain.txt，全部脱敏数据）。基线 11/11 保持。
+- 未做：配置生成与核心启动（切片 2）、首页大开关与流量三格（切片 3）、测速（切片 4）、真面板联调（等用户给测试订阅）、真机、APK、Win 构建。
+
+### MVP 切片 3：首页大开关＋流量三格＋模式切换（2026-11-23）
+
+- 大开关接真实核心（`lib/features/home/home_page.dart`，ConsumerStatefulWidget）：未连接时点开关先按当前模式 `applyNodes`（校验失败提示“配置生成失败，已保持上次连接”、不启动），再 `start()`；已连接时点开关停核心；无节点时不启动，提示“请先绑定订阅”并跳我的页。状态文案：未连接 / 连接中… / 已连接 / 断开中… / 连接失败：原因。当前节点＝第一个直连节点否则第一个（与配置生成默认选择同一规则），延迟格写“未测速（切片 4 接测速）”。另补了切片 2 的遗留缺口：应用内之前没有任何地方调 `CoreService.init()`（只测试调过），`main.dart` 改成 ConsumerStatefulWidget，`initState` 里 `unawaited(_initCore())`（失败吞掉，点开关时再报错）。
+- 流量三格按 userinfo 口径（`lib/core/userinfo.dart` 重写）：字段改为可空 `int?`；无头（null/空串）返回 null，缺字段/非法值按该字段缺失（不按 0 兜底）；`used`/`remaining`/`usedRatio` 任一分量缺失时为 null；`total` 为 null 或 0＝不限量；`expire` 为 null 或 0＝永不过期。无头/缺字段显示“—”，不限量写“不限量”，剩余＜0 写“已超量”、＝0 写“已用完”，到期写日期＋剩 N 天/今天到期/已到期/永不过期。另有一格“流量口径：仅中转”＋说明“流量口径：仅中转（直连流量不计入，以面板用量为准）”，无头时说明为“未拉到流量数据，刷新订阅后显示；流量口径仅中转，直连流量不计入”。**来源只能是订阅响应的 `subscription-userinfo` 头**（面板无用户自查接口；upload/download/total 为字节、expire 为 Unix 秒）；直连流量不在 userinfo 里，不算进去也不显示成 0。
+- 实时速率读 Clash API（`lib/core/clash_api_client.dart` 新建）：默认 `http://127.0.0.1:9090`，`trafficStream()` 逐行读流式 `/traffic`（坏行跳过，核心未启动时流以错误结束）；`trafficSample()` 用手动 `Timer` 实现超时。已启动且有帧时显示 `↑ x / ↓ y`，否则“—”。
+- 模式切换三档（`lib/core/routing_mode.dart` 新建，`RoutingMode {rule, global, direct}`）：规则（TikTok/社交/流媒体/测 IP 走代理，.cn 直连，其余直连，默认）、全局（全部走代理）、直连（全部直连）。`lib/core/singbox_config.dart` 的 `build` 加 `mode` 参数（默认规则，老调用兼容）；全局＝route 无规则、final 有节点时 `Proxy`、无节点时 `direct`，DNS 规则全部走 dns-proxy；直连＝route 无规则、final direct，DNS 规则全部走 dns-direct。`RoutingModeNotifier`（`lib/services/routing_mode_notifier.dart`）：`setMode` 重新生成配置并（已运行时）重载，成功才提交＋持久化到 shared_preferences（键 `proxy_mode`）；校验失败或重载抛错时保持旧模式、把磁盘配置用旧模式重写回滚，返回 false；启动时异步读回持久化值。
+- 测试：`flutter test` 93/93 全过（基线 65＋新增 28：配置生成模式组 5、Clash API 5、模式切换 7、首页 7、userinfo 更新 4），`flutter analyze` 零问题。真 1.14.4 校验：6 份配置（rule/global/direct × 有节点/空配置）`check` 全过；`run` 冒烟 4 份（rule/global/direct 有节点＋rule 空配置）均起得来，Clash API 返回 `{"meta":true,"premium":true,"version":"sing-box 1.14.4"}`，无 FATAL/ERROR；`/traffic` 真流出帧（`{"up":0,"down":0}`）。
+- 测试里修了一个真坑（与切片 2 同类坑的第三处）：**testWidgets 的 fake 时间下，直接 await 真 dart:io（`File.exists()` / `readAsString()`）永远等不到完成**，开关测试因此挂 10 分钟超时；须把 tap 与所有真文件 IO 都包进 `tester.runAsync`（真实异步区）再 `pumpAndSettle`。另：停核心的 tap 也须在 runAsync 里点，否则插件流第二跳广播微任务在 fake 时间里赶不上 pumpAndSettle，界面还停在“已连接”（service.status 已是 stopped）。`runAsync<T>` 返回 `Future<T?>`，await 后须 `!` 解包。另发现本机 `/tmp`（512M tmpfs）曾被两个被杀掉的 flutter 测试残留目录占到 78%，编译拷 dill 报 No space，已清掉（`/tmp/flutter_tools.*` 是按次生成的临时目录，杀掉的残留可删）。
+- 未做：测速/自动选节点（切片 4）、真面板联调（等用户给测试订阅）、真机、APK、Win 构建。
+
+### MVP 切片 2：sing-box 配置生成＋CoreService 接线（2026-11-22）
+
+- 新增 `lib/core/singbox_config.dart`（`SingboxConfigBuilder`）：从统一节点模型生成完整 sing-box 配置 JSON。DNS 客户端自生成新格式：DoH 双路（1.1.1.1 直连、dns.google 走代理）＋ DoT 8.8.8.8:853 兜底，只解析 IPv4（`strategy: ipv4_only`），不回落明文 UDP 53；`route.default_domain_resolver` 必填。route 规则按 panel-adapter.md §6.1.2 的域名清单：TikTok / 社交 / 流媒体 / 测 IP 走 Proxy，`.cn` 直连，其余直连。出站：节点出站＋selector `Proxy`（默认第一个直连节点）＋urltest `自动选择`＋direct＋block；重名节点加 ` (2)` 后缀；节点为空仍是合法空配置。Clash API（127.0.0.1:9090）预留给切片 3 的实时速率。
+- 节点模型补两个字段（不然配置会缺东西）：`method`（SS 加密方式）、`wsHost`（WS Host 头），三个解析器都填上。
+- 转不了的节点不静默丢弃也不静默降级：grpc 传输（模型没有 service_name）、缺 SS 加密方式、TUIC 账号拆不开的，都进 `skipped`（`名字：原因`），界面可提示；其余节点照常出配置。
+- 新增 `lib/core/config_validator.dart`：插件内置的官方 sing-box 1.14 JSON Schema（纯离线）＋结构检查（legacy `address` 写法、tag 重复、`default_domain_resolver` 缺失、`strategy` 不是 ipv4_only 等）。
+- `CoreService` 接线完成（`lib/core/singbox_core.dart`）：`applyNodes` 按“生成 → 校验 → 写盘 →（已运行时）重载”的顺序，校验失败不写文件、不调重载，旧配置继续跑；配置写插件的 `using_config.json`（原子写）；`start()` 要求先有配置（没有直接报错），首次启动自动建一个名为“哲学系”的本地档案（Android 启动要求 MMKV 里有已选档案）；`init()` 把磁盘上最后一份配置读回内存，App 重启后不用重新拉订阅也能启动。新增 `lib/core/core_provider.dart`（Riverpod 单例，切片 3 首页大开关用）。
+- 插件接线结论（已核对 flutter_sing_box 3.1.0 源码，记进 `docs/api/plugin-decision.md`）：插件没有“设置配置”的 API，配置靠写 `using_config.json` 文件；`serviceReload()` 在插件里实现为重启（停＋起），换配置有短暂断开，不是无缝热重载。
+- 真 1.14.4 二进制校验：生成的 4 份配置（面板 fixture 全协议、链接列表含 HY2、TUIC、空配置）`check -c` 与 `run`（3 秒启动冒烟）全部通过；legacy DNS 对照配置按预期被拒。**run 冒烟抓到两个真问题并已修**：① `detour: direct` 在 1.14.4 启动时被拒（"detour to an empty direct outbound makes no sense"），直连 DNS 与 DoT 不再写 detour；② `detour: proxy` 指向的出站 tag 不存在（面板 selector 叫 `Proxy`，大小写敏感），代理 DNS 的 detour 改成 `Proxy`；③ 节点为空时 `dns.google` 域名在启动时无人解析，空配置的代理 DNS 服务器改用 IP 8.8.8.8。**顺带发现面板 1.3.37 自身的问题**：面板下发的 sing-box JSON（detour direct＋小写 proxy）`check` 能过但 `run` 起不来，须面板侧修（见 `docs/api/panel-adapter.md` §6.1.1 补记）；客户端不受影响（客户端从不透传面板 DNS 段）。
+- 测试：`flutter test` 65/65 全过（基线 38 个＋新增 27 个：配置生成 12、校验器 6、CoreService 9），`flutter analyze` 零问题。测试中抓到并修了一个真 bug：`CoreService.dispose()` 没取消插件状态流的订阅，dispose 后插件再推状态会往已关闭的控制器里写而抛错。
+- 未做：首页大开关与流量三格（切片 3）、测速（切片 4）、真面板联调（等用户给测试订阅）、真机、APK、Win 构建。
