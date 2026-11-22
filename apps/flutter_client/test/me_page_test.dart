@@ -10,6 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:zhexuexi_client/core/userinfo.dart';
 import 'package:zhexuexi_client/features/me/me_page.dart';
 import 'package:zhexuexi_client/services/announcement_service.dart';
+import 'package:zhexuexi_client/services/auth_notifier.dart';
 import 'package:zhexuexi_client/services/nodes_notifier.dart';
 import 'package:zhexuexi_client/services/subscription_auto_refresh.dart';
 import 'package:zhexuexi_client/services/subscription_service.dart';
@@ -99,6 +100,30 @@ class _FakeSubscriptionService extends SubscriptionService {
       : null;
 }
 
+/// 切片 9：账号登录桩（我的页只调 restore/logout，登录页调
+/// defaultPanelDomain；登录本身在 login_page_test 里测）。
+class _StubAuthNotifier extends AuthNotifier {
+  _StubAuthNotifier({this.initialUsername});
+
+  final String? initialUsername;
+  final calls = <String>[];
+
+  @override
+  AuthState build() => AuthState(username: initialUsername);
+
+  @override
+  Future<void> restore() async {}
+
+  @override
+  Future<String> defaultPanelDomain() async => 'ccpanel.jiankong.cf';
+
+  @override
+  Future<void> logout() async {
+    calls.add('logout');
+    state = const AuthState();
+  }
+}
+
 SubscriptionUserinfo _info() {
   final expire = DateTime.now().add(const Duration(days: 45));
   return SubscriptionUserinfo(
@@ -119,16 +144,18 @@ SubscriptionUserinfo _limitedInfo({required int usedMB, int totalMB = 1024}) {
   );
 }
 
-Future<_StubNodesNotifier> _pumpPage(
+Future<({_StubNodesNotifier nodes, _StubAuthNotifier auth})> _pumpPage(
   WidgetTester tester,
   NodesState state, {
   String? notice,
   String? bindError,
   bool bound = true,
+  String? authUsername,
 }) async {
   SharedPreferences.setMockInitialValues({});
   final stub = _StubNodesNotifier(state, bindError: bindError);
   final autoRefresh = _FakeAutoRefresh();
+  final authStub = _StubAuthNotifier(initialUsername: authUsername);
   await tester.pumpWidget(
     ProviderScope(
       overrides: [
@@ -138,12 +165,13 @@ Future<_StubNodesNotifier> _pumpPage(
         subscriptionAutoRefreshProvider.overrideWithValue(autoRefresh),
         subscriptionServiceProvider
             .overrideWithValue(_FakeSubscriptionService(bound: bound)),
+        authProvider.overrideWith(() => authStub),
       ],
       child: const MaterialApp(home: Scaffold(body: MePage())),
     ),
   );
   await tester.pumpAndSettle();
-  return stub;
+  return (nodes: stub, auth: authStub);
 }
 
 void main() {
@@ -198,7 +226,7 @@ void main() {
     );
     await tester.tap(find.text('刷新订阅'));
     await tester.pumpAndSettle();
-    expect(stub.calls, contains('refresh'));
+    expect(stub.nodes.calls, contains('refresh'));
   });
 
   testWidgets('更新失败：原因常驻显示', (tester) async {
@@ -218,6 +246,10 @@ void main() {
       const NodesState(status: NodesStatus.loaded),
       notice: '面板今晚维护',
     );
+    // 公告卡在 ListView 下方（切片 9 加了登录入口卡片后更靠下），
+    // 视口外不构建，先滚到可见再断言。
+    await tester.scrollUntilVisible(find.text('公告'), 200.0);
+    await tester.pumpAndSettle();
     expect(find.text('面板今晚维护'), findsOneWidget);
     expect(find.text('暂无公告'), findsNothing);
   });
@@ -236,7 +268,7 @@ void main() {
     );
     await tester.tap(find.text('绑定'));
     await tester.pumpAndSettle();
-    expect(stub.calls.first, startsWith('bind:https://example.com/'));
+    expect(stub.nodes.calls.first, startsWith('bind:https://example.com/'));
     expect(find.text('绑定订阅'), findsNothing);
   });
 
@@ -269,7 +301,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('退出'));
     await tester.pumpAndSettle();
-    expect(stub.calls, contains('clear'));
+    expect(stub.nodes.calls, contains('clear'));
   });
 
   testWidgets('退出登录：点取消不清', (tester) async {
@@ -283,7 +315,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('取消'));
     await tester.pumpAndSettle();
-    expect(stub.calls, isNot(contains('clear')));
+    expect(stub.nodes.calls, isNot(contains('clear')));
   });
 
   // 切片 8：限流展示（进度条 + 状态文案），只按 userinfo 头算。
@@ -338,5 +370,72 @@ void main() {
     expect(find.byType(LinearProgressIndicator), findsNothing);
     expect(find.textContaining('接近限额'), findsNothing);
     expect(find.textContaining('已超量'), findsNothing);
+  });
+
+  // 切片 9：账号密码登录接线（DEV-PLAN §10.2）。
+  testWidgets('未登录：显示账号登录入口，点进去是登录页', (tester) async {
+    await _pumpPage(
+      tester,
+      NodesState(status: NodesStatus.loaded, userinfo: _info()),
+    );
+    expect(find.text('账号登录'), findsOneWidget);
+    await tester.scrollUntilVisible(find.text('账号登录'), 200.0);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('账号登录'));
+    await tester.pumpAndSettle();
+    expect(find.text('面板域名'), findsOneWidget);
+    expect(find.text('账号'), findsOneWidget);
+    expect(find.text('密码'), findsOneWidget);
+  });
+
+  testWidgets('已登录：账号区显示账号名，登录入口消失', (tester) async {
+    await _pumpPage(
+      tester,
+      NodesState(status: NodesStatus.loaded, userinfo: _info()),
+      authUsername: 'nianba',
+    );
+    expect(find.text('已登录：nianba'), findsOneWidget);
+    // 登录入口卡片消失（副标题“用面板账号登录…”只在入口卡片上有；
+    // 账号区副标题也是“账号登录”四个字，不能拿它断言入口消失）。
+    expect(find.text('用面板账号登录，换设备不用重新导链接'), findsNothing);
+    // 退出登录卡在列表底部，视口外不构建，先滚到可见再断言。
+    await tester.scrollUntilVisible(find.text('退出登录'), 200.0);
+    await tester.pumpAndSettle();
+    expect(
+      find.text('只清除本地登录会话，订阅与节点不受影响'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('已登录退出：只清会话不清订阅', (tester) async {
+    final pumped = await _pumpPage(
+      tester,
+      NodesState(status: NodesStatus.loaded, userinfo: _info()),
+      authUsername: 'nianba',
+    );
+    await tester.scrollUntilVisible(find.text('退出登录'), 200.0);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('退出登录'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('退出'));
+    await tester.pumpAndSettle();
+    expect(pumped.auth.calls, contains('logout'));
+    expect(pumped.nodes.calls, isNot(contains('clear')));
+    expect(find.text('已退出登录，订阅不受影响'), findsOneWidget);
+  });
+
+  testWidgets('未登录退出：仍是清绑定', (tester) async {
+    final pumped = await _pumpPage(
+      tester,
+      NodesState(status: NodesStatus.loaded, userinfo: _info()),
+    );
+    await tester.scrollUntilVisible(find.text('退出登录'), 200.0);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('退出登录'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('退出'));
+    await tester.pumpAndSettle();
+    expect(pumped.auth.calls, isNot(contains('logout')));
+    expect(pumped.nodes.calls, contains('clear'));
   });
 }

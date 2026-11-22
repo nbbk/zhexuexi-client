@@ -5,8 +5,10 @@ import 'package:material_ui/material_ui.dart';
 
 import '../../core/userinfo.dart';
 import '../../services/announcement_service.dart';
+import '../../services/auth_notifier.dart';
 import '../../services/nodes_notifier.dart';
 import '../../services/subscription_auto_refresh.dart';
+import '../auth/login_page.dart';
 
 /// “我的”页（切片 5）：账号区 + 订阅卡片 + 订阅更新 + 公告列表 +
 /// 换绑 / 退出登录。
@@ -19,9 +21,10 @@ import '../../services/subscription_auto_refresh.dart';
 ///   [SubscriptionAutoRefresh]；
 /// - 公告：面板 `GET /api/v1/public-info` 的 `login_notice`，
 ///   拉不到显示“暂无公告”；
-/// - 换绑：粘贴新链接重新绑定；退出登录：清绑定与本地配置。
-/// 账号密码登录在切片 5 还没有（DEV-PLAN §10 是可选登录，
-/// 不在 MVP 切片里），这里只做免登录模式。
+/// - 换绑：粘贴新链接重新绑定；
+/// - 账号登录（切片 9，DEV-PLAN §10.2）：未登录时账号区有“账号登录”入口，
+///   点进登录页；已登录时账号区显示账号名；退出登录分两路——已登录只清
+///   会话、订阅不断线，免登录仍是清绑定与本地配置。
 class MePage extends ConsumerStatefulWidget {
   const MePage({super.key});
 
@@ -40,6 +43,9 @@ class _MePageState extends ConsumerState<MePage> {
     super.initState();
     unawaited(_loadAnnouncement());
     unawaited(_loadSubscriptionHost());
+    // 账号登录态恢复（切片 9）：令牌与账号名都在才算登录态，
+    // 读不到就当免登录，不阻断界面。
+    unawaited(ref.read(authProvider.notifier).restore());
     // 每天自动更新一次（仅 Wi-Fi）：条件不满足时什么都不做。
     unawaited(maybeAutoRefreshSubscription(ref));
   }
@@ -159,9 +165,35 @@ class _MePageState extends ConsumerState<MePage> {
     }
   }
 
-  /// 退出登录：免登录模式下就是清除绑定（订阅与本地配置一并清除），
-  /// 面板侧用户不受影响；要点确认才清。
+  /// 退出登录（DEV-PLAN §10.2）：分两路——
+  /// 已登录只清会话令牌，订阅与节点不受影响；
+  /// 免登录时就是清除绑定（订阅与本地配置一并清除）。
+  /// 两路都要点确认才执行。
   Future<void> _onLogout() async {
+    final loggedIn = ref.read(authProvider).loggedIn;
+    if (loggedIn) {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('退出登录'),
+          content: const Text('退出后只清除本地登录会话，订阅与节点不受影响，确定要退出吗？'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('退出'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true) return;
+      await ref.read(authProvider.notifier).logout();
+      if (mounted) _showSnack('已退出登录，订阅不受影响');
+      return;
+    }
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -193,22 +225,43 @@ class _MePageState extends ConsumerState<MePage> {
     final info = nodesState.userinfo;
     final bound = nodesState.status != NodesStatus.initial;
     final loading = nodesState.status == NodesStatus.loading;
+    final auth = ref.watch(authProvider);
+    final username = auth.username;
 
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        // 账号区：订阅 host、到期日、剩余流量大字。
+        // 账号区：已登录显示账号名；未登录显示绑定状态。
         Card(
           child: ListTile(
             leading: const CircleAvatar(child: Icon(Icons.person)),
-            title: Text(bound ? '已绑定订阅' : '未登录（免登录模式）'),
+            title: Text(username != null
+                ? '已登录：$username'
+                : (bound ? '已绑定订阅' : '未登录（免登录模式）')),
             subtitle: Text(
-              bound
-                  ? (_subscriptionHost ?? '绑定订阅即可使用，无需注册账号')
-                  : '绑定订阅即可使用，无需注册账号',
+              username != null
+                  ? '账号登录'
+                  : (bound
+                      ? (_subscriptionHost ?? '绑定订阅即可使用，无需注册账号')
+                      : '绑定订阅即可使用，无需注册账号'),
             ),
           ),
         ),
+        // 账号登录入口（切片 9）：只在未登录时显示。
+        if (username == null) ...[
+          const SizedBox(height: 16),
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.login),
+              title: const Text('账号登录'),
+              subtitle: const Text('用面板账号登录，换设备不用重新导链接'),
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const LoginPage()),
+              ),
+            ),
+          ),
+        ],
         const SizedBox(height: 16),
         // 订阅卡片：剩余流量大字 + 已用/总量 + 到期日（userinfo 口径）。
         Card(
@@ -335,7 +388,9 @@ class _MePageState extends ConsumerState<MePage> {
           child: ListTile(
             leading: const Icon(Icons.logout),
             title: const Text('退出登录'),
-            subtitle: const Text('退出后订阅与本地配置一并清除'),
+            subtitle: Text(username != null
+                ? '只清除本地登录会话，订阅与节点不受影响'
+                : '退出后订阅与本地配置一并清除'),
             onTap: _onLogout,
           ),
         ),
