@@ -91,3 +91,15 @@
 - 测试：`flutter test` 123/123 全过（基线 93＋新增 30：Clash API 延迟/切换组、配置生成 selector 组、CoreService `updateSelectorDefault` 组、测速 notifier 组、节点页组、首页组），`flutter analyze` 零问题。真 1.14.4 校验：生成的配置（Proxy default=日本-直连）`check` 过、`run` 冒烟起得来（Clash API 在 127.0.0.1:9090 监听）。
 - 未核实：真面板联调（等用户给测试订阅）、真机、APK、Win 构建。**delay 接口成功路径在真机/真节点上尚未验过**：沙箱 MITM 拦截 sing-box 的 DoH 与对外 TLS，sing-box 内 DNS 与对外 TLS 全失败，拿不到成功的 `{"delay": N}`；但回环 204 服务器证明底层测量本身工作（urltest 组 history 出 5ms、3ms），成功路径靠 Dart 假服务器测试覆盖、行为按上游源码核对（200 返回 delay；404 未知出站；408 超时；503 测速失败；delay==0 视为失败）。一键测速要立即出数，不用 urltest 组 history 回退（只能等组内 5 分钟一轮）。
 - 未做：我的页（切片 5）、设置页＋规则＋DNS 防泄漏（切片 6）、远程配置中心＋品牌替换（切片 7）、限流展示＋打包验收（切片 8）。
+
+### MVP 切片 5：我的页（2026-11-23）
+
+- 我的页（`lib/features/me/me_page.dart`，占位改成真实页）：账号区（已绑定显示订阅地址 host，未绑定显示“未登录（免登录模式）”）、订阅卡片（剩余流量大字 + 已用/总量 + 到期日 + “流量口径：仅中转”）、订阅更新卡（上次更新时间 + 手动刷新按钮）、公告卡、换绑订阅、退出登录。数据全部复用 `nodesProvider`，不重复拉订阅。
+- 三格文案抽成公共函数（`lib/core/userinfo.dart` 新增 `usedTotalText` / `remainingText` / `expireText` / `formatDateTime`，首页改调同一套）：无头/缺字段显示“—”不显示 0，不限量写“不限量”，超量写“已超量”，直连流量不计入。
+- 手动刷新：复用 `NodesNotifier.refresh()`；成功记一次时间并提示“订阅已更新”，失败原因（网络不通/订阅 404/令牌失效）在更新卡片里常驻显示，不静默失败。
+- 每天自动更新一次，仅 Wi-Fi（`lib/services/subscription_auto_refresh.dart`，新增 `connectivity_plus 7.3.2` 依赖）：上次成功不到 24 小时不拉、不在 Wi-Fi 下不拉、未绑定不拉、失败不记时间；上次成功时间存 shared_preferences，重启也认；App 启动与我的页打开时各调一次（幂等）；手动刷新成功也算一次。
+- 公告（`lib/services/announcement_service.dart`）：面板公开接口 `GET /api/v1/public-info` 的 `login_notice`，请求走订阅地址 origin，令牌绝不拼进去；拉不到返回上次缓存，没有缓存显示“暂无公告”。
+- 换绑：弹窗粘贴新链接调 `bindAndRefresh`，错了原因显示在弹窗里、不关弹窗；退出登录：确认后调 `clear()` 清绑定与本地配置（面板侧用户不受影响）。
+- 测试：`flutter test` 151/151 全过（基线 123＋新增 28：我的页 10、自动更新 7、公告 6、三格共享文案 5），`flutter analyze` 零问题。测试里修了一个真坑：ListView 下面的卡片在测试视口外不会构建，点之前要用 `scrollUntilVisible` 滚到可见（`ensureVisible` 找不到未构建的 widget）。未改 sing-box 配置生成逻辑，不用真 sing-box 冒烟。
+- 未核实：真面板联调（等用户给测试订阅）、真机、APK、Win 构建；Wi-Fi 检测（connectivity_plus）在真机上尚未验过；公告接口经 Worker 域名是否通尚未验过（拉不到时回退缓存/“暂无公告”）。
+- 未做：设置页＋规则＋DNS 防泄漏（切片 6）、远程配置中心＋品牌替换（切片 7）、限流展示＋打包验收（切片 8）。

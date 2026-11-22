@@ -172,41 +172,13 @@ class _HomePageState extends ConsumerState<HomePage> {
     };
   }
 
-  /// 已用 / 总量格：没有 userinfo 头或已用未知时显示“—”，不编数据；
-  /// 不限量（total 为 null 或 0）时只写已用 + “不限量”。
-  String _usedTotalText(SubscriptionUserinfo? info) {
-    if (info == null) return '—';
-    final used = info.used;
-    if (used == null) return '—';
-    if (info.isUnlimited) return '${formatBytes(used)} / 不限量';
-    return '${formatBytes(used)} / ${formatBytes(info.total!)}';
-  }
+  /// 已用 / 总量格、剩余格、到期格的文案见 `userinfo.dart` 的同名
+  /// 公共函数（首页与我的页共用同一套口径，不各写一份）。
+  String _usedTotalText(SubscriptionUserinfo? info) => usedTotalText(info);
 
-  /// 剩余格：没有头或已用未知时“—”；不限量时“不限量”；超量时“已超量”。
-  String _remainingText(SubscriptionUserinfo? info) {
-    if (info == null) return '—';
-    if (info.isUnlimited) return '不限量';
-    final remaining = info.remaining;
-    if (remaining == null) return '—';
-    if (remaining < 0) return '已超量';
-    if (remaining == 0) return '已用完';
-    return formatBytes(remaining);
-  }
+  String _remainingText(SubscriptionUserinfo? info) => remainingText(info);
 
-  /// 到期格：没有头或头里没给 expire 时“—”；expire 为 0 时“永不过期”；
-  /// 否则写日期＋剩余天数（当天到期写“今天到期”，已过期写“已到期”）。
-  String _expireText(SubscriptionUserinfo? info) {
-    if (info == null || info.expire == null) return '—';
-    if (info.expire == 0) return '永不过期';
-    final date = info.expireDate;
-    if (date == null) return '—';
-    if (info.isExpired) return '已到期';
-    final now = DateTime.now();
-    final today = DateTime(now.year, now.month, now.day);
-    final days = date.difference(today).inDays;
-    if (days <= 0) return '${formatDateYmd(date)}（今天到期）';
-    return '${formatDateYmd(date)}（剩 $days 天）';
-  }
+  String _expireText(SubscriptionUserinfo? info) => expireText(info);
 
   @override
   Widget build(BuildContext context) {

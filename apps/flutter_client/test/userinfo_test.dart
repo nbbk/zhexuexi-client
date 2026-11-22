@@ -85,5 +85,74 @@ void main() {
       expect(formatDateYmd(DateTime(2027, 2, 17)), '2027-02-17');
       expect(formatDateYmd(DateTime(2026, 11, 5)), '2026-11-05');
     });
+
+    test('日期时间格式化 yyyy-MM-dd HH:mm', () {
+      expect(
+        formatDateTime(DateTime(2026, 11, 23, 8, 30)),
+        '2026-11-23 08:30',
+      );
+      expect(
+        formatDateTime(DateTime(2026, 11, 5, 9, 5)),
+        '2026-11-05 09:05',
+      );
+    });
+  });
+
+  group('三格共享文案（首页与我的页同一套口径）', () {
+    SubscriptionUserinfo info({
+      int? upload,
+      int? download,
+      int? total,
+      int? expire,
+    }) =>
+        SubscriptionUserinfo(
+          upload: upload,
+          download: download,
+          total: total,
+          expire: expire,
+        );
+
+    test('已用/总量：不限量只写已用 + “不限量”', () {
+      expect(
+        usedTotalText(info(upload: 100, download: 200, total: 0)),
+        '300 B / 不限量',
+      );
+      expect(
+        usedTotalText(
+          info(upload: 100, download: 200, total: 1024),
+        ),
+        '300 B / 1 KB',
+      );
+    });
+
+    test('剩余：超量写“已超量”，用完写“已用完”', () {
+      expect(
+        remainingText(info(upload: 600, download: 500, total: 1000)),
+        '已超量',
+      );
+      expect(
+        remainingText(info(upload: 600, download: 400, total: 1000)),
+        '已用完',
+      );
+      expect(
+        remainingText(info(upload: 100, download: 200, total: 0)),
+        '不限量',
+      );
+    });
+
+    test('到期：永不过期与已到期', () {
+      expect(expireText(info(expire: 0)), '永不过期');
+      expect(expireText(info(expire: 1000000000)), '已到期');
+      expect(expireText(null), '—');
+      expect(expireText(info()), '—');
+    });
+
+    test('没有头或已用未知：三格都是“—”', () {
+      expect(usedTotalText(null), '—');
+      expect(remainingText(null), '—');
+      expect(expireText(null), '—');
+      expect(usedTotalText(info(total: 1000)), '—');
+      expect(remainingText(info(total: 1000)), '—');
+    });
   });
 }

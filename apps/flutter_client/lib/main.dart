@@ -10,6 +10,7 @@ import 'features/me/me_page.dart';
 import 'features/nodes/nodes_page.dart';
 import 'features/settings/settings_page.dart';
 import 'services/remote_config_service.dart';
+import 'services/subscription_auto_refresh.dart';
 
 /// 哲学系客户端入口（阶段 0：只搭架子 + 最小验证，未接真实面板/节点）。
 ///
@@ -37,6 +38,9 @@ class _ZhexuexiAppState extends ConsumerState<ZhexuexiApp> {
     // 切片 3 首页大开关靠它推状态；失败不阻断界面，大开关点开时
     // 会再报具体原因。
     unawaited(_initCore());
+    // 订阅自动更新（切片 5）：每天一次、仅 Wi-Fi；条件不满足时
+    // 什么都不做，不阻断界面。
+    unawaited(maybeAutoRefreshSubscription(ref));
   }
 
   Future<void> _initCore() async {

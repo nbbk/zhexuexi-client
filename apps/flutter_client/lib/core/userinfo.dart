@@ -123,6 +123,52 @@ String formatBytes(int bytes) {
 /// 速率（字节/秒）转人类可读串：`1.5 KB/s`。
 String formatSpeed(int bytesPerSecond) => '${formatBytes(bytesPerSecond)}/s';
 
+/// 已用 / 总量格：没有 userinfo 头或已用未知时显示“—”，不编数据；
+/// 不限量（total 为 null 或 0）时只写已用 + “不限量”。
+String usedTotalText(SubscriptionUserinfo? info) {
+  if (info == null) return '—';
+  final used = info.used;
+  if (used == null) return '—';
+  if (info.isUnlimited) return '${formatBytes(used)} / 不限量';
+  return '${formatBytes(used)} / ${formatBytes(info.total!)}';
+}
+
+/// 剩余格：没有头或已用未知时“—”；不限量时“不限量”；超量时“已超量”。
+String remainingText(SubscriptionUserinfo? info) {
+  if (info == null) return '—';
+  if (info.isUnlimited) return '不限量';
+  final remaining = info.remaining;
+  if (remaining == null) return '—';
+  if (remaining < 0) return '已超量';
+  if (remaining == 0) return '已用完';
+  return formatBytes(remaining);
+}
+
+/// 到期格：没有头或头里没给 expire 时“—”；expire 为 0 时“永不过期”；
+/// 否则写日期＋剩余天数（当天到期写“今天到期”，已过期写“已到期”）。
+String expireText(SubscriptionUserinfo? info) {
+  if (info == null || info.expire == null) return '—';
+  if (info.expire == 0) return '永不过期';
+  final date = info.expireDate;
+  if (date == null) return '—';
+  if (info.isExpired) return '已到期';
+  final now = DateTime.now();
+  final today = DateTime(now.year, now.month, now.day);
+  final days = date.difference(today).inDays;
+  if (days <= 0) return '${formatDateYmd(date)}（今天到期）';
+  return '${formatDateYmd(date)}（剩 $days 天）';
+}
+
+/// 日期时间转 `yyyy-MM-dd HH:mm`（“上次更新”用，不引 intl）。
+String formatDateTime(DateTime date) {
+  final y = date.year.toString().padLeft(4, '0');
+  final m = date.month.toString().padLeft(2, '0');
+  final d = date.day.toString().padLeft(2, '0');
+  final hh = date.hour.toString().padLeft(2, '0');
+  final mm = date.minute.toString().padLeft(2, '0');
+  return '$y-$m-$d $hh:$mm';
+}
+
 /// 日期转 `yyyy-MM-dd`（不引 intl，只为这一处显示）。
 String formatDateYmd(DateTime date) {
   final y = date.year.toString().padLeft(4, '0');

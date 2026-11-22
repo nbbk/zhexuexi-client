@@ -78,6 +78,18 @@ class SubscriptionService {
     return '$base/$token';
   }
 
+  /// 读订阅地址的 origin（如 `https://example.com`，不含路径与令牌）；
+  /// 未绑定返回 null。公告（`GET /api/v1/public-info`）走这个 origin，
+  /// 令牌绝不拼进公告请求里。
+  Future<String?> readPanelOrigin() async {
+    final prefs = await SharedPreferences.getInstance();
+    final base = prefs.getString(_baseUrlKey);
+    if (base == null || base.isEmpty) return null;
+    final uri = Uri.tryParse(base);
+    if (uri == null || !uri.hasScheme || uri.host.isEmpty) return null;
+    return uri.origin;
+  }
+
   /// 是否已绑定订阅（地址与令牌都在）。
   Future<bool> hasBinding() async => await readSubscriptionUrl() != null;
 
