@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_sing_box/flutter_sing_box.dart';
@@ -132,11 +133,18 @@ class CoreService {
   /// 不调重载，旧配置继续跑，返回 [ConfigApplyResult.ok] = false 与原因。
   /// [mode] 只改 route 与 DNS 规则的解析路径（见
   /// [SingboxConfigBuilder.build]），默认规则模式。
+  /// [selectedNodeName]（切片 4）：selector `Proxy` 的默认出站，
+  /// 没给时按默认规则（第一个直连节点，没有时第一个）。
   Future<ConfigApplyResult> applyNodes(
     List<Node> nodes, {
     RoutingMode mode = RoutingMode.rule,
+    String? selectedNodeName,
   }) async {
-    final built = SingboxConfigBuilder.build(nodes, mode: mode);
+    final built = SingboxConfigBuilder.build(
+      nodes,
+      mode: mode,
+      selectedNodeName: selectedNodeName,
+    );
     final errors = await _validator.validate(built.config);
     if (errors.isNotEmpty) {
       return ConfigApplyResult(
@@ -160,6 +168,46 @@ class CoreService {
       skipped: built.skipped,
       nodeCount: _appliedNodeCount,
     );
+  }
+
+  /// 只改已写入磁盘的配置里 selector `Proxy` 的默认出站（[tag] 是
+  /// 配置里的出站 tag，见 [SingboxConfigBuilder.tagForNode]），
+  /// 不校验、不重载、不动其它字段。
+  ///
+  /// 用途（切片 4）：节点页切换节点时，运行时选择走 Clash API
+  /// 立即生效，下次启动用的默认选择要跟着落盘——不然重启后又回到
+  /// 旧默认。直接改 JSON 的 `default` 字段比整份重新生成更安全：
+  /// 不经过校验与重载，不会因为别的字段出问题把好端端的配置写坏；
+  /// 改完仍是同一份已校验过的配置，只是换了个默认值。
+  /// 没有已写入的配置、配置里没有 Proxy 组、或写盘失败时返回 false。
+  Future<bool> updateSelectorDefault(String tag) async {
+    final json = _currentConfigJson;
+    if (json == null) return false;
+    try {
+      final decoded = jsonDecode(json);
+      if (decoded is! Map<String, dynamic>) return false;
+      final outbounds = decoded['outbounds'];
+      if (outbounds is! List) return false;
+      var found = false;
+      for (final outbound in outbounds) {
+        if (outbound is Map<String, dynamic> &&
+            outbound['tag'] == 'Proxy' &&
+            outbound['type'] == 'selector') {
+          final members = outbound['outbounds'];
+          if (members is List && !members.contains(tag)) return false;
+          outbound['default'] = tag;
+          found = true;
+        }
+      }
+      if (!found) return false;
+      final updated = jsonEncode(decoded);
+      final path = await _usingConfigPath();
+      await _writeAtomically(path, updated);
+      _currentConfigJson = updated;
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
   /// 启动代理。没有可用配置时直接报错，不让核心空跑。

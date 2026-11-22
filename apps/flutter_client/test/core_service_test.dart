@@ -236,4 +236,60 @@ void main() {
       service.dispose();
     });
   });
+
+  group('updateSelectorDefault（切片 4）', () {
+    Future<Map<String, dynamic>> readConfig() async {
+      final decoded = jsonDecode(await File(configPath).readAsString());
+      return decoded as Map<String, dynamic>;
+    }
+
+    String proxyDefault(Map<String, dynamic> config) {
+      final outbounds = config['outbounds'] as List;
+      final proxy = outbounds.cast<Map<String, dynamic>>().firstWhere(
+        (ob) => ob['tag'] == 'Proxy',
+      );
+      return proxy['default'] as String;
+    }
+
+    test('只改 Proxy 的 default，不动其它字段、不重载', () async {
+      final service = makeService();
+      await service.init();
+      final applied = await service.applyNodes([
+        _node('甲-直连'),
+        _node('乙-中转', source: NodeSource.relay),
+      ]);
+      expect(applied.ok, isTrue);
+      expect(proxyDefault(await readConfig()), '甲-直连');
+
+      expect(await service.updateSelectorDefault('乙-中转'), isTrue);
+      final updated = await readConfig();
+      expect(proxyDefault(updated), '乙-中转');
+      // 其它字段原样：节点出站数、route、dns 都没动。
+      expect((updated['outbounds'] as List).length, 6);
+      expect(updated['route'], isNotNull);
+      expect(updated['dns'], isNotNull);
+      // 内存里的配置也跟着变，下次 start 读的就是新默认。
+      expect(service.currentConfigJson, contains('"default":"乙-中转"'));
+      expect(plugin.reloadCalls, 0);
+      service.dispose();
+    });
+
+    test('没有配置、没有 Proxy 组、tag 不在成员里时返回 false', () async {
+      final service = makeService();
+      await service.init();
+      // 还没 applyNodes，磁盘上没有配置。
+      expect(await service.updateSelectorDefault('甲-直连'), isFalse);
+
+      // 空节点配置里没有 Proxy 组。
+      await service.applyNodes([]);
+      expect(await service.updateSelectorDefault('甲-直连'), isFalse);
+
+      // tag 不在 Proxy 成员里：不写盘。
+      await service.applyNodes([_node('甲-直连')]);
+      final before = await File(configPath).readAsString();
+      expect(await service.updateSelectorDefault('不存在的节点'), isFalse);
+      expect(await File(configPath).readAsString(), before);
+      service.dispose();
+    });
+  });
 }

@@ -13,7 +13,8 @@ class TrafficSample {
   String toString() => 'TrafficSample(up=$up, down=$down)';
 }
 
-/// sing-box 内置 Clash API 的最小客户端（切片 3：首页实时速率）。
+/// sing-box 内置 Clash API 的最小客户端（切片 3：首页实时速率；
+/// 切片 4：测速与选出站）。
 ///
 /// 只读 `/traffic`（流式，每秒推一帧）；测速与选出站在切片 4。
 /// 实现按阶段 0 的验证脚本 `docs/validation/stage0/clash_client.dart`：
@@ -54,7 +55,112 @@ class ClashApiClient {
     }
   }
 
-  /// 只取一帧采样（诊断与测试用；超时无帧时抛 [TimeoutException]）。
+  /// 单个出站的延迟（毫秒）；测不到返回 null（调用方当“测速失败”标灰，
+  /// 不抛异常——一键测速要的是一张完整的表，不是第一个失败就炸掉）。
+  ///
+  /// 走 Clash API `GET /proxies/{name}/delay?url=...&timeout=...`。
+  /// 两个实测出来的坑（真 sing-box 1.14.4 验过，不要按直觉改回）：
+  /// - 测速地址必须是 **https**：sing-box 1.14.4 的 delay 处理里
+  ///   `http://` 开头的 url 会被直接清空（见上游
+  ///   experimental/clashapi/proxies.go `getProxyDelay`），http 测速
+  ///   永远 503；所以这里固定用 https://www.gstatic.com/generate_204，
+  ///   与配置里 urltest 组的 http 地址不是同一个（组里用 http 没问题，
+  ///   只有 delay 接口有这个限制）；
+  /// - 超时是毫秒整数，sing-box 按 16 位解析，超过 32767 会 400，
+  ///   调用方不要传更大的 timeout。
+  /// 200 且 `delay` 为非负整数时返回延迟；404（没有这个出站）、408
+  /// （超时）、503（测速失败）与任何网络异常都返回 null。
+  static const String speedTestUrl = 'https://www.gstatic.com/generate_204';
+
+  Future<int?> proxyDelay(
+    String proxyName, {
+    Duration timeout = const Duration(seconds: 5),
+  }) async {
+    final client = _httpClientFactory();
+    try {
+      final uri = Uri.parse(
+        '$_baseUrl/proxies/${Uri.encodeComponent(proxyName)}/delay'
+        '?url=${Uri.encodeQueryComponent(speedTestUrl)}'
+        '&timeout=${timeout.inMilliseconds}',
+      );
+      final request = await client
+          .getUrl(uri)
+          .timeout(const Duration(seconds: 10));
+      final response = await request.close().timeout(
+        const Duration(seconds: 10),
+      );
+      final body = await response.transform(utf8.decoder).join();
+      if (response.statusCode != HttpStatus.ok) return null;
+      final parsed = jsonDecode(body);
+      if (parsed is! Map<String, dynamic>) return null;
+      final delay = parsed['delay'];
+      // delay 为 0 不是“0 毫秒”，是 sing-box 的错误信号（上游
+      // delay==0 时直接回 503，这里只是兜底）；负数同理。
+      if (delay is! num || delay <= 0) return null;
+      return delay.toInt();
+    } catch (_) {
+      return null;
+    } finally {
+      client.close();
+    }
+  }
+
+  /// 把 selector 组 [groupName] 的当前出站切到 [proxyName]。
+  ///
+  /// 走 Clash API `PUT /proxies/{group}`，body `{"name": ...}`；
+  /// 204（sing-box 1.14.4 实测）或 200 返回 true，其余状态码与
+  /// 网络异常返回 false。切换只改运行时选择，不改磁盘配置——
+  /// 要落盘见 [CoreService.updateSelectorDefault]。
+  Future<bool> selectProxy(String groupName, String proxyName) async {
+    final client = _httpClientFactory();
+    try {
+      final uri = Uri.parse(
+        '$_baseUrl/proxies/${Uri.encodeComponent(groupName)}',
+      );
+      final request = await client.putUrl(uri).timeout(
+        const Duration(seconds: 10),
+      );
+      request.headers.contentType = ContentType.json;
+      request.write(jsonEncode({'name': proxyName}));
+      final response = await request.close().timeout(
+        const Duration(seconds: 10),
+      );
+      await response.drain<void>();
+      return response.statusCode == HttpStatus.noContent ||
+          response.statusCode == HttpStatus.ok;
+    } catch (_) {
+      return false;
+    } finally {
+      client.close();
+    }
+  }
+
+  /// 读 selector 组 [groupName] 当前选中的出站名（`now` 字段）；
+  /// 读不到返回 null。供界面确认切换结果用。
+  Future<String?> selectedProxy(String groupName) async {
+    final client = _httpClientFactory();
+    try {
+      final uri = Uri.parse(
+        '$_baseUrl/proxies/${Uri.encodeComponent(groupName)}',
+      );
+      final request = await client
+          .getUrl(uri)
+          .timeout(const Duration(seconds: 10));
+      final response = await request.close().timeout(
+        const Duration(seconds: 10),
+      );
+      final body = await response.transform(utf8.decoder).join();
+      if (response.statusCode != HttpStatus.ok) return null;
+      final parsed = jsonDecode(body);
+      if (parsed is! Map<String, dynamic>) return null;
+      final now = parsed['now'];
+      return now is String && now.isNotEmpty ? now : null;
+    } catch (_) {
+      return null;
+    } finally {
+      client.close();
+    }
+  }
   ///
   /// 注意：不能用 `Stream.timeout`——它对 async* 源流不触发超时
   /// （实测：源流永不推帧时 `.timeout().first` 一直挂住，见

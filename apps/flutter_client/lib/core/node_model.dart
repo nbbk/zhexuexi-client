@@ -101,6 +101,11 @@ class Node {
   /// 测速延迟（毫秒）；null 表示未测速。
   int? latencyMs;
 
+  /// 测速失败（核心里没有该出站、超时、目标不可达等）；
+  /// 与 [latencyMs] 为 null 的“未测速”区分开：失败的节点标灰、
+  /// 不自动选，未测速的只显示“未测速”。
+  bool latencyFailed = false;
+
   @override
   String toString() =>
       'Node($name, ${protocol.label}, $address:$port, ${source.name})';

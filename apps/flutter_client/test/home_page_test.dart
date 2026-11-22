@@ -66,16 +66,18 @@ class _FakeValidator implements ConfigValidator {
 
 /// 节点列表桩：只返回给定的节点与 userinfo，不拉订阅。
 class _StubNodesNotifier extends NodesNotifier {
-  _StubNodesNotifier({required this.nodes, this.userinfo});
+  _StubNodesNotifier({required this.nodes, this.userinfo, this.selected});
 
   final List<Node> nodes;
   final SubscriptionUserinfo? userinfo;
+  final String? selected;
 
   @override
   NodesState build() => NodesState(
     nodes: nodes,
     userinfo: userinfo,
     status: NodesStatus.loaded,
+    selectedNodeName: selected,
   );
 }
 
@@ -128,6 +130,7 @@ void main() {
     WidgetTester tester, {
     List<Node> nodes = const [],
     SubscriptionUserinfo? userinfo,
+    String? selected,
   }) async {
     // 首页内容一屏放不下时 ListView 只构建可见子项，到期格与模式段
     // 会在 800x600 默认视口下不可见；测试用高视口一次全渲染。
@@ -139,7 +142,11 @@ void main() {
         overrides: [
           coreServiceProvider.overrideWithValue(service),
           nodesProvider.overrideWith(
-            () => _StubNodesNotifier(nodes: nodes, userinfo: userinfo),
+            () => _StubNodesNotifier(
+              nodes: nodes,
+              userinfo: userinfo,
+              selected: selected,
+            ),
           ),
           clashApiClientProvider.overrideWithValue(
             ClashApiClient(baseUrl: closedApiBaseUrl),
@@ -209,6 +216,21 @@ void main() {
     // 到期格写“剩 N 天”（带空格，区别于“剩余流量”标签）。
     expect(find.textContaining('剩 '), findsOneWidget);
     expect(find.textContaining('流量口径：仅中转'), findsOneWidget);
+  });
+
+  testWidgets('节点页选过的节点：首页当前节点跟着走，显示测到的延迟', (
+    tester,
+  ) async {
+    final selected = _node('乙-中转', source: NodeSource.relay)
+      ..latencyMs = 120;
+    await pumpHome(
+      tester,
+      nodes: [_node('甲-直连'), selected],
+      selected: '乙-中转',
+    );
+    // 没选过时默认是第一个直连节点（甲）；选过乙之后首页认乙。
+    expect(find.text('当前节点：乙-中转'), findsOneWidget);
+    expect(find.text('延迟 120ms'), findsOneWidget);
   });
 
   testWidgets('头里只有 expire（管理面板模式）：用量格是“—”，到期正常显示', (

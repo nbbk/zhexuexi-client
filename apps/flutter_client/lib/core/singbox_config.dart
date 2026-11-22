@@ -139,7 +139,17 @@ class SingboxConfigBuilder {
 ///   detour、服务器用 IP 8.8.8.8，与空配置规则一致）；
 /// - 直连模式：route 无规则，final = direct；DNS 规则全部走直连解析，
 ///   不让任何 DNS 查询经代理出站（否则“全部直连”名不副实）。
-static SingboxConfigResult build(List<Node> nodes, {RoutingMode mode = RoutingMode.rule}) {
+///
+/// [selectedNodeName]（切片 4）：selector `Proxy` 的默认出站。
+/// 给了且该节点在配置里时用它；没给、名字不在列表里、或该节点
+/// 生成时被跳过时，回落到默认规则（第一个直连节点，没有时第一个）。
+/// 注意这里认的是节点名不是 tag：重名节点加 ` (2)` 后缀的去重
+/// 在生成时做，调用方不用自己算 tag。
+static SingboxConfigResult build(
+  List<Node> nodes, {
+  RoutingMode mode = RoutingMode.rule,
+  String? selectedNodeName,
+}) {
     final skipped = <String>[];
     final outbounds = <Map<String, dynamic>>[];
     final usedTags = <String>{};
@@ -161,7 +171,11 @@ static SingboxConfigResult build(List<Node> nodes, {RoutingMode mode = RoutingMo
 
     if (nodeTags.isNotEmpty) {
       // selector 默认选第一个直连节点，没有直连节点时取第一个节点（面板规则）。
-      final defaultTag = _defaultNodeTag(keptNodes, nodeTags);
+      final defaultTag = _defaultNodeTag(
+        keptNodes,
+        nodeTags,
+        selectedNodeName: selectedNodeName,
+      );
       outbounds.add({
         'type': 'selector',
         'tag': 'Proxy',
@@ -320,13 +334,55 @@ static SingboxConfigResult build(List<Node> nodes, {RoutingMode mode = RoutingMo
     return '$name ($i)';
   }
 
-  /// selector 的默认节点：第一个直连节点，没有时取第一个节点。
+  /// selector 的默认节点：[selectedNodeName] 给了且在配置里时用它；
+  /// 否则第一个直连节点，没有直连节点时取第一个节点。
   /// [keptNodes] 与 [nodeTags] 一一对应（跳过的节点不在其中）。
-  static String _defaultNodeTag(List<Node> keptNodes, List<String> nodeTags) {
+  static String _defaultNodeTag(
+    List<Node> keptNodes,
+    List<String> nodeTags, {
+    String? selectedNodeName,
+  }) {
+    if (selectedNodeName != null) {
+      for (var i = 0; i < keptNodes.length; i++) {
+        if (keptNodes[i].name == selectedNodeName) return nodeTags[i];
+      }
+    }
     for (var i = 0; i < keptNodes.length; i++) {
       if (keptNodes[i].source == NodeSource.direct) return nodeTags[i];
     }
     return nodeTags.first;
+  }
+
+  /// 默认节点名（与 selector 默认选择同一条规则）：第一个直连节点，
+  /// 没有直连节点时取第一个能生成出站的节点，都没有时返回 null。
+  /// 首页“当前节点”与节点页“使用中”都认这个，不各写各的规则。
+  static String? defaultNodeName(List<Node> nodes) {
+    Node? first;
+    for (final node in nodes) {
+      if (_nodeOutbound(node, node.name) == null) continue;
+      first ??= node;
+      if (node.source == NodeSource.direct) return node.name;
+    }
+    return first?.name;
+  }
+
+  /// 节点在配置里的出站 tag（测速与切换认这个 tag，不是节点名）；
+  /// 该节点生成时会被跳过（未知协议、缺 UUID、grpc 等）时返回 null，
+  /// 测速方把它当“测速失败”标灰，不要拿名字去调 delay 接口
+  /// （核心里根本没有这个出站，调了也只是 404）。
+  ///
+  /// 去重规则与 [build] 完全一致（重名加 ` (2)` 后缀，按列表顺序），
+  /// 所以同一个列表算出来的 tag 与配置里的 tag 一一对应。
+  /// [target] 必须是 [nodes] 里的同一个对象（按 identity 认）。
+  static String? tagForNode(List<Node> nodes, Node target) {
+    final usedTags = <String>{};
+    for (final node in nodes) {
+      final tag = _uniqueTag(node.name, usedTags);
+      if (_nodeOutbound(node, tag) == null) continue;
+      usedTags.add(tag);
+      if (identical(node, target)) return tag;
+    }
+    return null;
   }
 
   /// 单个节点转出站；转不了返回 null（原因见 [_skipReason]）。

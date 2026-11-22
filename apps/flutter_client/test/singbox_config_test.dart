@@ -435,4 +435,130 @@ void main() {
       expect(rules[2]['server'], 'dns-proxy');
     });
   });
+
+  group('selector 默认节点与 tag 映射（切片 4）', () {
+    Node node(
+      String name,
+      NodeSource source, {
+      NodeProtocol protocol = NodeProtocol.vless,
+      String transport = 'tcp',
+    }) => Node(
+      name: name,
+      protocol: protocol,
+      address: '203.0.113.1',
+      port: 443,
+      source: source,
+      uuidOrPassword: '11111111-2222-3333-4444-555555555555',
+      transport: transport,
+      tls: true,
+    );
+
+    test('tagForNode：名字就是 tag；重名加 (2) 后缀，与配置一致', () {
+      final a = node('香港-中转', NodeSource.relay);
+      final b = node('香港-中转', NodeSource.relay);
+      final c = node('智利-直连', NodeSource.direct);
+      final nodes = [a, b, c];
+      expect(SingboxConfigBuilder.tagForNode(nodes, a), '香港-中转');
+      expect(SingboxConfigBuilder.tagForNode(nodes, b), '香港-中转 (2)');
+      expect(SingboxConfigBuilder.tagForNode(nodes, c), '智利-直连');
+      // 和 build() 生成的 tag 对得上（同一个列表、同一套去重）。
+      final built = SingboxConfigBuilder.build(nodes);
+      final tags = _outboundsByTag(built.config).keys;
+      expect(tags, containsAll(['香港-中转', '香港-中转 (2)', '智利-直连']));
+    });
+
+    test('tagForNode：生成时会被跳过的节点返回 null', () {
+      final grpc = node(
+        'grpc-直连',
+        NodeSource.direct,
+        transport: 'grpc',
+      );
+      final unknown = node(
+        '未知-直连',
+        NodeSource.direct,
+        protocol: NodeProtocol.unknown,
+      );
+      final ok = node('智利-直连', NodeSource.direct);
+      final nodes = [grpc, unknown, ok];
+      expect(SingboxConfigBuilder.tagForNode(nodes, grpc), isNull);
+      expect(SingboxConfigBuilder.tagForNode(nodes, unknown), isNull);
+      expect(SingboxConfigBuilder.tagForNode(nodes, ok), '智利-直连');
+    });
+
+    test('defaultNodeName：第一个直连节点；没有直连时取第一个', () {
+      expect(
+        SingboxConfigBuilder.defaultNodeName([
+          node('甲-中转', NodeSource.relay),
+          node('乙-直连', NodeSource.direct),
+        ]),
+        '乙-直连',
+      );
+      expect(
+        SingboxConfigBuilder.defaultNodeName([
+          node('甲-中转', NodeSource.relay),
+          node('乙-中转', NodeSource.relay),
+        ]),
+        '甲-中转',
+      );
+      expect(SingboxConfigBuilder.defaultNodeName([]), isNull);
+      // 全是跳过的节点时也没有默认节点。
+      expect(
+        SingboxConfigBuilder.defaultNodeName([
+          node('grpc-直连', NodeSource.direct, transport: 'grpc'),
+        ]),
+        isNull,
+      );
+    });
+
+    test('build(selectedNodeName)：selector 默认用指定的节点', () {
+      final nodes = [
+        node('甲-直连', NodeSource.direct),
+        node('乙-中转', NodeSource.relay),
+      ];
+      final result = SingboxConfigBuilder.build(
+        nodes,
+        selectedNodeName: '乙-中转',
+      );
+      final proxy = _outboundsByTag(result.config)['Proxy']!;
+      expect(proxy['default'], '乙-中转');
+    });
+
+    test('build(selectedNodeName)：名字不在列表里、或节点被跳过时回落默认', () {
+      final nodes = [
+        node('甲-直连', NodeSource.direct),
+        node('乙-中转', NodeSource.relay),
+      ];
+      final unknown = SingboxConfigBuilder.build(
+        nodes,
+        selectedNodeName: '不存在的节点',
+      );
+      expect(
+        _outboundsByTag(unknown.config)['Proxy']!['default'],
+        '甲-直连',
+      );
+      final skipped = SingboxConfigBuilder.build(
+        [
+          node('甲-直连', NodeSource.direct),
+          node('grpc-中转', NodeSource.relay, transport: 'grpc'),
+        ],
+        selectedNodeName: 'grpc-中转',
+      );
+      expect(
+        _outboundsByTag(skipped.config)['Proxy']!['default'],
+        '甲-直连',
+      );
+    });
+
+    test('build 不传 selectedNodeName 时默认规则不变（老调用不受影响）', () {
+      final nodes = [
+        node('甲-中转', NodeSource.relay),
+        node('乙-直连', NodeSource.direct),
+      ];
+      final result = SingboxConfigBuilder.build(nodes);
+      expect(
+        _outboundsByTag(result.config)['Proxy']!['default'],
+        '乙-直连',
+      );
+    });
+  });
 }

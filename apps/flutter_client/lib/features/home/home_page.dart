@@ -108,7 +108,13 @@ class _HomePageState extends ConsumerState<HomePage> {
     setState(() => _busy = true);
     try {
       final mode = ref.read(routingModeProvider).mode;
-      final result = await core.applyNodes(nodesState.nodes, mode: mode);
+      final result = await core.applyNodes(
+        nodesState.nodes,
+        mode: mode,
+        // 带着当前选中的节点生成配置：节点页选过的节点，启动后还用它，
+        // 不然每次启动都回到默认规则（第一个直连节点）。
+        selectedNodeName: nodesState.selectedNodeName,
+      );
       if (!result.ok) {
         _showSnack('配置生成失败，已保持上次连接');
         return;
@@ -142,14 +148,16 @@ class _HomePageState extends ConsumerState<HomePage> {
     );
   }
 
-  /// 当前节点：selector 的默认节点（第一个直连节点，没有时取第一个），
-  /// 与配置生成里的默认选择同一条规则；测速在切片 4，延迟先写“未测速”。
-  Node? _currentNode(List<Node> nodes) {
-    if (nodes.isEmpty) return null;
-    for (final node in nodes) {
-      if (node.source == NodeSource.direct) return node;
+  /// 当前节点：节点页选中的节点（[NodesState.selectedNode]），没选过
+  /// 时按默认规则（第一个直连节点，没有时第一个）；测速在切片 4，
+  /// 测过的节点在这里显示延迟。
+  String _currentNodeSubtitle(Node? currentNode) {
+    if (currentNode == null) return '绑定订阅后自动选择最快的节点';
+    if (currentNode.latencyMs != null) {
+      return '延迟 ${currentNode.latencyMs}ms';
     }
-    return nodes.first;
+    if (currentNode.latencyFailed) return '测速失败';
+    return '未测速';
   }
 
   String _statusText() {
@@ -206,7 +214,7 @@ class _HomePageState extends ConsumerState<HomePage> {
     final nodesState = ref.watch(nodesProvider);
     final modeState = ref.watch(routingModeProvider);
     final info = nodesState.userinfo;
-    final currentNode = _currentNode(nodesState.nodes);
+    final currentNode = nodesState.selectedNode;
     final switching = _status == CoreStatus.starting ||
         _status == CoreStatus.stopping ||
         _busy;
@@ -263,11 +271,7 @@ class _HomePageState extends ConsumerState<HomePage> {
             title: Text(
               currentNode == null ? '当前节点：未选择' : '当前节点：${currentNode.name}',
             ),
-            subtitle: Text(
-              currentNode == null
-                  ? '绑定订阅后自动选择最快的节点'
-                  : '未测速（切片 4 接测速）',
-            ),
+            subtitle: Text(_currentNodeSubtitle(currentNode)),
             trailing: currentNode == null
                 ? TextButton(
                     onPressed: widget.onGoToMe,

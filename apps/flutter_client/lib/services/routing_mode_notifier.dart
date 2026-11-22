@@ -61,9 +61,16 @@ class RoutingModeNotifier extends Notifier<RoutingModeState> {
     if (state.switching) return false;
     state = state.copyWith(switching: true, errorMessage: null);
     final nodes = ref.read(nodesProvider).nodes;
+    final selected = ref.read(nodesProvider).selectedNodeName;
     final core = ref.read(coreServiceProvider);
     try {
-      final result = await core.applyNodes(nodes, mode: next);
+      final result = await core.applyNodes(
+        nodes,
+        mode: next,
+        // 带着当前选中的节点生成配置：模式切换不能把节点页选过的节点
+        // 换回默认规则；回滚那次同样要带。
+        selectedNodeName: selected,
+      );
       if (!result.ok) {
         state = state.copyWith(
           switching: false,
@@ -75,7 +82,11 @@ class RoutingModeNotifier extends Notifier<RoutingModeState> {
       // 重载抛错：磁盘已是新模式配置，立即用旧模式重写一份回滚；
       // 回滚本身失败也不再抛，状态仍是旧模式，界面提示失败。
       try {
-        await core.applyNodes(nodes, mode: prev);
+        await core.applyNodes(
+          nodes,
+          mode: prev,
+          selectedNodeName: selected,
+        );
       } catch (_) {}
       state = state.copyWith(
         switching: false,

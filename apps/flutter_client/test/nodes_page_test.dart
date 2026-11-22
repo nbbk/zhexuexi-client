@@ -12,6 +12,7 @@ class _StubNodesNotifier extends NodesNotifier {
   _StubNodesNotifier(this._state);
 
   final NodesState _state;
+  final calls = <String>[];
 
   @override
   NodesState build() => _state;
@@ -23,6 +24,28 @@ class _StubNodesNotifier extends NodesNotifier {
 
   @override
   Future<void> bindAndRefresh(String link) async {}
+
+  @override
+  Future<bool> testAllSpeeds() async {
+    calls.add('test');
+    return true;
+  }
+
+  @override
+  Future<bool> autoSelect() async {
+    calls.add('auto');
+    return true;
+  }
+
+  @override
+  Future<bool> selectNode(
+    Node node, {
+    String? reason,
+    bool auto = false,
+  }) async {
+    calls.add('select:${node.name}');
+    return true;
+  }
 }
 
 Node _node(String name, NodeSource source, {bool plain = false}) {
@@ -38,19 +61,19 @@ Node _node(String name, NodeSource source, {bool plain = false}) {
   );
 }
 
-Future<void> _pumpPage(
+Future<_StubNodesNotifier> _pumpPage(
   WidgetTester tester,
   NodesState state,
 ) async {
+  final stub = _StubNodesNotifier(state);
   await tester.pumpWidget(
     ProviderScope(
-      overrides: [
-        nodesProvider.overrideWith(() => _StubNodesNotifier(state)),
-      ],
+      overrides: [nodesProvider.overrideWith(() => stub)],
       child: const MaterialApp(home: Scaffold(body: NodesPage())),
     ),
   );
   await tester.pumpAndSettle();
+  return stub;
 }
 
 void main() {
@@ -122,5 +145,109 @@ void main() {
     );
     expect(find.text('订阅已失效，请重新绑定'), findsOneWidget);
     expect(find.text('重新拉取'), findsOneWidget);
+  });
+
+  testWidgets('一键测速与自动选择按钮可用，点了调对应方法', (tester) async {
+    final stub = await _pumpPage(
+      tester,
+      NodesState(
+        nodes: [_node('智利-直连', NodeSource.direct)],
+        status: NodesStatus.loaded,
+      ),
+    );
+    await tester.tap(find.text('一键测速'));
+    await tester.pumpAndSettle();
+    expect(stub.calls, contains('test'));
+    await tester.tap(find.text('自动选择'));
+    await tester.pumpAndSettle();
+    expect(stub.calls, contains('auto'));
+  });
+
+  testWidgets('测速结果：测到的写延迟，失败的标灰写“测速失败”', (tester) async {
+    final fast = _node('智利-直连', NodeSource.direct)..latencyMs = 86;
+    final bad = _node('坏节点-直连', NodeSource.direct)
+      ..latencyFailed = true;
+    await _pumpPage(
+      tester,
+      NodesState(nodes: [fast, bad], status: NodesStatus.loaded),
+    );
+    expect(find.text('86ms'), findsOneWidget);
+    expect(find.text('测速失败'), findsOneWidget);
+    expect(find.text('未测速'), findsNothing);
+  });
+
+  testWidgets('当前节点标“使用中”且在组内置顶', (tester) async {
+    await _pumpPage(
+      tester,
+      NodesState(
+        nodes: [
+          _node('日本-直连', NodeSource.direct),
+          _node('智利-直连', NodeSource.direct),
+        ],
+        status: NodesStatus.loaded,
+        selectedNodeName: '智利-直连',
+      ),
+    );
+    expect(find.text('使用中'), findsOneWidget);
+    // 列表里智利在日本前面（置顶），虽然原顺序是日本在前。
+    final texts = tester
+        .widgetList<Text>(find.byType(Text))
+        .map((t) => t.data ?? '')
+        .toList();
+    expect(
+      texts.indexOf('智利-直连') < texts.indexOf('日本-直连'),
+      isTrue,
+    );
+  });
+
+  testWidgets('测速中：按钮显示进度且禁用', (tester) async {
+    await _pumpPage(
+      tester,
+      NodesState(
+        nodes: [_node('智利-直连', NodeSource.direct)],
+        status: NodesStatus.loaded,
+        testingSpeed: true,
+        speedTestedCount: 1,
+        speedTestTotal: 3,
+      ),
+    );
+    expect(find.text('测速中 1/3'), findsOneWidget);
+    final testButton = tester.widget<OutlinedButton>(
+      find.ancestor(
+        of: find.text('测速中 1/3'),
+        matching: find.byType(OutlinedButton),
+      ),
+    );
+    expect(testButton.onPressed, isNull);
+  });
+
+  testWidgets('选择原因与测速失败原因常驻显示', (tester) async {
+    await _pumpPage(
+      tester,
+      NodesState(
+        nodes: [_node('智利-直连', NodeSource.direct)],
+        status: NodesStatus.loaded,
+        speedTestError: '核心未启动，先在首页打开开关再测速',
+        selectionReason: '已选 智利-直连：延迟最低 86ms（共测 1 个，0 个失败）',
+      ),
+    );
+    expect(find.text('核心未启动，先在首页打开开关再测速'), findsOneWidget);
+    expect(find.textContaining('已选 智利-直连'), findsOneWidget);
+  });
+
+  testWidgets('点一行选中该节点', (tester) async {
+    final stub = await _pumpPage(
+      tester,
+      NodesState(
+        nodes: [
+          _node('智利-直连', NodeSource.direct),
+          _node('日本-直连', NodeSource.direct),
+        ],
+        status: NodesStatus.loaded,
+      ),
+    );
+    await tester.tap(find.text('日本-直连'));
+    await tester.pumpAndSettle();
+    expect(stub.calls, contains('select:日本-直连'));
   });
 }
