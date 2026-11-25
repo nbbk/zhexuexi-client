@@ -113,7 +113,9 @@ class RemoteConfigNotifier extends Notifier<RemoteConfigState> {
           RemoteConfigSource.fresh,
         RemoteConfigRefreshStatus.offlineCached =>
           RemoteConfigSource.cached,
-        RemoteConfigRefreshStatus.failed => RemoteConfigSource.bundled,
+        RemoteConfigRefreshStatus.failed ||
+        RemoteConfigRefreshStatus.notPublished =>
+          RemoteConfigSource.bundled,
       };
       state = RemoteConfigState(
         config: result.config,

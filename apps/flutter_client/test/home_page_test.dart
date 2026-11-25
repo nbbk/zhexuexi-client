@@ -21,6 +21,7 @@ import 'package:zhexuexi_client/core/userinfo.dart';
 import 'package:zhexuexi_client/features/home/home_page.dart';
 import 'package:zhexuexi_client/services/nodes_notifier.dart';
 import 'package:zhexuexi_client/services/remote_config_notifier.dart';
+import 'package:zhexuexi_client/widgets/glass_card.dart';
 import 'package:zhexuexi_client/widgets/power_button.dart';
 
 /// 插件 fake：只记调用、不碰平台通道，状态由测试手动推。
@@ -96,18 +97,34 @@ Node _node(String name, {NodeSource source = NodeSource.direct}) => Node(
   sni: 'example.com',
 );
 
-/// 远程配置桩：只返回给定的配置，不拉网络、不读缓存。
+/// 远程配置桩：只返回给定的配置与来源，不拉网络、不读缓存。
 class _StubRemoteConfigNotifier extends RemoteConfigNotifier {
-  _StubRemoteConfigNotifier(this._config);
+  _StubRemoteConfigNotifier(this._config, {this.source = RemoteConfigSource.fresh});
 
   final RemoteConfig _config;
+  final RemoteConfigSource source;
 
   @override
   RemoteConfigState build() => RemoteConfigState(
         config: _config,
-        source: RemoteConfigSource.fresh,
+        source: source,
       );
 }
+
+/// bundled 配置（包内默认值、没拉到远程时）：不强制更新。
+RemoteConfig _bundledConfig() => RemoteConfig(
+      configVersion: 2,
+      minAppVersion: '0.1.0',
+      forceUpdate: false,
+      brand: BrandConfig.defaults(),
+      panelDomain: 'panel.example.com',
+      panelApiBase: '',
+      minPanelVersion: '1.3.29',
+      subscriptionUrl: '',
+      subscriptionBackupUrls: const [],
+      subscriptionFormat: 'singbox',
+      features: const RemoteConfigFeatures(),
+    );
 
 /// 强制更新的配置（当前版本 0.1.0 < 最低 0.2.0，带下载地址）。
 RemoteConfig _forceUpdateConfig() => RemoteConfig(
@@ -177,10 +194,12 @@ void main() {
     SubscriptionUserinfo? userinfo,
     String? selected,
     RemoteConfig? remoteConfig,
+    RemoteConfigSource remoteSource = RemoteConfigSource.fresh,
+    Size viewSize = const Size(800, 1600),
   }) async {
     // 首页内容一屏放不下时 ListView 只构建可见子项，到期格与模式段
     // 会在 800x600 默认视口下不可见；测试用高视口一次全渲染。
-    tester.view.physicalSize = const Size(800, 1600);
+    tester.view.physicalSize = viewSize;
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
     await tester.pumpWidget(
@@ -199,7 +218,10 @@ void main() {
           ),
           if (remoteConfig != null)
             remoteConfigProvider.overrideWith(
-              () => _StubRemoteConfigNotifier(remoteConfig),
+              () => _StubRemoteConfigNotifier(
+                remoteConfig,
+                source: remoteSource,
+              ),
             ),
         ],
         child: MaterialApp(
@@ -420,6 +442,65 @@ void main() {
     expect(find.text('https://example.com/download'), findsOneWidget);
   });
 
+  // bundled 配置提示可关闭（第 5 项）：× 关闭、重试保留、持久化后重进不再出现。
+  testWidgets('bundled 提示：首次出现，带关闭按钮与重试', (tester) async {
+    await pumpHome(
+      tester,
+      remoteConfig: _bundledConfig(),
+      remoteSource: RemoteConfigSource.bundled,
+    );
+    expect(find.text('首次启动需要联网拉取配置'), findsOneWidget);
+    expect(find.text('拉不到配置也能先手动粘贴订阅使用'), findsOneWidget);
+    expect(find.text('重试'), findsOneWidget);
+    expect(find.byTooltip('关闭提示'), findsOneWidget);
+    // offline 与强制更新那两条不受影响：这里只出现 bundled 这一条。
+    expect(find.text('配置中心暂时连不上，正在用上次的配置'), findsNothing);
+    expect(find.text('当前版本过低，请升级后使用'), findsNothing);
+  });
+
+  testWidgets('bundled 提示：点 × 后整条消失、标志已持久化、重进不再出现', (
+    tester,
+  ) async {
+    await pumpHome(
+      tester,
+      remoteConfig: _bundledConfig(),
+      remoteSource: RemoteConfigSource.bundled,
+    );
+    expect(find.text('首次启动需要联网拉取配置'), findsOneWidget);
+    // 点 ×：异步持久化走真方法通道，包在 runAsync 里等它完成
+    //（见 tapSwitch：fake 时间下直接 await 等不到方法通道回包）。
+    await tester.runAsync(() async {
+      await tester.tap(find.byTooltip('关闭提示'));
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+    });
+    await tester.pump();
+    expect(find.text('首次启动需要联网拉取配置'), findsNothing);
+    expect(find.text('拉不到配置也能先手动粘贴订阅使用'), findsNothing);
+    final prefs = await tester.runAsync(
+      () => SharedPreferences.getInstance(),
+    );
+    expect(prefs?.getBool(HomePage.bundledConfigHintDismissedKey), isTrue);
+    // 重进首页（新 ProviderScope、新 HomePage 状态）：仍不出现。
+    await pumpHome(
+      tester,
+      remoteConfig: _bundledConfig(),
+      remoteSource: RemoteConfigSource.bundled,
+    );
+    expect(find.text('首次启动需要联网拉取配置'), findsNothing);
+  });
+
+  testWidgets('bundled 提示：已关过时源仍是 bundled 也不再出现', (tester) async {
+    SharedPreferences.setMockInitialValues({
+      HomePage.bundledConfigHintDismissedKey: true,
+    });
+    await pumpHome(
+      tester,
+      remoteConfig: _bundledConfig(),
+      remoteSource: RemoteConfigSource.bundled,
+    );
+    expect(find.text('首次启动需要联网拉取配置'), findsNothing);
+  });
+
   testWidgets('强制更新：配置里没给下载地址时只说明原因', (tester) async {
     final config = _forceUpdateConfig();
     final noUrl = RemoteConfig(
@@ -441,5 +522,110 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('需要升级客户端'), findsOneWidget);
     expect(find.text('下载地址（长按复制）：'), findsNothing);
+  });
+
+  // 第 9 项：首页卡片固定尺寸——状态卡与流量格不再随内容长短伸缩。
+  //
+  // 某张卡片的盒尺寸取 GlassCard 内部 ClipRRect 的尺寸（不含外边距），
+  // 这样带 margin bottom spacingXs 的状态卡与无 margin 的当前节点卡
+  // 才能直接比高度；宽度同理是卡片本身的宽。
+  Size cardBoxSize(WidgetTester tester, String text) {
+    final card = find
+        .byType(GlassCard)
+        .evaluate()
+        .map((e) => e.widget)
+        .firstWhere(
+          (w) =>
+              find
+                  .descendant(
+                    of: find.byWidget(w),
+                    matching: find.textContaining(text),
+                  )
+                  .evaluate()
+                  .isNotEmpty,
+        );
+    return tester.getSize(
+      find.descendant(
+        of: find.byWidget(card),
+        matching: find.byType(ClipRRect),
+      ),
+    );
+  }
+
+  testWidgets('卡片固定尺寸（bundled 场景）：状态卡等高 72、流量格等高 102', (
+    tester,
+  ) async {
+    // 长节点名＋大流量数值：改动前标题换行、数值换行会把卡片撑高，
+    // 现在超长文案内部省略，卡片高度不动。
+    final expire =
+        DateTime.now().add(const Duration(days: 30)).millisecondsSinceEpoch ~/
+        1000;
+    final info = SubscriptionUserinfo.parse(
+      'upload=1610612736; download=0; total=10737418240; expire=$expire',
+    );
+    await pumpHome(
+      tester,
+      nodes: [_node('测试机-reality-443-这是一个很长的节点名字')],
+      userinfo: info,
+      remoteConfig: _bundledConfig(),
+      remoteSource: RemoteConfigSource.bundled,
+      viewSize: const Size(390, 2000),
+    );
+    // 状态卡：bundled 提示、公告、当前节点——同高同宽、左右对齐。
+    final statusSizes = [
+      cardBoxSize(tester, '首次启动需要联网拉取配置'),
+      cardBoxSize(tester, '暂无公告'),
+      cardBoxSize(tester, '当前节点'),
+    ];
+    for (final size in statusSizes) {
+      expect(size.height, 72);
+    }
+    expect(
+      statusSizes.map((s) => s.width).toSet(),
+      hasLength(1),
+    );
+    // 流量格：实时速率、已用 / 总量、剩余流量、到期日、流量口径——
+    // 同高同宽（数值两行那格不再比单行那格高）。
+    final statSizes = [
+      cardBoxSize(tester, '实时速率'),
+      cardBoxSize(tester, '已用 / 总量'),
+      cardBoxSize(tester, '剩余流量'),
+      cardBoxSize(tester, '到期日'),
+      cardBoxSize(tester, '流量口径'),
+    ];
+    for (final size in statSizes) {
+      expect(size.height, 102);
+    }
+    expect(
+      statSizes.map((s) => s.width).toSet(),
+      hasLength(1),
+    );
+    // 超长节点名被省略显示，没有把卡片撑高（上两组断言已覆盖高度）。
+    expect(find.textContaining('当前节点：测试机-reality-443'), findsOneWidget);
+  });
+
+  testWidgets('卡片固定尺寸（强制更新＋离线场景）：五张状态卡都等高 72', (
+    tester,
+  ) async {
+    await pumpHome(
+      tester,
+      nodes: [_node('甲-直连')],
+      remoteConfig: _forceUpdateConfig(),
+      remoteSource: RemoteConfigSource.cached,
+      viewSize: const Size(390, 2000),
+    );
+    final statusSizes = [
+      cardBoxSize(tester, '当前版本过低'),
+      cardBoxSize(tester, '配置中心暂时连不上'),
+      cardBoxSize(tester, '暂无公告'),
+      cardBoxSize(tester, '当前节点'),
+    ];
+    for (final size in statusSizes) {
+      expect(size.height, 72);
+    }
+    expect(
+      statusSizes.map((s) => s.width).toSet(),
+      hasLength(1),
+    );
   });
 }

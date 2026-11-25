@@ -10,6 +10,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:zhexuexi_client/features/auth/login_page.dart';
 import 'package:zhexuexi_client/services/auth_notifier.dart';
+import 'package:zhexuexi_client/widgets/app_icon.dart';
 
 class _StubAuthNotifier extends AuthNotifier {
   _StubAuthNotifier({
@@ -121,9 +122,7 @@ void main() {
     expect(find.text('账号'), findsOneWidget);
     expect(find.text('密码'), findsOneWidget);
     expect(find.text('登录'), findsOneWidget);
-    final domainField = tester.widget<TextField>(
-      find.byType(TextField).at(0),
-    );
+    final domainField = tester.widget<TextField>(find.byType(TextField).at(0));
     expect(domainField.controller?.text, 'ccpanel.jiankong.cf');
     // 密码默认是密文。
     final passwordField = tester.widget<TextField>(
@@ -133,13 +132,8 @@ void main() {
   });
 
   testWidgets('域名未配置：域名框留空，提示常驻显示', (tester) async {
-    await _pumpLoginPage(
-      tester,
-      stub: _StubAuthNotifier(defaultDomain: ''),
-    );
-    final domainField = tester.widget<TextField>(
-      find.byType(TextField).at(0),
-    );
+    await _pumpLoginPage(tester, stub: _StubAuthNotifier(defaultDomain: ''));
+    final domainField = tester.widget<TextField>(find.byType(TextField).at(0));
     expect(domainField.controller?.text, '');
     expect(find.text('面板地址未配置，请填写面板域名'), findsOneWidget);
     // 填上域名后提示消失。
@@ -151,17 +145,15 @@ void main() {
   testWidgets('密码可见切换：点眼睛图标切换明文/密文', (tester) async {
     await _pumpLoginPage(tester);
     expect(
-      tester
-          .widget<TextField>(find.byType(TextField).at(2))
-          .obscureText,
+      tester.widget<TextField>(find.byType(TextField).at(2)).obscureText,
       isTrue,
     );
-    await tester.tap(find.byIcon(Icons.visibility));
+    // 密码框的眼睛已迁到 Lucide（AppIcons.eye / eyeOff），
+    // 不再是 Material Icons.visibility。
+    await tester.tap(find.byIcon(AppIcons.eye));
     await tester.pump();
     expect(
-      tester
-          .widget<TextField>(find.byType(TextField).at(2))
-          .obscureText,
+      tester.widget<TextField>(find.byType(TextField).at(2)).obscureText,
       isFalse,
     );
   });
@@ -184,10 +176,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('账号或密码不对'), findsOneWidget);
     expect(find.text('登录'), findsOneWidget);
-    expect(
-      stub.calls,
-      ['login:ccpanel.jiankong.cf:nianba'],
-    );
+    expect(stub.calls, ['login:ccpanel.jiankong.cf:nianba']);
   });
 
   testWidgets('登录中：按钮变“登录中…”且防重复点，成功后回我的页', (tester) async {

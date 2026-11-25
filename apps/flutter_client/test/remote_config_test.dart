@@ -458,6 +458,40 @@ void main() {
       expect(result.config.configVersion, 3);
     });
 
+    test('全部地址都 404 且无缓存：状态 notPublished，不是网络问题', () async {
+      final keys = _TempKeys();
+      await keys.init();
+      final prefs = await SharedPreferences.getInstance();
+      final service = RemoteConfigService(
+        dio: _configDio({
+          configUrlA: (status: 404, body: ''),
+          configUrlB: (status: 404, body: ''),
+        }),
+        configUrls: [configUrlA, configUrlB],
+        prefs: prefs,
+        publicKeyBase64: keys.publicKeyBase64,
+      );
+      final result = await service.refresh();
+      expect(result.status, RemoteConfigRefreshStatus.notPublished);
+      expect(result.config.configVersion, 0);
+    });
+
+    test('404 与断网混着：不是全 404，仍是 failed', () async {
+      final keys = _TempKeys();
+      await keys.init();
+      final prefs = await SharedPreferences.getInstance();
+      // configUrlB 不在假 Dio 的表里：按 _configDio 的约定算断网。
+      final service = RemoteConfigService(
+        dio: _configDio({configUrlA: (status: 404, body: '')}),
+        configUrls: [configUrlA, configUrlB],
+        prefs: prefs,
+        publicKeyBase64: keys.publicKeyBase64,
+      );
+      final result = await service.refresh();
+      expect(result.status, RemoteConfigRefreshStatus.failed);
+      expect(result.config.configVersion, 0);
+    });
+
     test('缓存被改坏就当作没有缓存', () async {
       final keys = _TempKeys();
       await keys.init();

@@ -73,7 +73,8 @@ class Node {
     this.subscriptionName,
   });
 
-  /// 显示名（订阅里的节点名；中转节点名以“-中转”结尾，直连以“-直连”结尾）。
+  /// 显示名（订阅里的节点名；旧后缀 -中转/-直连，面板 1.4.25 起
+  /// twin 双链接用 -A（直连）/-B（中转）后缀区分）。
   final String name;
 
   final NodeProtocol protocol;

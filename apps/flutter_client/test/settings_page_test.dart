@@ -331,6 +331,40 @@ void main() {
     expect(find.textContaining('检查失败，请检查网络后重试'), findsOneWidget);
   });
 
+  testWidgets('检查更新：全部地址都 404 时报远程配置暂未发布，不说网络问题', (
+    tester,
+  ) async {
+    // 假 Dio：任何地址都直接回 404（服务端缺口：配置还没发布）。
+    final dio = Dio();
+    dio.interceptors.add(
+      InterceptorsWrapper(
+        onRequest: (options, handler) {
+          handler.resolve(
+            Response<String>(
+              requestOptions: options,
+              statusCode: 404,
+              data: '',
+            ),
+          );
+        },
+      ),
+    );
+    final service = RemoteConfigService(
+      dio: dio,
+      configUrls: const ['http://127.0.0.1:18081/client-config.json'],
+    );
+    await pumpSettings(
+      tester,
+      extraOverrides: [
+        remoteConfigServiceProvider.overrideWithValue(service),
+      ],
+    );
+    await tapAsync(tester, find.text('检查更新'));
+    expect(find.textContaining('当前版本 0.1.0'), findsOneWidget);
+    expect(find.textContaining('远程配置暂未发布'), findsOneWidget);
+    expect(find.textContaining('请检查网络后重试'), findsNothing);
+  });
+
   testWidgets('检查更新：拉到新版时报已更新到配置版本', (tester) async {
     // 真密钥签名的 fixture（test/fixtures/remote_config_v1.json，
     // v1）：假 Dio 返回它，服务用编译进客户端的公钥验签。

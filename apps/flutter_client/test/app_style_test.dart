@@ -25,15 +25,15 @@ void main() {
 
     test('默认主题 token 是定好的品牌色（墨蓝＋香槟金＋象牙白）', () {
       final t = AppThemes.day.tokens;
-      expect(t.deepBlue, const Color(0xFF0A1E36));
-      expect(t.deepBlueLight, const Color(0xFF10263F));
-      expect(t.gold, const Color(0xFFC2A15C));
-      expect(t.goldHighlight, const Color(0xFFD8C08A));
+      expect(t.deepBlue, const Color(0xFF082E63));
+      expect(t.deepBlueLight, const Color(0xFF0B3D84));
+      expect(t.gold, const Color(0xFFEEC362));
+      expect(t.goldHighlight, const Color(0xFFF4D89A));
       expect(t.background, const Color(0xFFFAF7F0));
       expect(t.secondaryText, const Color(0xFF5C6B7A));
       expect(t.powerGradient, [
-        const Color(0xFF0A1E36),
-        const Color(0xFF10263F),
+        const Color(0xFF082E63),
+        const Color(0xFF0B3D84),
       ]);
       // 没有紫色/粉色渐变。
       expect(
@@ -47,7 +47,7 @@ void main() {
     test('夜晚主题 token：墨蓝黑底＋香槟金点缀', () {
       expect(AppThemes.night.brightness, Brightness.dark);
       expect(AppThemes.night.tokens.background, const Color(0xFF070F1C));
-      expect(AppThemes.night.tokens.gold, const Color(0xFFC2A15C));
+      expect(AppThemes.night.tokens.gold, const Color(0xFFEEC362));
     });
 
     test('主题定义能编出 ThemeData：底色、扩展 token 都在', () {
@@ -56,6 +56,20 @@ void main() {
       expect(data.scaffoldBackgroundColor, const Color(0xFFFAF7F0));
       expect(data.extension<AppThemeTokens>(), isNotNull);
       expect(AppThemes.night.themeData.brightness, Brightness.dark);
+      // 顶栏刷成墨蓝（不要 M3 默认浅灰蓝 surface），标题与图标走白色。
+      expect(
+        data.appBarTheme.backgroundColor,
+        const Color(0xFF082E63),
+      );
+      expect(data.appBarTheme.foregroundColor, Colors.white);
+      expect(
+        AppThemes.night.themeData.appBarTheme.backgroundColor,
+        const Color(0xFF082E63),
+      );
+      expect(
+        AppThemes.night.themeData.appBarTheme.foregroundColor,
+        Colors.white,
+      );
     });
 
     test('ThemeNotifier：默认白天，切换持久化，重建读回夜晚', () async {
@@ -191,8 +205,8 @@ void main() {
       final decoration = container.decoration! as BoxDecoration;
       final gradient = decoration.gradient! as LinearGradient;
       expect(gradient.colors, [
-        const Color(0xFF0A1E36),
-        const Color(0xFF10263F),
+        const Color(0xFF082E63),
+        const Color(0xFF0B3D84),
       ]);
       // 开态有金色细环（边框）。
       expect(decoration.border, isNotNull);

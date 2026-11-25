@@ -311,19 +311,19 @@ void main() {
   group('哲人侧脸图标', () {
     test('SignalPhilosopherPainter：字段与 shouldRepaint', () {
       final a = SignalPhilosopherPainter(
-        const Color(0xFFD8C08A),
+        const Color(0xFFF4D89A),
         isOn: true,
         progress: 0.2,
         animated: true,
       );
       final b = SignalPhilosopherPainter(
-        const Color(0xFFD8C08A),
+        const Color(0xFFF4D89A),
         isOn: true,
         progress: 0.5,
         animated: true,
       );
       final c = SignalPhilosopherPainter(
-        const Color(0xFFD8C08A),
+        const Color(0xFFF4D89A),
         isOn: true,
         progress: 0.2,
         animated: true,
@@ -347,7 +347,7 @@ void main() {
         const MaterialApp(
           home: Scaffold(
             body: PowerButtonIcon(
-              color: Color(0xFFD8C08A),
+              color: Color(0xFFF4D89A),
               size: 48,
               isOn: true,
             ),

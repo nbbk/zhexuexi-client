@@ -17,6 +17,7 @@ class GlassCard extends StatelessWidget {
     this.padding,
     this.margin,
     this.borderRadius = AppTokens.radiusLarge,
+    this.height,
   });
 
   final Widget child;
@@ -30,12 +31,17 @@ class GlassCard extends StatelessWidget {
   /// 圆角（全端统一，默认 16，见 [AppTokens.radiusLarge]）。
   final double borderRadius;
 
+  /// 固定高度（不传时由 child 内容定高）。首页状态卡与流量格用它
+  /// 统一高度：内容超长时内部省略，不把卡片撑高。
+  final double? height;
+
   @override
   Widget build(BuildContext context) {
     final tokens = appThemeTokensOf(context);
     final dark = Theme.of(context).brightness == Brightness.dark;
     final radius = BorderRadius.circular(borderRadius);
     return Container(
+      height: height,
       margin: margin,
       decoration: BoxDecoration(
         borderRadius: radius,

@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:material_ui/material_ui.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../core/app_motion.dart';
 import '../../widgets/app_icon.dart';
@@ -31,6 +32,13 @@ import '../../widgets/power_button.dart';
 class HomePage extends ConsumerStatefulWidget {
   const HomePage({super.key, required this.onGoToMe});
 
+  /// bundled 配置提示被用户关掉的持久化标志（SharedPreferences 键）。
+  ///
+  /// 只记这一条横幅：关过就不再出现，即使远程配置源仍是 bundled；
+  /// offline（cached）与强制更新那两条是状态提示，不走这个键、不能关。
+  static const bundledConfigHintDismissedKey =
+      'dismissed_bundled_config_hint';
+
   /// 跳到“我的”页（绑定订阅）的回调。
   final VoidCallback onGoToMe;
 
@@ -39,6 +47,19 @@ class HomePage extends ConsumerStatefulWidget {
 }
 
 class _HomePageState extends ConsumerState<HomePage> {
+  /// 首页卡片固定高度（第 9 项）：卡片不再随内容长短伸缩。
+  ///
+  /// 状态卡 72 = 两行 ListTile 的标准高度（标题＋副标题各一行）；
+  /// 最矮的那张（offline 单行标题 56）往上取整到 72，正常文案
+  /// 两行都放得下；标题/副标题超长时内部省略，不把卡片撑高。
+  static const double _homeCardHeight = 72;
+
+  /// 流量格固定高度 102 = 内边距 spacingMd 16×2 + 数值两行
+  /// （titleMedium 行高 24）×2 + 间隔 4 + 标签（bodySmall 行高 18）；
+  /// 按最满的那格（实时速率“↑ x / ↓ y”两行）取，单行数值的格
+  /// 内容垂直居中，不留高低差。
+  static const double _statCellHeight = 102;
+
   late CoreStatus _status;
   TrafficSample? _sample;
   bool _busy = false;
@@ -51,9 +72,16 @@ class _HomePageState extends ConsumerState<HomePage> {
   /// 已连接时每秒刷一次时长（只在运行中跑，断开就停）。
   Timer? _durationTimer;
 
+  /// bundled 配置提示是否已关掉。
+  ///
+  /// 默认先按已关掉，避免已关过的用户冷启动时横幅闪现一下；
+  /// 异步读回真实值后按实际刷新（没关过的随后出现）。
+  bool _bundledHintDismissed = true;
+
   @override
   void initState() {
     super.initState();
+    _loadBundledHintDismissed();
     final core = ref.read(coreServiceProvider);
     _status = core.status;
     _statusSub = core.statusStream.listen((status) {
@@ -218,6 +246,32 @@ class _HomePageState extends ConsumerState<HomePage> {
     );
   }
 
+  /// 读回 bundled 配置提示的关闭标志：没存过按没关过处理。
+  Future<void> _loadBundledHintDismissed() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (!mounted) return;
+      setState(
+        () =>
+            _bundledHintDismissed =
+                prefs.getBool(HomePage.bundledConfigHintDismissedKey) ??
+                false,
+      );
+    } catch (_) {
+      // 读不到就按没关过处理，横幅正常出现，不静默吞掉提示。
+      if (mounted) setState(() => _bundledHintDismissed = false);
+    }
+  }
+
+  /// 关掉 bundled 配置提示：先立即从界面上消失（条件渲染整条移除，
+  /// 不留空位），再把标志持久化，下次打开 App 不再出现。
+  /// 只关这一条：offline 与强制更新提示不受影响。
+  Future<void> _dismissBundledConfigHint() async {
+    if (mounted) setState(() => _bundledHintDismissed = true);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(HomePage.bundledConfigHintDismissedKey, true);
+  }
+
   /// 配置中心重试（离线提示条上的“重试”）：拉一次远程配置，
   /// 拉到了提示条自动消失，拉不到还留着。
   Future<void> _retryConfig() async {
@@ -298,11 +352,20 @@ class _HomePageState extends ConsumerState<HomePage> {
           // 强制更新时拦住大开关（点开关弹升级说明）。
           if (remoteState.forceUpdateRequired)
             GlassCard(
+              height: _homeCardHeight,
               margin: const EdgeInsets.only(bottom: AppTokens.spacingXs),
               child: ListTile(
                 leading: const AppIcon(icon: AppIcons.download),
-                title: const Text('当前版本过低，请升级后使用'),
-                subtitle: Text('最低可用版本 ${remoteState.config.minAppVersion}'),
+                title: const Text(
+                  '当前版本过低，请升级后使用',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                subtitle: Text(
+                  '最低可用版本 ${remoteState.config.minAppVersion}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
                 trailing: TextButton(
                   onPressed: _showForceUpdateDialog,
                   child: const Text('查看详情'),
@@ -311,36 +374,76 @@ class _HomePageState extends ConsumerState<HomePage> {
             ),
           if (remoteState.offline)
             GlassCard(
+              height: _homeCardHeight,
               margin: const EdgeInsets.only(bottom: AppTokens.spacingXs),
               child: ListTile(
                 leading: const AppIcon(icon: AppIcons.cloudOff),
-                title: const Text('配置中心暂时连不上，正在用上次的配置'),
+                title: const Text(
+                  '配置中心暂时连不上，正在用上次的配置',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
                 trailing: TextButton(
                   onPressed: _retryConfig,
                   child: const Text('重试'),
                 ),
               ),
             ),
-          if (remoteState.source == RemoteConfigSource.bundled)
+          // bundled 配置提示：只在仍用包内默认配置、且用户没关过时出现；
+          // 点右上角 × 就整条消失并记下来，下次打开不再出现（重试保留）。
+          // offline（cached）与强制更新那两条不在这里，不可关闭。
+          if (remoteState.source == RemoteConfigSource.bundled &&
+              !_bundledHintDismissed)
             GlassCard(
+              height: _homeCardHeight,
               margin: const EdgeInsets.only(bottom: AppTokens.spacingXs),
               child: ListTile(
                 leading: const AppIcon(icon: AppIcons.cloudOff),
-                title: const Text('首次启动需要联网拉取配置'),
-                subtitle: const Text('拉不到配置也能先手动粘贴订阅使用'),
-                trailing: TextButton(
-                  onPressed: _retryConfig,
-                  child: const Text('重试'),
+                title: const Text(
+                  '首次启动需要联网拉取配置',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                subtitle: const Text(
+                  '拉不到配置也能先手动粘贴订阅使用',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextButton(
+                      onPressed: _retryConfig,
+                      child: const Text('重试'),
+                    ),
+                    IconButton(
+                      icon: const AppIcon(
+                        icon: AppIcons.x,
+                        size: AppIconSize.sm,
+                      ),
+                      tooltip: '关闭提示',
+                      onPressed: _dismissBundledConfigHint,
+                    ),
+                  ],
                 ),
               ),
             ),
           // 公告栏（阶段 1 接面板公告；切片 5 前占位）。
           const GlassCard(
+            height: _homeCardHeight,
             margin: EdgeInsets.only(bottom: AppTokens.spacingXs),
             child: ListTile(
               leading: AppIcon(icon: AppIcons.megaphone),
-              title: Text('暂无公告'),
-              subtitle: Text('面板公告会在这里显示'),
+              title: Text(
+                '暂无公告',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              subtitle: Text(
+                '面板公告会在这里显示',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
             ),
           ),
           const SizedBox(height: AppTokens.spacingMd + AppTokens.spacingXs),
@@ -366,12 +469,19 @@ class _HomePageState extends ConsumerState<HomePage> {
           const SizedBox(height: AppTokens.spacingMd + AppTokens.spacingXs),
           // 当前节点。
           GlassCard(
+            height: _homeCardHeight,
             child: ListTile(
               leading: const AppIcon(icon: AppIcons.globe),
               title: Text(
                 currentNode == null ? '当前节点：未选择' : '当前节点：${currentNode.name}',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
               ),
-              subtitle: Text(_currentNodeSubtitle(currentNode)),
+              subtitle: Text(
+                _currentNodeSubtitle(currentNode),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
               trailing: currentNode == null
                   ? TextButton(
                       onPressed: widget.onGoToMe,
@@ -462,20 +572,29 @@ class _StatCell extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return GlassCard(
+      height: _HomePageState._statCellHeight,
       child: Padding(
         padding: const EdgeInsets.symmetric(
           vertical: AppTokens.spacingMd,
           horizontal: 4,
         ),
         child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Text(
               value,
               style: Theme.of(context).textTheme.titleMedium,
               textAlign: TextAlign.center,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
             ),
             const SizedBox(height: 4),
-            Text(label, style: Theme.of(context).textTheme.bodySmall),
+            Text(
+              label,
+              style: Theme.of(context).textTheme.bodySmall,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
           ],
         ),
       ),

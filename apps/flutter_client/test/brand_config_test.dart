@@ -29,16 +29,16 @@ void main() {
     test('缺字段时用默认值兜底，不崩', () {
       final config = BrandConfig.fromJson({});
       expect(config.appName, '哲学系');
-      expect(config.primaryColor, 0xFF16324F);
-      expect(config.accentColor, 0xFFE8A317);
+      expect(config.primaryColor, 0xFF082E63);
+      expect(config.accentColor, 0xFFEEC362);
     });
 
     test('颜色写错时用默认值兜底，不崩', () {
       final config = BrandConfig.fromJson({
         'brand': {'primary_color': '不是颜色', 'accent_color': '#123'},
       });
-      expect(config.primaryColor, 0xFF16324F);
-      expect(config.accentColor, 0xFFE8A317);
+      expect(config.primaryColor, 0xFF082E63);
+      expect(config.accentColor, 0xFFEEC362);
     });
   });
 

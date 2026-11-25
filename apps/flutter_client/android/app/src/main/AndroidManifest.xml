@@ -1,6 +1,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 扫码添加订阅/节点（mobile_scanner）：相机权限，运行时由扫码页申请。 -->
+    <uses-permission android:name="android.permission.CAMERA" />
     <application
-        android:label="zhexuexi_client"
+        android:label="哲学系"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity

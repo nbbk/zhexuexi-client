@@ -227,6 +227,8 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       RemoteConfigRefreshStatus.offlineCached =>
         '配置中心暂时连不上，正在用上次的配置（v${result.config.configVersion}）。',
       RemoteConfigRefreshStatus.failed => '检查失败，请检查网络后重试。',
+      RemoteConfigRefreshStatus.notPublished =>
+        '远程配置暂未发布（配置中心还未上线），请稍后再试。',
     };
     await showAppDialog<void>(
       context: context,

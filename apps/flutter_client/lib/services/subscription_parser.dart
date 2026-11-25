@@ -672,11 +672,22 @@ String? _nonEmptyString(Object? value) {
   return value.isEmpty ? null : value;
 }
 
-/// 节点名后缀决定来源：`-中转` → 中转，`-直连` → 直连；无后缀默认直连
-/// （面板 sing-box/Clash 订阅的节点名都带后缀，见 panel-adapter.md §6）。
+/// 节点名后缀决定来源：
+/// - 旧后缀：`-中转` → 中转，`-直连` → 直连；
+/// - 面板 1.4.25 twin 双链接：`-B` → 中转，`-A` → 直连
+///   （节点名不直接写“中转”“直连”，用 A、B 后缀区分；
+///   1.4.25 之前解析器只认旧后缀，A/B 全被默认成直连，
+///   4 个节点全分进了直连组）。
+/// 无后缀默认直连（面板订阅的节点名都带后缀）。
 NodeSource _sourceFromName(String name) {
   if (name.endsWith('-中转')) return NodeSource.relay;
   if (name.endsWith('-直连')) return NodeSource.direct;
+  if (name.endsWith('-B') || name.endsWith('-b')) {
+    return NodeSource.relay;
+  }
+  if (name.endsWith('-A') || name.endsWith('-a')) {
+    return NodeSource.direct;
+  }
   return NodeSource.direct;
 }
 

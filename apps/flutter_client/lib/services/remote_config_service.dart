@@ -247,11 +247,17 @@ class RemoteConfigService {
   /// - 拉到版本比缓存新的、验签通过的配置 → 存缓存，状态 updated；
   /// - 拉到的都是旧版/同版 → 保持缓存，状态 upToDate；
   /// - 全部地址失败但有缓存 → 用缓存，状态 offlineCached；
-  /// - 全部失败且无缓存 → 用包内默认值，状态 failed。
+  /// - 全部失败且无缓存 → 用包内默认值，状态 failed；
+  /// - 真拉过、且每个地址都明确回 404、又无缓存 → 状态 notPublished
+  ///   （配置根本还没发布，不是网络问题；2026-11-25 实测
+  ///   https://cc.jiankong.cf/client-config.json 与 GitHub Raw 都 404）。
+  ///   只认 404：500、超时、断网仍算普通 failed。
   Future<RemoteConfigRefreshResult> refresh() async {
     final cached = await loadCached();
     final urls = _configUrlsOverride ?? await defaultConfigUrls();
     var sawValid = false;
+    var attempted = 0;
+    var notFound = 0;
     for (final url in urls) {
       if (!isFetchableUrl(url)) continue;
       try {
@@ -263,6 +269,8 @@ class RemoteConfigService {
             receiveTimeout: fetchTimeout,
           ),
         );
+        attempted++;
+        if (response.statusCode == 404) notFound++;
         if (response.statusCode != 200 || response.data == null) continue;
         final config = await _parseEnvelope(response.data!);
         if (config == null) continue;
@@ -277,6 +285,13 @@ class RemoteConfigService {
           status: RemoteConfigRefreshStatus.updated,
           config: config,
         );
+      } on DioException catch (e) {
+        // Dio 默认 validateStatus 下 404 不走上头的 Response 分支，
+        // 而是在这里以 DioException（带 response）抛出来。
+        attempted++;
+        if (e.response?.statusCode == 404) notFound++;
+        debugPrint('远程配置拉取失败（$url）：$e');
+        continue;
       } catch (e) {
         debugPrint('远程配置拉取失败（$url）：$e');
         continue;
@@ -288,6 +303,12 @@ class RemoteConfigService {
             ? RemoteConfigRefreshStatus.upToDate
             : RemoteConfigRefreshStatus.offlineCached,
         config: cached,
+      );
+    }
+    if (attempted > 0 && notFound == attempted) {
+      return RemoteConfigRefreshResult(
+        status: RemoteConfigRefreshStatus.notPublished,
+        config: RemoteConfig.defaults(),
       );
     }
     return RemoteConfigRefreshResult(
@@ -308,11 +329,11 @@ class RemoteConfigRefreshResult {
   final RemoteConfigRefreshStatus status;
 
   /// 刷新后生效的配置（updated/upToDate/offlineCached 时是缓存或新配置，
-  /// failed 时是包内默认值）。
+  /// failed/notPublished 时是包内默认值）。
   final RemoteConfig config;
 }
 
-/// 远程配置刷新的四种结果。
+/// 远程配置刷新的五种结果。
 enum RemoteConfigRefreshStatus {
   /// 拉到更新的版本，已应用并存缓存。
   updated,
@@ -325,4 +346,8 @@ enum RemoteConfigRefreshStatus {
 
   /// 全部失败且本地无缓存，用包内默认值。
   failed,
+
+  /// 真拉过、每个地址都回 404、且本地无缓存：配置根本还没发布，
+  /// 不是网络问题；用包内默认值，等服务端发布后再拉。
+  notPublished,
 }

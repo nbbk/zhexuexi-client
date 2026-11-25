@@ -147,6 +147,26 @@ void main() {
       expect(await storage.read(key: 'custom_subscriptions'), isNotNull);
     });
 
+    test('连续加两个订阅：两个都存着，谁也不顶掉谁', () async {
+      final store = SubscriptionStore(storage: _FakeSecureStorage());
+      expect((await store.addCustom(_customUrl)).error, isNull);
+      const second = 'https://airport-b.example.com/sub/bbbb2222';
+      expect((await store.addCustom(second)).error, isNull);
+      final listed = await store.listCustom();
+      expect(listed.length, 2);
+      expect(listed.map((e) => e.url).toList(), [_customUrl, second]);
+    });
+
+    test('同一条订阅链接加两次：第二次拒绝，列表里只有一条', () async {
+      final store = SubscriptionStore(storage: _FakeSecureStorage());
+      expect((await store.addCustom(_customUrl)).error, isNull);
+      expect(
+        (await store.addCustom(_customUrl)).error,
+        '这个订阅已经加过了',
+      );
+      expect((await store.listCustom()).length, 1);
+    });
+
     test('链接不是合法 http(s) URL：拒绝并给原因', () async {
       final store = SubscriptionStore(storage: _FakeSecureStorage());
       expect(
@@ -276,6 +296,32 @@ void main() {
       expect(state.nodes[2].subscriptionId, custom.id);
       expect(state.nodes[2].subscriptionName, 'airport.example.com');
       expect(service.calls, [_primaryUrl, _customUrl]);
+    });
+
+    test('两个手动订阅同时挂载：节点合并，摘要各一条', () async {
+      await buildContainer();
+      const secondUrl = 'https://airport-b.example.com/sub/bbbb2222';
+      final store = container.read(subscriptionStoreProvider);
+      await store.addCustom(_customUrl);
+      await store.addCustom(secondUrl);
+      service.results[_customUrl] = _result([
+        _node('机场 A', address: '203.0.113.2'),
+      ]);
+      service.results[secondUrl] = _result([
+        _node('机场 B', address: '203.0.113.3'),
+      ]);
+      await container.read(nodesProvider.notifier).refresh();
+      final state = container.read(nodesProvider);
+      expect(state.status, NodesStatus.loaded);
+      expect(
+        state.nodes.map((n) => n.name).toList(),
+        ['机场 A', '机场 B'],
+      );
+      expect(state.subscriptionSummaries.length, 2);
+      expect(
+        state.subscriptionSummaries.map((s) => s.nodeCount).toList(),
+        [1, 1],
+      );
     });
 
     test('一条订阅拉取失败不影响其他条：有成功就显示合并节点', () async {
@@ -522,14 +568,15 @@ void main() {
       expect(find.text('airport.example.com'), findsNWidgets(2));
       expect(find.text('example.com'), findsOneWidget);
       expect(find.text('添加订阅'), findsOneWidget);
+      expect(find.text('扫码'), findsOneWidget);
       // 删除按钮只有手动加的那一条有。
       expect(find.text('删除'), findsOneWidget);
       expect(find.text('改名'), findsNWidgets(2));
       expect(find.byType(Switch), findsNWidgets(2));
     });
 
-    testWidgets('节点页：节点行显示来源小标签', (tester) async {
-      // 来源用构造参数传（字段是 final）。
+    testWidgets('节点行不再显示来源小标签（来源只在订阅列表里）', (tester) async {
+      // 来源用构造参数传（字段是 final，数据层保留，只是不显示）。
       final tagged = Node(
         name: '机场 B',
         protocol: NodeProtocol.vless,
@@ -550,7 +597,8 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      expect(find.text('机场 A'), findsOneWidget);
+      expect(find.text('机场 B'), findsOneWidget);
+      expect(find.text('机场 A'), findsNothing);
       expect(find.text('管理订阅'), findsWidgets);
     });
 

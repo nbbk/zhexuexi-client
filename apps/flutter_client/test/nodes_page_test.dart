@@ -1,6 +1,7 @@
 // 切片 1：节点页 widget 测试（分组、搜索、明文角标、解析失败提示、绑定入口）。
 //
 // 不碰真面板：nodesProvider 用桩 notifier 覆盖，状态直接给定。
+import 'package:flutter_lucide/flutter_lucide.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
@@ -48,11 +49,17 @@ class _StubNodesNotifier extends NodesNotifier {
   }
 }
 
-Node _node(String name, NodeSource source, {bool plain = false}) {
+Node _node(
+  String name,
+  NodeSource source, {
+  bool plain = false,
+  String address = '203.0.113.10',
+  NodeProtocol protocol = NodeProtocol.vless,
+}) {
   return Node(
     name: name,
-    protocol: NodeProtocol.vless,
-    address: '203.0.113.10',
+    protocol: protocol,
+    address: address,
     port: 443,
     source: source,
     uuidOrPassword: '11111111-2222-3333-4444-555555555555',
@@ -77,7 +84,7 @@ Future<_StubNodesNotifier> _pumpPage(
 }
 
 void main() {
-  testWidgets('节点列表：按中转/直连分组，明文节点标“明文”', (tester) async {
+  testWidgets('节点列表：按 A 组/B 组分组，明文节点标“明文”', (tester) async {
     await _pumpPage(
       tester,
       NodesState(
@@ -89,13 +96,75 @@ void main() {
         status: NodesStatus.loaded,
       ),
     );
-    expect(find.text('中转节点（1）'), findsOneWidget);
-    expect(find.text('直连节点（2）'), findsOneWidget);
+    // 分组标题不直接写“中转”“直连”，用 A、B 后缀区分（A=直连，B=中转）。
+    expect(find.text('B 组（1）'), findsOneWidget);
+    expect(find.text('A 组（2）'), findsOneWidget);
+    expect(find.text('中转节点'), findsNothing);
+    expect(find.text('直连节点'), findsNothing);
     expect(find.text('香港-中转'), findsOneWidget);
     expect(find.text('日本-直连'), findsOneWidget);
     expect(find.text('明文'), findsOneWidget);
     expect(find.text('未测速'), findsNWidgets(3));
     expect(find.text('共 3 个节点'), findsOneWidget);
+  });
+
+  testWidgets('twin 四节点：A 组 2 个、B 组 2 个，数量对得上', (tester) async {
+    await _pumpPage(
+      tester,
+      NodesState(
+        nodes: [
+          _node('测试机-reality-443-A', NodeSource.direct),
+          _node('测试机-reality-443-B', NodeSource.relay),
+          _node('测试机-hy2-443-A', NodeSource.direct),
+          _node('测试机-hy2-443-B', NodeSource.relay),
+        ],
+        status: NodesStatus.loaded,
+      ),
+    );
+    expect(find.text('A 组（2）'), findsOneWidget);
+    expect(find.text('B 组（2）'), findsOneWidget);
+    expect(find.text('直连节点（4）'), findsNothing);
+  });
+
+  testWidgets('节点行左侧圆圈放旗标：中转域名显示香港旗，IP 显示 globe', (
+    tester,
+  ) async {
+    await _pumpPage(
+      tester,
+      NodesState(
+        nodes: [
+          _node(
+            '测试机-reality-443-B',
+            NodeSource.relay,
+            address: 'cp.jiankong.cf',
+          ),
+          _node('测试机-reality-443-A', NodeSource.direct),
+        ],
+        status: NodesStatus.loaded,
+      ),
+    );
+    expect(find.text('🇭🇰'), findsOneWidget);
+    expect(find.byIcon(LucideIcons.globe), findsOneWidget);
+  });
+
+  testWidgets('协议名不在圆圈里：挪到地址行，Hysteria2 不再溢出', (tester) async {
+    await _pumpPage(
+      tester,
+      NodesState(
+        nodes: [
+          _node(
+            '测试机-hy2-443-A',
+            NodeSource.direct,
+            protocol: NodeProtocol.hysteria2,
+          ),
+        ],
+        status: NodesStatus.loaded,
+      ),
+    );
+    // 圆圈里是旗标/globe，不再有单独的协议名文字。
+    expect(find.text('Hysteria2'), findsNothing);
+    // 协议名在地址行里还能看到。
+    expect(find.text('203.0.113.10:443 · Hysteria2'), findsOneWidget);
   });
 
   testWidgets('解析失败 N 个：显示提示横条，其余节点正常列出', (tester) async {
@@ -128,10 +197,11 @@ void main() {
     expect(find.text('智利-直连'), findsNothing);
   });
 
-  testWidgets('未绑定：显示粘贴订阅链接入口', (tester) async {
+  testWidgets('未绑定：显示粘贴订阅/节点链接入口与扫码入口', (tester) async {
     await _pumpPage(tester, const NodesState(status: NodesStatus.initial));
-    expect(find.text('粘贴完整订阅链接'), findsOneWidget);
-    expect(find.text('绑定并刷新'), findsOneWidget);
+    expect(find.text('粘贴订阅链接或单条节点链接'), findsOneWidget);
+    expect(find.text('添加'), findsOneWidget);
+    expect(find.text('扫码添加'), findsOneWidget);
     expect(find.text('绑定订阅后这里会列出节点'), findsOneWidget);
   });
 

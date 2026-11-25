@@ -38,6 +38,12 @@ dependencies:
 
   # 代理核心：sing-box（见 docs/plugin-choice.md，选型结论 flutter_sing_box 3.1.0）
   flutter_sing_box: ^3.1.0
+  # MMKV 必须由 main() 在 runApp 之前显式初始化（见 main.dart）：
+  # flutter_sing_box 经 ProfileStorage/MmkvStorage 构造 MMKV 实例，
+  # 未初始化时 Dart 侧抛 StateError（“forget initialize MMKV first?”），
+  # 原生侧 PluginManager.init() 也不调 MMKV.initialize(context)，
+  # 所以这里必须作为直接依赖 import，不能只靠传递依赖。
+  mmkv: ^2.4.3
   # 令牌只存系统密钥库（Android Keystore / Windows DPAPI），绝不存明文文件
   # 注意：9.x 与 flutter_sing_box 的 win32 版本冲突（9.x 要 win32 ^5，插件要 ^6），
   # 2026-11-22 pub get 按官方建议升到 11.x 解决，见 docs/versions.md
@@ -55,6 +61,7 @@ dependencies:
   flutter_lucide: ^1.79.0
   animations: ^3.0.0
   cupertino_ui: ^1.1.7
+  mobile_scanner: ^7.5.0
 
 dev_dependencies:
   flutter_test:

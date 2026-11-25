@@ -101,6 +101,13 @@ class CoreService {
   Stream<CoreStatus> get statusStream => _statusController.stream;
 
   /// 初始化插件，并把磁盘上最后一份配置读回内存（App 重启后 start 能用）。
+  ///
+  /// 前置条件：main() 已在 runApp 之前调过 `MMKV.initialize()`。
+  /// [_usingConfigPath] 默认走 ProfileStorage（MMKV），未初始化时抛
+  /// StateError（“forget initialize MMKV first?”）；这个错必须抛出去，
+  /// 不能当成“磁盘上没有配置”吞掉——否则 start() 只会报一个毫不相干的
+  /// “没有可用配置”，真正原因被掩盖（小米真机 2026-11-25 就是这么丢的）。
+  /// 磁盘配置本身读不到（文件不存在/读失败）才不影响启动。
   Future<void> init() async {
     await _plugin.init();
     _pluginSubscription = _plugin.proxyStateStream.listen((state) {
@@ -122,6 +129,9 @@ class CoreService {
         final content = await file.readAsString();
         if (content.trim().isNotEmpty) _currentConfigJson = content;
       }
+    } on StateError {
+      // MMKV 未初始化等致命错误：重新抛出，不吞。
+      rethrow;
     } catch (_) {
       // 磁盘配置读不到不影响启动：start 时会因无配置而明确报错。
       _currentConfigJson = null;
@@ -261,6 +271,11 @@ class CoreService {
 
   /// 默认的建档案逻辑：MMKV 里没有已选档案时，建一个名为“哲学系”的
   /// 本地档案并选中（只写元数据，配置体仍是 using_config.json）。
+  ///
+  /// 只在 start() 里调（在 [_usingConfigPath] 之后），而 start() 只在
+  /// main() 已调过 `MMKV.initialize()` 之后才可能被点到，所以这里的
+  /// ProfileStorage 访问一定发生在 MMKV 初始化之后；首次启动建好档案
+  /// 再调 startVpn，不会报 EmptyConfiguration。
   static Future<void> _defaultEnsureSelectedProfile(
     String configPath,
   ) async {

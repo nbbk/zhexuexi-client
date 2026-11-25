@@ -19,10 +19,11 @@ class BrandConfig {
   });
 
   /// 包内默认值（与 assets/brand.json 一致；示例地址一律 example.com）。
+  /// 主色与强调色取自 Logo 实测：墨蓝 #082E63、金 #EEC362。
   factory BrandConfig.defaults() => const BrandConfig(
         appName: '哲学系',
-        primaryColor: 0xFF16324F,
-        accentColor: 0xFFE8A317,
+        primaryColor: 0xFF082E63,
+        accentColor: 0xFFEEC362,
         logoUrl: '',
         supportUrl: 'https://example.com/support',
         subscriptionUrl: '',
@@ -66,10 +67,10 @@ class BrandConfig {
   /// 显示名（重启即生效的品牌变量之一）。
   final String appName;
 
-  /// 主色（深海蓝）。
+  /// 主色（墨蓝，与确认标准一致）。
   final int primaryColor;
 
-  /// 强调色（琥珀金，只用在开关、当前节点、主要按钮）。
+  /// 强调色（香槟金，只用在开关、当前节点、主要按钮）。
   final int accentColor;
 
   /// 远程 Logo 地址（空表示用包内 Logo）。

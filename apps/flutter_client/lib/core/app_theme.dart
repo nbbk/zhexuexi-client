@@ -162,6 +162,13 @@ class AppThemeDefinition {
         brightness: brightness,
       ),
       scaffoldBackgroundColor: tokens.background,
+      // 顶栏刷成墨蓝（不要 M3 默认的浅灰蓝 surface），标题与图标走白色。
+      // 白字在墨蓝上的对比度 13.28:1，夜晚同理。
+      appBarTheme: AppBarTheme(
+        backgroundColor: tokens.deepBlue,
+        foregroundColor: Colors.white,
+        surfaceTintColor: Colors.transparent,
+      ),
       textTheme: TextTheme(
         bodySmall: TextStyle(color: tokens.secondaryText),
       ),
@@ -176,48 +183,52 @@ class AppThemeDefinition {
 class AppThemes {
   AppThemes._();
 
-  /// 默认主题（墨蓝＋香槟金＋象牙白）。
+  /// 默认主题（墨蓝＋香槟金＋象牙白；色值取自 Logo 实测：
+  /// 主墨蓝 #082E63、次深蓝 #0B3D84、金 #EEC362、淡金 #F4D89A）。
   static const AppThemeDefinition day = AppThemeDefinition(
     id: 'day',
     name: '白天',
     brightness: Brightness.light,
     tokens: AppThemeTokens(
-      deepBlue: Color(0xFF0A1E36),
-      deepBlueLight: Color(0xFF10263F),
-      gold: Color(0xFFC2A15C),
-      goldHighlight: Color(0xFFD8C08A),
+      deepBlue: Color(0xFF082E63),
+      deepBlueLight: Color(0xFF0B3D84),
+      gold: Color(0xFFEEC362),
+      goldHighlight: Color(0xFFF4D89A),
       background: Color(0xFFFAF7F0),
       backgroundGradient: [Color(0xFFFAF7F0), Colors.white],
       secondaryText: Color(0xFF5C6B7A),
-      powerGradient: [Color(0xFF0A1E36), Color(0xFF10263F)],
+      powerGradient: [Color(0xFF082E63), Color(0xFF0B3D84)],
       powerOffGradient: [Color(0xFF9CA3AF), Color(0xFF6B7280)],
-      segmentedSelectedBackground: Color(0xFF0A1E36),
+      segmentedSelectedBackground: Color(0xFF082E63),
       segmentedSelectedForeground: Colors.white,
     ),
   );
 
   /// 夜晚主题：墨蓝黑底＋香槟金点缀（深蓝作背景，
   /// 高亮与选中走金色，保证深色底上看得清）。
+  /// 注意：墨蓝 #082E63 在夜晚底 #070F1C 上的对比度只有 1.45:1，
+  /// 仅用于渐变底色等装饰，不放文字；夜晚文字走金色（11.53:1）
+  /// 与浅色次要文字。
   static const AppThemeDefinition night = AppThemeDefinition(
     id: 'night',
     name: '夜晚',
     brightness: Brightness.dark,
     tokens: AppThemeTokens(
-      deepBlue: Color(0xFF0A1E36),
-      deepBlueLight: Color(0xFF10263F),
-      gold: Color(0xFFC2A15C),
-      goldHighlight: Color(0xFFD8C08A),
+      deepBlue: Color(0xFF082E63),
+      deepBlueLight: Color(0xFF0B3D84),
+      gold: Color(0xFFEEC362),
+      goldHighlight: Color(0xFFF4D89A),
       background: Color(0xFF070F1C),
       backgroundGradient: [
         Color(0xFF070F1C),
-        Color(0xFF0A1E36),
-        Color(0xFF10263F),
+        Color(0xFF082E63),
+        Color(0xFF0B3D84),
       ],
       secondaryText: Color(0xFF8A9BAE),
-      powerGradient: [Color(0xFF0A1E36), Color(0xFF10263F)],
+      powerGradient: [Color(0xFF082E63), Color(0xFF0B3D84)],
       powerOffGradient: [Color(0xFF9CA3AF), Color(0xFF6B7280)],
-      segmentedSelectedBackground: Color(0xFFC2A15C),
-      segmentedSelectedForeground: Color(0xFF0A1E36),
+      segmentedSelectedBackground: Color(0xFFEEC362),
+      segmentedSelectedForeground: Color(0xFF082E63),
     ),
   );
 

@@ -470,7 +470,7 @@ packages:
     source: hosted
     version: "2.1.0"
   mmkv:
-    dependency: transitive
+    dependency: "direct main"
     description:
       name: mmkv
       sha256: "24425555dfba986426a44aaf3fd33db7257b4f6609afc31325f9abe842e767ee"
@@ -525,6 +525,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "2.4.3"
+  mobile_scanner:
+    dependency: "direct main"
+    description:
+      name: mobile_scanner
+      sha256: "175c62fc813c2bd762757359a2088f8cbdb72020cf85d4cd27fc4d3fe59be058"
+      url: "https://pub.dev"
+    source: hosted
+    version: "7.5.0"
   nm:
     dependency: transitive
     description:

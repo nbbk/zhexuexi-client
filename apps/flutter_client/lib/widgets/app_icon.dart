@@ -74,6 +74,12 @@ class AppIcons {
   /// 添加（Icons.add）。
   static const IconData plus = LucideIcons.plus;
 
+  /// 扫码（Icons.qr_code_scanner）。
+  static const IconData scan = LucideIcons.scan_line;
+
+  /// 手电筒（Icons.flashlight_on）。
+  static const IconData flashlight = LucideIcons.flashlight;
+
   /// 编辑（Icons.edit_outlined）。
   static const IconData pencil = LucideIcons.pencil;
 

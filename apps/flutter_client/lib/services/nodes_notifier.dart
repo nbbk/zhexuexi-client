@@ -8,6 +8,7 @@ import '../core/singbox_config.dart';
 import '../core/singbox_core.dart';
 import '../core/userinfo.dart';
 import 'remote_config_notifier.dart';
+import 'single_node_store.dart';
 import 'subscription_parser.dart';
 import 'subscription_service.dart';
 import 'subscription_store.dart';
@@ -117,7 +118,7 @@ class NodesState {
   /// 测速中芯片转圈用；一键测速进行中、或已有单节点在测时再点直接返回。
   final String? testingSingleNodeKey;
 
-  /// 中转节点（名字以 -中转结尾）。
+  /// 中转节点（名字以 -中转 或 -B 结尾，见 subscription_parser.dart）。
   List<Node> get relayNodes =>
       nodes.where((n) => n.source == NodeSource.relay).toList();
 
@@ -360,7 +361,7 @@ class NodesNotifier extends Notifier<NodesState> {
     return store.listSubscriptions(primaryUrl: primaryUrl);
   }
 
-  /// 拉全部已启用的订阅并合并（多订阅）。
+  /// 拉全部已启用的订阅并合并（多订阅），再拼上手动加的单节点。
   ///
   /// 并行拉（`Future.wait`，各自 try/catch）：一条订阅拉取失败
   /// 只记该条的错误、不影响其他条；有任一条成功就显示合并后的
@@ -374,7 +375,8 @@ class NodesNotifier extends Notifier<NodesState> {
   /// 不参与远程配置更新、不参与 404 重试。
   Future<void> refresh() async {
     final entries = await _loadEntries();
-    if (entries.isEmpty) {
+    final singles = await _loadTaggedSingleNodes();
+    if (entries.isEmpty && singles.isEmpty) {
       _cachedResults.clear();
       state = state.copyWith(status: NodesStatus.initial);
       return;
@@ -382,7 +384,7 @@ class NodesNotifier extends Notifier<NodesState> {
     state = state.copyWith(status: NodesStatus.loading);
     final enabled = entries.where((e) => e.enabled).toList();
     await Future.wait(enabled.map(_fetchIntoCache));
-    _rebuildFromCache(entries);
+    await _rebuildFromCache(entries, singles);
   }
 
   /// 只刷新一条订阅（管理页的单个刷新）：重拉这一条，
@@ -396,7 +398,7 @@ class NodesNotifier extends Notifier<NodesState> {
     }
     if (entry == null || !entry.enabled) return false;
     await _fetchIntoCache(entry);
-    _rebuildFromCache(entries);
+    await _rebuildFromCache(entries, await _loadTaggedSingleNodes());
     return _cachedResults[id]?.succeeded ?? false;
   }
 
@@ -482,10 +484,15 @@ class NodesNotifier extends Notifier<NodesState> {
   /// 用缓存重建合并后的状态。
   ///
   /// 合并：按订阅顺序拼接（主订阅在前，手动加的按列表顺序）；
-  /// 去重按节点内容（[Node.dedupKey]），内容相同的只留第一条。
+  /// 去重按节点内容（[Node.dedupKey]），内容相同的只留第一条；
+  /// 手动加的单节点拼在最后（内容与订阅节点相同时订阅优先）。
   /// [NodesState.userinfo] 仍是主订阅那一份（首页/我的页继续用，
   /// 不改那两处）；各订阅的 userinfo 在 [subscriptionSummaries] 里。
-  void _rebuildFromCache(List<SubscriptionEntry> entries) {
+  /// 单节点不进 [subscriptionSummaries]（它不是订阅）。
+  Future<void> _rebuildFromCache(
+    List<SubscriptionEntry> entries,
+    List<Node> singles,
+  ) async {
     final merged = <Node>[];
     final seen = <String>{};
     var failedCount = 0;
@@ -531,6 +538,10 @@ class NodesNotifier extends Notifier<NodesState> {
         ),
       );
     }
+    // 手动加的单节点拼在最后（内容与订阅节点相同时订阅优先）。
+    for (final node in singles) {
+      if (seen.add(node.dedupKey)) merged.add(node);
+    }
     // 刷新后节点是新对象，延迟清零重测；选中名字还在就保留，
     // 不在了回落默认规则；自动选择开关保持。
     final prevSelected = state.selectedNodeName;
@@ -539,7 +550,7 @@ class NodesNotifier extends Notifier<NodesState> {
     final selected = stillThere
         ? prevSelected
         : SingboxConfigBuilder.defaultNodeName(merged);
-    if (anySuccess) {
+    if (anySuccess || singles.isNotEmpty) {
       state = NodesState(
         nodes: merged,
         failedCount: failedCount,
@@ -635,6 +646,83 @@ class NodesNotifier extends Notifier<NodesState> {
     if (state.addressNotice != null) {
       state = state.copyWith(addressNotice: null);
     }
+  }
+
+  /// 手动加的单节点（粘贴/扫码一条链接）：不走订阅拉取，
+  /// 直接读存储、打上“手动添加”来源（与 [_tagNodes] 同一套字段复制，
+  /// 只换来源）；刷新时拼在订阅节点后面。
+  /// 存储读失败时按空列表算：单节点是附加的，读不到它不能拖垮
+  /// 整轮订阅刷新（订阅节点照常显示）。
+  Future<List<Node>> _loadTaggedSingleNodes() async {
+    List<Node> nodes;
+    try {
+      final store = ref.read(singleNodeStoreProvider);
+      nodes = await store.listNodes();
+    } catch (_) {
+      return const [];
+    }
+    return nodes
+        .map(
+          (n) => Node(
+            name: n.name,
+            protocol: n.protocol,
+            address: n.address,
+            port: n.port,
+            source: n.source,
+            uuidOrPassword: n.uuidOrPassword,
+            transport: n.transport,
+            tls: n.tls,
+            sni: n.sni,
+            wsPath: n.wsPath,
+            wsHost: n.wsHost,
+            method: n.method,
+            group: n.group,
+            isPlainText: n.isPlainText,
+            username: n.username,
+            realityPublicKey: n.realityPublicKey,
+            realityShortId: n.realityShortId,
+            fingerprint: n.fingerprint,
+            flow: n.flow,
+            alpn: n.alpn,
+            congestionControl: n.congestionControl,
+            subscriptionId: SingleNodeStore.singleNodesId,
+            subscriptionName: SingleNodeStore.singleNodesName,
+          ),
+        )
+        .toList();
+  }
+
+  /// 加一个单节点（粘贴/扫码一条节点链接）：链接不对返回原因，
+  /// 成功返回 null（加完立刻刷新，节点列表里马上能看到）。
+  Future<String?> addSingleNode(String link) async {
+    final store = ref.read(singleNodeStoreProvider);
+    final result = await store.addSingleNode(link);
+    if (result.error != null) return result.error;
+    await refresh();
+    return null;
+  }
+
+  /// 加一段订阅正文（扫码扫到的三种格式正文）：逐条加为单节点，
+  /// 返回新加的节点数；解不出节点、或全已存在时返回原因。
+  Future<({int addedCount, String? error})> addNodesFromContent(
+    String body,
+  ) async {
+    final store = ref.read(singleNodeStoreProvider);
+    final result = await store.addContent(body);
+    if (result.error != null) {
+      return (addedCount: 0, error: result.error);
+    }
+    await refresh();
+    return (addedCount: result.addedCount, error: null);
+  }
+
+  /// 删一个单节点（多节点正文里的单个节点删不干净，返回 false）。
+  Future<bool> removeSingleNode(Node node) async {
+    final store = ref.read(singleNodeStoreProvider);
+    final ok = await store.removeSingleNode(node.dedupKey);
+    if (!ok) return false;
+    await refresh();
+    return true;
   }
 
   /// 粘贴一条完整订阅链接后绑定并刷新。链接不对时直接报原因，不刷新。

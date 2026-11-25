@@ -149,6 +149,7 @@ class SubscriptionStore {
 
   /// 手动加一条订阅：校验合法 http(s) URL；不要求令牌以 `sub_` 开头
   ///（XBoard 等机场的令牌格式不一样，整条链接原样存）。
+  /// 同一条链接加过就不再加（多订阅列表里不出现重复条目）。
   /// 成功返回新条目；不合法返回错误文案（给用户看的）。
   Future<({SubscriptionEntry? entry, String? error})> addCustom(
     String url,
@@ -157,6 +158,9 @@ class SubscriptionStore {
     final error = validateCustomUrl(trimmed);
     if (error != null) return (entry: null, error: error);
     final entries = await listCustom();
+    if (entries.any((e) => e.url == trimmed)) {
+      return (entry: null, error: '这个订阅已经加过了');
+    }
     var id = 'custom_${DateTime.now().millisecondsSinceEpoch}';
     while (entries.any((e) => e.id == id)) {
       id = '${id}_1';

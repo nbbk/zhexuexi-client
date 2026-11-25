@@ -7,17 +7,22 @@ import '../../widgets/app_icon.dart';
 import '../../core/app_motion.dart';
 import '../../core/app_theme.dart';
 import '../../core/app_tokens.dart';
+import '../../core/geo_flag.dart';
 import '../../core/node_model.dart';
+import '../../services/content_intake.dart';
 import '../../services/nodes_notifier.dart';
 import '../../widgets/glass_card.dart';
 import 'node_detail_page.dart';
+import 'scan_page.dart';
 import 'subscriptions_page.dart';
 
 /// 节点页：搜索框 + 分组 + 一键测速 / 自动选择 + 节点列表。
 ///
 /// 切片 1：真实节点列表（订阅拉取＋三种格式解析）。
 /// 搜索框与两个按钮常驻；下方按状态显示：未绑定→粘贴订阅链接入口，
-/// 加载中→转圈，失败→原因＋重试，成功→按中转/直连分组的节点行。
+/// 加载中→转圈，失败→原因＋重试，成功→按 A 组/B 组分组的节点行
+/// （A=直连，B=中转；分组标题不直接写“中转”“直连”，与节点命名
+/// 规矩一致；分组按 A/B 后缀认，见 subscription_parser.dart）。
 /// 切片 4：一键测速与自动选择已接线（测速要核心在跑，见
 /// [NodesNotifier.testAllSpeeds]）；测速失败的节点标灰、不自动选；
 /// 点一行选中该节点（当前节点置顶标“使用中”）。
@@ -85,6 +90,9 @@ class _NodesPageState extends ConsumerState<NodesPage> {
     // 节点列表在结构变化时才读（ref.read）：延迟变化不经过这里。
     final nodes = ref.read(nodesProvider).nodes;
     final hasNodes = nodes.isNotEmpty;
+    // 横幅与角标的配色只读主题 token，不写死 Material 原色。
+    final tokens = appThemeTokensOf(context);
+    final colorScheme = Theme.of(context).colorScheme;
     return GlassBackground(
       child: Column(
         children: [
@@ -176,7 +184,11 @@ class _NodesPageState extends ConsumerState<NodesPage> {
                 vertical: AppTokens.spacingXs,
               ),
               decoration: BoxDecoration(
-                color: Colors.blue.shade50,
+                // 提示横幅：香槟金浅底＋金色细线边框，文字走 onSurface。
+                color: tokens.gold.withValues(alpha: 0.10),
+                border: Border.all(
+                  color: tokens.gold.withValues(alpha: 0.45),
+                ),
                 borderRadius: BorderRadius.circular(AppTokens.radiusSmall),
               ),
               child: Row(
@@ -184,7 +196,7 @@ class _NodesPageState extends ConsumerState<NodesPage> {
                   Expanded(
                     child: Text(
                       structure.notice!,
-                      style: TextStyle(color: Colors.blue.shade900),
+                      style: TextStyle(color: colorScheme.onSurface),
                     ),
                   ),
                   IconButton(
@@ -212,12 +224,17 @@ class _NodesPageState extends ConsumerState<NodesPage> {
                 vertical: AppTokens.spacingXs,
               ),
               decoration: BoxDecoration(
-                color: Colors.orange.shade50,
+                // 报错横幅：错误色浅底＋错误色细线边框，文字走错误色
+                //（与首页/我的页/登录页的 colorScheme.error 同一口径）。
+                color: colorScheme.error.withValues(alpha: 0.08),
+                border: Border.all(
+                  color: colorScheme.error.withValues(alpha: 0.35),
+                ),
                 borderRadius: BorderRadius.circular(AppTokens.radiusSmall),
               ),
               child: Text(
                 structure.speedError!,
-                style: TextStyle(color: Colors.orange.shade900),
+                style: TextStyle(color: colorScheme.error),
               ),
             ),
           if (structure.reason != null)
@@ -256,6 +273,110 @@ class _NodesPageState extends ConsumerState<NodesPage> {
   void _showSnack(String message) {
     ScaffoldMessenger.of(context)
         .showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  /// 粘贴框提交：订阅链接、单条节点链接、订阅正文都走 [handleContent]
+  /// 分流——自家面板链接进主订阅绑定，其它订阅链接往多订阅列表里
+  /// 加一个（不顶掉旧的），节点链接加为单节点。
+  Future<void> _submitPastedLink() async {
+    final link = _linkController.text.trim();
+    if (link.isEmpty) return;
+    final result = await handleContent(ref, link);
+    if (!mounted) return;
+    if (result.error != null) {
+      _showSnack(result.error!);
+    } else {
+      _linkController.clear();
+      _showSnack(result.message ?? '已添加');
+    }
+  }
+
+  /// 打开扫码页：扫到的内容走 [handleContent] 分流（单节点/订阅/正文），
+  /// 合法就直接加上，不合法就提示。
+  Future<void> _openScan() async {
+    final scanned = await Navigator.push<String>(
+      context,
+      appPageRoute(context, (_) => const ScanPage()),
+    );
+    if (scanned == null || scanned.trim().isEmpty || !mounted) return;
+    final result = await handleContent(ref, scanned);
+    if (!mounted) return;
+    _showSnack(result.error ?? result.message ?? '已添加');
+  }
+
+  /// 添加单个节点：粘贴一条节点链接，或点扫码扫节点/订阅二维码。
+  /// 粘贴/扫码的内容都走 [handleContent] 分流，不用用户自己分清。
+  Future<void> _showAddNodeDialog() async {
+    final controller = TextEditingController();
+    String? error;
+    await showAppDialog<void>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          Future<void> submit(String raw) async {
+            if (raw.trim().isEmpty) return;
+            final result = await handleContent(ref, raw);
+            if (!dialogContext.mounted) return;
+            if (result.error != null) {
+              setDialogState(() => error = result.error);
+              return;
+            }
+            Navigator.pop(dialogContext);
+            if (mounted) _showSnack(result.message ?? '已添加');
+          }
+
+          return AlertDialog(
+            title: const Text('添加节点'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: controller,
+                  decoration: const InputDecoration(
+                    hintText: '粘贴一条节点链接，如 vless://…',
+                    border: OutlineInputBorder(),
+                  ),
+                  maxLines: 3,
+                  minLines: 1,
+                  autofocus: true,
+                ),
+                if (error != null) ...[
+                  const SizedBox(height: AppTokens.spacingXs),
+                  Text(
+                    error!,
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+            actions: [
+              TextButton.icon(
+                onPressed: () async {
+                  Navigator.pop(dialogContext);
+                  await _openScan();
+                },
+                icon: const AppIcon(
+                  icon: AppIcons.scan,
+                  size: AppIconSize.sm,
+                ),
+                label: const Text('扫码'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('取消'),
+              ),
+              FilledButton(
+                onPressed: () => submit(controller.text),
+                child: const Text('添加'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+    controller.dispose();
   }
 
   void _openSubscriptions() {
@@ -297,7 +418,9 @@ class _NodesPageState extends ConsumerState<NodesPage> {
     };
   }
 
-  /// 未绑定：粘贴完整订阅链接的入口（临时入口，切片 5 的“我的”页接管）。
+  /// 未绑定：粘贴订阅链接或单条节点链接的入口（自家面板链接进主订阅
+  /// 绑定，其它订阅链接往多订阅列表里加，节点链接加为单节点，
+  /// 见 [_submitPastedLink]）。
   /// 链接只拆成地址与令牌分开存，令牌进系统密钥库。
   Widget _buildBindForm() {
     return ListView(
@@ -312,7 +435,7 @@ class _NodesPageState extends ConsumerState<NodesPage> {
         TextField(
           controller: _linkController,
           decoration: const InputDecoration(
-            hintText: '粘贴完整订阅链接',
+            hintText: '粘贴订阅链接或单条节点链接',
             border: OutlineInputBorder(),
           ),
           maxLines: 3,
@@ -320,12 +443,14 @@ class _NodesPageState extends ConsumerState<NodesPage> {
         ),
         const SizedBox(height: AppTokens.spacingSm),
         FilledButton(
-          onPressed: () {
-            final link = _linkController.text.trim();
-            if (link.isEmpty) return;
-            ref.read(nodesProvider.notifier).bindAndRefresh(link);
-          },
-          child: const Text('绑定并刷新'),
+          onPressed: _submitPastedLink,
+          child: const Text('添加'),
+        ),
+        const SizedBox(height: AppTokens.spacingXs),
+        OutlinedButton.icon(
+          onPressed: _openScan,
+          icon: const AppIcon(icon: AppIcons.scan),
+          label: const Text('扫码添加'),
         ),
         const SizedBox(height: AppTokens.spacingXs),
         OutlinedButton.icon(
@@ -374,7 +499,7 @@ class _NodesPageState extends ConsumerState<NodesPage> {
           TextField(
             controller: _linkController,
             decoration: const InputDecoration(
-              hintText: '粘贴完整订阅链接',
+              hintText: '粘贴订阅链接或单条节点链接',
               border: OutlineInputBorder(),
             ),
             maxLines: 3,
@@ -382,12 +507,8 @@ class _NodesPageState extends ConsumerState<NodesPage> {
           ),
           const SizedBox(height: AppTokens.spacingSm),
           FilledButton(
-            onPressed: () {
-              final link = _linkController.text.trim();
-              if (link.isEmpty) return;
-              ref.read(nodesProvider.notifier).bindAndRefresh(link);
-            },
-            child: const Text('绑定并刷新'),
+            onPressed: _submitPastedLink,
+            child: const Text('添加'),
           ),
         ],
       ],
@@ -401,6 +522,7 @@ class _NodesPageState extends ConsumerState<NodesPage> {
     DateTime? lastUpdated,
     String structureKeys,
   ) {
+    final colorScheme = Theme.of(context).colorScheme;
     final filtered = _filter(nodes);
     final relay = _filter(
       nodes.where((n) => n.source == NodeSource.relay).toList(),
@@ -417,10 +539,11 @@ class _NodesPageState extends ConsumerState<NodesPage> {
               horizontal: AppTokens.spacingMd,
               vertical: AppTokens.spacingXs,
             ),
-            color: Colors.orange.shade50,
+            // 解析失败提示条：错误色浅底，文字走错误色。
+            color: colorScheme.error.withValues(alpha: 0.08),
             child: Text(
               '解析失败 $failedCount 个节点（已跳过，其余节点正常）',
-              style: TextStyle(color: Colors.orange.shade900),
+              style: TextStyle(color: colorScheme.error),
             ),
           ),
         Expanded(
@@ -434,8 +557,8 @@ class _NodesPageState extends ConsumerState<NodesPage> {
                     AppTokens.listCacheExtent,
                   ),
                   slivers: [
-                    ..._buildGroupSlivers('中转节点', relay, selectedName),
-                    ..._buildGroupSlivers('直连节点', direct, selectedName),
+                    ..._buildGroupSlivers('A 组', direct, selectedName),
+                    ..._buildGroupSlivers('B 组', relay, selectedName),
                   ],
                 ),
         ),
@@ -459,6 +582,10 @@ class _NodesPageState extends ConsumerState<NodesPage> {
               TextButton(
                 onPressed: () => ref.read(nodesProvider.notifier).refresh(),
                 child: const Text('刷新'),
+              ),
+              TextButton(
+                onPressed: _showAddNodeDialog,
+                child: const Text('添加节点'),
               ),
               TextButton(
                 onPressed: _openSubscriptions,
@@ -534,7 +661,13 @@ class _NodesPageState extends ConsumerState<NodesPage> {
   }
 }
 
-/// 节点行：毛玻璃卡片＋细线协议圆圈＋来源小标签＋延迟＋清晰选中态。
+/// 节点行：毛玻璃卡片＋国旗圆圈＋延迟＋清晰选中态。
+///
+/// 圆圈里是按节点地址判断的国家/地区旗标（离线：中转域名＋国家顶级域，
+/// 见 geo_flag.dart；未知国家时放 globe 图标），协议名挪到地址行里，
+/// 不再放圆圈里（Hysteria2 太长会折行溢出圆圈）。中转节点显示的是
+/// 中转机所在国家的旗，这是正常的，不纠正。
+/// 节点来源（是哪个订阅来的）不在行里显示，只在订阅列表与详情页保留。
 ///
 /// 选中态不只靠文字变色：边框高亮＋背景加深＋“使用中”角标带勾选图标，
 /// 切换时 [AnimatedContainer] 250ms 平滑过渡；点一行有 InkWell
@@ -578,6 +711,8 @@ class _NodeRow extends ConsumerWidget {
     final testingAll = live?.testingAll ?? false;
     final theme = Theme.of(context);
     final primary = theme.colorScheme.primary;
+    // 旗标：按节点地址判断国家（离线）；未知国家时放 globe 图标。
+    final flag = flagForAddress(node.address);
     return GlassCard(
       margin: const EdgeInsets.symmetric(
         horizontal: AppTokens.spacingMd,
@@ -617,7 +752,8 @@ class _NodeRow extends ConsumerWidget {
             ),
             child: Row(
               children: [
-                // 协议：细线圆圈＋协议名（不用实色圆头像）。
+                // 国旗：细线圆圈里放一个旗标 emoji（24px，完整放进 44px
+                // 圆圈，不溢出）；未知国家时放 globe 图标。
                 Container(
                   width: 44,
                   height: 44,
@@ -628,63 +764,35 @@ class _NodeRow extends ConsumerWidget {
                       color: theme.colorScheme.outline.withValues(alpha: 0.5),
                     ),
                   ),
-                  child: Text(
-                    node.protocol.label,
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: failed
-                          ? appThemeTokensOf(context).secondaryText
-                          : null,
-                    ),
-                  ),
+                  child: flag.isKnown
+                      ? Text(
+                          flag.emoji,
+                          style: const TextStyle(fontSize: 24),
+                        )
+                      : AppIcon(
+                          icon: AppIcons.globe,
+                          size: AppIconSize.sm,
+                          color: appThemeTokensOf(context).secondaryText,
+                        ),
                 ),
                 const SizedBox(width: AppTokens.spacingSm),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              node.name,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                color: failed
-                                    ? appThemeTokensOf(context).secondaryText
-                                    : null,
-                              ),
-                            ),
-                          ),
-                          // 多订阅：来源小标签（写订阅名字；单订阅老数据
-                          // 没有来源时不显示）。
-                          if (node.subscriptionName != null) ...[
-                            const SizedBox(width: 6),
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 6,
-                                vertical: 2,
-                              ),
-                              decoration: BoxDecoration(
-                                color: theme.colorScheme.surfaceContainerHighest
-                                    .withValues(alpha: 0.7),
-                                borderRadius: BorderRadius.circular(4),
-                              ),
-                              child: Text(
-                                node.subscriptionName!,
-                                style: TextStyle(
-                                  fontSize: 11,
-                                  color: appThemeTokensOf(context)
-                                      .secondaryText,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ],
+                      Text(
+                        node.name,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: failed
+                              ? appThemeTokensOf(context).secondaryText
+                              : null,
+                        ),
                       ),
                       const SizedBox(height: 2),
                       Text(
-                        '${node.address}:${node.port}',
+                        // 协议名挪到地址行里（圆圈里不再放协议名）。
+                        '${node.address}:${node.port} · ${node.protocol.label}',
                         style: TextStyle(
                           fontSize: 12,
                           color: appThemeTokensOf(context).secondaryText,
@@ -700,7 +808,14 @@ class _NodeRow extends ConsumerWidget {
                       vertical: 2,
                     ),
                     decoration: BoxDecoration(
-                      color: Colors.green.shade100,
+                      // 使用中：主色浅底＋金色细线边框，图标与文字走主色
+                      //（白天深蓝 / 夜晚香槟金，随主题走）。
+                      color: primary.withValues(alpha: 0.12),
+                      border: Border.all(
+                        color: appThemeTokensOf(context)
+                            .gold
+                            .withValues(alpha: 0.45),
+                      ),
                       borderRadius: BorderRadius.circular(4),
                     ),
                     child: Row(
@@ -709,10 +824,13 @@ class _NodeRow extends ConsumerWidget {
                         AppIcon(
                           icon: AppIcons.circleCheck,
                           size: AppIconSize.xs,
-                          color: Colors.green.shade800,
+                          color: primary,
                         ),
                         const SizedBox(width: 2),
-                        const Text('使用中', style: TextStyle(fontSize: 12)),
+                        Text(
+                          '使用中',
+                          style: TextStyle(fontSize: 12, color: primary),
+                        ),
                       ],
                     ),
                   ),
@@ -723,10 +841,17 @@ class _NodeRow extends ConsumerWidget {
                       vertical: 2,
                     ),
                     decoration: BoxDecoration(
-                      color: Colors.orange.shade100,
+                      // 明文角标：香槟金浅底，文字走主色（与“主订阅”
+                      // 角标同一套金底语言，不再用橙色）。
+                      color: appThemeTokensOf(context)
+                          .gold
+                          .withValues(alpha: 0.18),
                       borderRadius: BorderRadius.circular(4),
                     ),
-                    child: const Text('明文', style: TextStyle(fontSize: 12)),
+                    child: Text(
+                      '明文',
+                      style: TextStyle(fontSize: 12, color: primary),
+                    ),
                   ),
                 const SizedBox(width: AppTokens.spacingXs),
                 // 延迟芯片可点：点一下只测这一个节点（测速中转圈）。

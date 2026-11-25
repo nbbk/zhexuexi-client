@@ -358,7 +358,9 @@ class _BreathingPowerButtonState extends State<BreathingPowerButton>
                     color:
                         (widget.isOn
                                 ? appThemeTokensOf(context).powerGradient.last
-                                : Colors.grey)
+                                : appThemeTokensOf(context)
+                                    .powerOffGradient
+                                    .last)
                             .withValues(alpha: widget.isOn ? 0.45 : 0.2),
                     blurRadius: 24,
                     offset: const Offset(0, 8),

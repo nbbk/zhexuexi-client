@@ -7,10 +7,12 @@ import '../../core/app_tokens.dart';
 
 import '../../core/app_theme.dart';
 import '../../core/userinfo.dart';
+import '../../services/content_intake.dart';
 import '../../services/nodes_notifier.dart';
 import '../../services/subscription_store.dart';
 import '../../services/subscriptions_notifier.dart';
 import '../../widgets/glass_card.dart';
+import 'scan_page.dart';
 
 /// 订阅管理页：订阅列表（名字、地址 host、启用开关、节点数、
 /// 流量/到期摘要、上次刷新/报错）＋添加＋删除＋改名＋启用/停用
@@ -143,7 +145,7 @@ class _SubscriptionsPageState extends ConsumerState<SubscriptionsPage> {
                 child: _entries.isEmpty
                     ? Center(
                         child: Text(
-                          '还没有订阅，在上面粘贴订阅链接添加，\n或在节点页绑定自家面板的订阅。',
+                          '还没有订阅，在上面粘贴订阅链接或扫码添加，\n或在节点页绑定自家面板的订阅。',
                           textAlign: TextAlign.center,
                           style: TextStyle(
                             color: appThemeTokensOf(context).secondaryText,
@@ -216,31 +218,68 @@ class _SubscriptionsPageState extends ConsumerState<SubscriptionsPage> {
           ),
           if (_addError != null) ...[
             const SizedBox(height: AppTokens.spacingXs),
-            Text(_addError!, style: const TextStyle(color: Colors.red)),
+            // 报错文字走统一错误色（与首页/我的页/登录页同一口径）；
+            // 项目里没有单独的错误色 token，不在这里写死红色。
+            Text(
+              _addError!,
+              style: TextStyle(color: Theme.of(context).colorScheme.error),
+            ),
           ],
           const SizedBox(height: AppTokens.spacingSm),
-          FilledButton.icon(
-            onPressed: () async {
-              final link = _addController.text.trim();
-              if (link.isEmpty) return;
-              final error = await ref
-                  .read(subscriptionsProvider.notifier)
-                  .add(link);
-              if (!mounted) return;
-              if (error != null) {
-                setState(() => _addError = error);
-              } else {
-                setState(() => _addError = null);
-                _addController.clear();
-                _showSnack('已添加订阅');
-              }
-            },
-            icon: const AppIcon(icon: AppIcons.plus, size: AppIconSize.sm),
-            label: const Text('添加订阅'),
+          Row(
+            children: [
+              Expanded(
+                child: FilledButton.icon(
+                  onPressed: () async {
+                    final link = _addController.text.trim();
+                    if (link.isEmpty) return;
+                    final error = await ref
+                        .read(subscriptionsProvider.notifier)
+                        .add(link);
+                    if (!mounted) return;
+                    if (error != null) {
+                      setState(() => _addError = error);
+                    } else {
+                      setState(() => _addError = null);
+                      _addController.clear();
+                      _showSnack('已添加订阅');
+                    }
+                  },
+                  icon: const AppIcon(icon: AppIcons.plus, size: AppIconSize.sm),
+                  label: const Text('添加订阅'),
+                ),
+              ),
+              const SizedBox(width: AppTokens.spacingSm),
+              // 扫码添加（第 6 项）：扫订阅链接或节点链接的二维码，
+              // 内容分流见 [handleContent]，扫到节点链接走单节点流程。
+              OutlinedButton.icon(
+                onPressed: _scanAndAdd,
+                icon: const AppIcon(icon: AppIcons.scan, size: AppIconSize.sm),
+                label: const Text('扫码'),
+              ),
+            ],
           ),
         ],
       ),
     );
+  }
+
+  /// 扫码添加：扫到的内容走 [handleContent] 分流，合法就直接加上，
+  /// 不合法就把原因显示在粘贴框下面。
+  Future<void> _scanAndAdd() async {
+    final scanned = await Navigator.push<String>(
+      context,
+      appPageRoute(context, (_) => const ScanPage()),
+    );
+    if (scanned == null || scanned.trim().isEmpty || !mounted) return;
+    final result = await handleContent(ref, scanned);
+    if (!mounted) return;
+    if (result.error != null) {
+      setState(() => _addError = result.error);
+    } else {
+      setState(() => _addError = null);
+      _showSnack(result.message ?? '已添加');
+    }
   }
 
   Widget _buildEntryCard(
@@ -304,7 +343,7 @@ class _SubscriptionsPageState extends ConsumerState<SubscriptionsPage> {
             const SizedBox(height: 4),
             Text(
               summary!.errorMessage!,
-              style: const TextStyle(color: Colors.red),
+              style: TextStyle(color: Theme.of(context).colorScheme.error),
             ),
           ],
           if (summary?.lastUpdated != null)

@@ -4,6 +4,7 @@ import 'auth_service.dart';
 import 'nodes_notifier.dart';
 import 'remote_config_notifier.dart';
 import 'remote_config_service.dart';
+import 'subscription_store.dart';
 
 /// 账号登录服务（可注入 fake 做测试）。
 final authServiceProvider = Provider<AuthService>((ref) => AuthService());
@@ -43,7 +44,9 @@ class AuthState {
 /// 账号登录的状态管理（切片 9，DEV-PLAN §10.2）。
 ///
 /// - 登录成功后用面板返回的订阅链接走现有绑定流程（令牌不变、只换身份）；
-///   绑定失败时回滚本次登录：删会话令牌、恢复登录前的订阅绑定，
+///   该订阅已经绑过（主订阅或手动加的多订阅里已有同一条）时跳过绑定，
+///   不重复拉取、不在订阅列表里多一条重复项；
+/// - 绑定失败时回滚本次登录：删会话令牌、恢复登录前的订阅绑定，
 ///   不留半登录态；
 /// - 退出登录只清会话令牌（DEV-PLAN §10.2）：订阅与节点不受影响，
 ///   免登录时“退出登录”仍是清绑定（我的页按登录态分两路调）。
@@ -112,6 +115,13 @@ class AuthNotifier extends Notifier<AuthState> {
       state = AuthState(username: result.username);
       return true;
     }
+    // 该订阅已经绑过：节点已经在列表里，不用再拉一次，订阅列表里
+    // 也不再多一条重复项。跳过绑定时登录仍算成功；旧订阅就是当前
+    // 订阅，不用回滚。
+    if (await _isAlreadyBound(subscriptionUrl)) {
+      state = AuthState(username: result.username);
+      return true;
+    }
     // 绑定该账号的订阅；失败回滚本次登录，不留半登录态。
     await ref.read(nodesProvider.notifier).bindAndRefresh(subscriptionUrl);
     final nodesState = ref.read(nodesProvider);
@@ -126,6 +136,36 @@ class AuthNotifier extends Notifier<AuthState> {
     state = AuthState(username: result.username);
     return true;
   }
+
+  /// 登录回包里的订阅是否已经绑过：主订阅是同一条，或手动加的多订阅
+  /// 里已有同一条。读现有绑定失败时按“没绑过”算（走正常绑定），
+  /// 不让一次去重查询拦住登录。
+  Future<bool> _isAlreadyBound(String subscriptionUrl) async {
+    final normalized = _normalizeSubscriptionUrl(subscriptionUrl);
+    if (normalized.isEmpty) return false;
+    try {
+      final service = ref.read(subscriptionServiceProvider);
+      final primaryUrl = await service.readSubscriptionUrl();
+      if (primaryUrl != null &&
+          _normalizeSubscriptionUrl(primaryUrl) == normalized) {
+        return true;
+      }
+      final custom = await ref.read(subscriptionStoreProvider).listCustom();
+      return custom.any(
+        (e) => _normalizeSubscriptionUrl(e.url) == normalized,
+      );
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 订阅链接归一化（去重比对用）：去首尾空白＋去末尾斜杠。
+  /// 口径跟 SubscriptionService 现有的 base 处理一致
+  /// （updateBaseUrl / baseOf 都去掉末尾斜杠）；http 与 https
+  /// 不算同一条、host 大小写不折叠——现有代码保存订阅地址时
+  /// 也不换 scheme、不改大小写。
+  static String _normalizeSubscriptionUrl(String url) =>
+      url.trim().replaceAll(RegExp(r'/+$'), '');
 
   /// 绑定新订阅失败时的错误文案：订阅本身已失效 / 已到期时按 §10.2
   /// 提示“请重新导入或重新登录”，其它失败原样报绑定原因。

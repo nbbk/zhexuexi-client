@@ -507,6 +507,70 @@ tuic://11111111-2222-3333-4444-555555555555:example-password@203.0.113.1:443?sni
     });
   });
 
+  group('1.4.25 twin：A/B 后缀决定来源', () {
+    // 面板 1.4.25 起节点名不再写“-中转”“-直连”，改用 -A（直连）/
+    // -B（中转）后缀；解析器只认旧后缀时 A/B 全被默认成直连，
+    // 4 个节点全分进直连组。
+    const uuid = '11111111-2222-3333-4444-555555555555';
+    test('链接：-A 直连、-B 中转（VLESS 与 HY2）', () {
+      final realityA = parseNodeLink(
+        'vless://$uuid@203.0.113.1:443'
+        '?encryption=none&security=reality'
+        '&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+        '&sid=abcdef01&sni=www.microsoft.com&fp=chrome&type=tcp'
+        '&flow=xtls-rprx-vision#测试机-reality-443-A',
+      );
+      expect(realityA, isNotNull);
+      expect(realityA!.source, NodeSource.direct);
+      final realityB = parseNodeLink(
+        'vless://$uuid@cp.jiankong.cf:443'
+        '?encryption=none&security=reality'
+        '&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+        '&sid=abcdef01&sni=www.microsoft.com&fp=chrome&type=tcp'
+        '&flow=xtls-rprx-vision#测试机-reality-443-B',
+      );
+      expect(realityB, isNotNull);
+      expect(realityB!.source, NodeSource.relay);
+      final hy2A = parseNodeLink(
+        'hysteria2://$uuid@203.0.113.1:443?sni=example.com&alpn=h3#测试机-hy2-443-A',
+      );
+      expect(hy2A, isNotNull);
+      expect(hy2A!.source, NodeSource.direct);
+      final hy2B = parseNodeLink(
+        'hysteria2://$uuid@cp.jiankong.cf:443?sni=example.com&alpn=h3#测试机-hy2-443-B',
+      );
+      expect(hy2B, isNotNull);
+      expect(hy2B!.source, NodeSource.relay);
+    });
+
+    test('旧后缀 -中转/-直连仍认', () {
+      final relay = parseNodeLink(
+        'vless://$uuid@203.0.113.1:443#香港-中转',
+      );
+      expect(relay!.source, NodeSource.relay);
+      final direct = parseNodeLink(
+        'vless://$uuid@203.0.113.1:443#智利-直连',
+      );
+      expect(direct!.source, NodeSource.direct);
+    });
+
+    test('sing-box JSON：tag 带 -A/-B', () {
+      final result = parseSingboxJson('''
+{
+  "outbounds": [
+    {"type": "vless", "tag": "测试机-reality-443-A",
+     "server": "203.0.113.1", "server_port": 443, "uuid": "$uuid"},
+    {"type": "vless", "tag": "测试机-reality-443-B",
+     "server": "cp.jiankong.cf", "server_port": 443, "uuid": "$uuid"}
+  ]
+}
+''');
+      expect(result.nodes.length, 2);
+      expect(result.nodes[0].source, NodeSource.direct);
+      expect(result.nodes[1].source, NodeSource.relay);
+    });
+  });
+
   group('格式猜测', () {
     test('JSON → singbox；含 proxies: → clash；其他 → base64', () {
       expect(detectFormat('{"outbounds": []}'), SubscriptionFormat.singbox);

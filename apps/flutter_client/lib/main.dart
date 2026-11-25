@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:material_ui/material_ui.dart';
+import 'package:mmkv/mmkv.dart';
 
 import 'core/app_theme.dart';
 import 'core/core_provider.dart';
@@ -16,7 +17,18 @@ import 'widgets/app_shell.dart';
 /// 品牌变量来自远程配置（remoteConfigProvider）：启动时先读本地缓存
 /// 的最后一份好配置，拉不到用包内 brand.json，再拉不到用代码默认值；
 /// 后台拉到新版就换上，界面跟着变，不用重装。
-void main() {
+///
+/// MMKV 必须在这里先初始化（小米真机教训，2026-11-25）：
+/// flutter_sing_box 的 ProfileStorage 经 MmkvStorage 构造 MMKV 实例，
+/// 未初始化时 Dart 侧抛 StateError（“forget initialize MMKV first?”），
+/// 原生侧 PluginManager.init() 也不调 MMKV.initialize(context)；
+/// Dart 的 MMKV.initialize() 经 FFI 调 mmkvInitialize_v2，初始化的是
+/// 同一进程内的 native MMKV，所以 Dart 侧先初始化能覆盖两边——
+/// 但必须发生在任何 MMKV 访问（ProfileStorage、CoreService.init、
+/// _defaultEnsureSelectedProfile）之前，也就是 runApp 之前。
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await MMKV.initialize();
   runApp(const ProviderScope(child: ZhexuexiApp()));
 }
 
