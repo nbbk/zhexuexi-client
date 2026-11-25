@@ -18,10 +18,9 @@ import '../../services/settings_notifier.dart';
 /// 首页：一个大开关 + 当前节点 + 实时速率 + 流量三格 + 模式切换 + 公告栏。
 ///
 /// 切片 3：开关接真实核心（[CoreService]），速率读 Clash API `/traffic`，
-/// 流量三格读订阅 `subscription-userinfo` 头（中转口径），模式三档
+/// 流量三格读订阅 `subscription-userinfo` 头，模式三档
 /// 切换立即生效（失败回滚旧模式）。
-/// 流量口径写在界面上：直连流量不经过中转机，不在 userinfo 头里，
-/// 首页三格是“仅中转”，不要把它当成全部流量。
+/// 流量口径写在界面上：限流按全部节点流量算（切片 10 改口径，旧“仅中转”已取消）。
 class HomePage extends ConsumerStatefulWidget {
   const HomePage({super.key, required this.onGoToMe});
 
@@ -372,7 +371,7 @@ class _HomePageState extends ConsumerState<HomePage> {
               child: _StatCell(label: '到期日', value: _expireText(info)),
             ),
             const Expanded(
-              child: _StatCell(label: '流量口径', value: '仅中转'),
+              child: _StatCell(label: '流量口径', value: '全部节点'),
             ),
             const Expanded(child: SizedBox.shrink()),
           ],
@@ -380,8 +379,8 @@ class _HomePageState extends ConsumerState<HomePage> {
         const SizedBox(height: 4),
         Text(
           info == null
-              ? '未拉到流量数据，刷新订阅后显示；流量口径仅中转，直连流量不计入'
-              : '流量口径：仅中转（直连流量不计入，以面板用量为准）',
+              ? '未拉到流量数据，刷新订阅后显示；流量按全部节点算'
+              : '流量口径：全部节点（限流按全部节点流量算，以面板用量为准）',
           style: theme.textTheme.bodySmall,
           textAlign: TextAlign.center,
         ),

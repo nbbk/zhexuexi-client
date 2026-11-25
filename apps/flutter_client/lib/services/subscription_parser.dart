@@ -49,7 +49,10 @@ SubscriptionParseResult parseSubscription(String body, [SubscriptionFormat? form
 /// 节点出站字段（面板 `singboxOutboundFromLink` 的实际形状）：
 /// VLESS：type/server/server_port/uuid，tls.server_name，transport{type:ws,
 /// path, headers.Host}；Trojan：password；VMess：uuid/alter_id/security；
-/// SS：method/password。selector / urltest / direct / block 按 type 跳过。
+/// SS：method/password；AnyTLS：password，tls.server_name；SOCKS5：
+/// username/password。REALITY 的 VLESS 出站另带顶层 `flow` 与
+/// `tls.reality{public_key, short_id}`、`tls.utls.fingerprint`
+/// （见实施方案 §8.2）。selector / urltest / direct / block 按 type 跳过。
 SubscriptionParseResult parseSingboxJson(String body) {
   final decoded = jsonDecode(body);
   if (decoded is! Map<String, dynamic>) {
@@ -97,7 +100,8 @@ Node? _nodeFromSingboxOutbound(Map<String, dynamic> ob) {
     return null;
   }
   final protocol = NodeProtocolLabel.fromString(type);
-  // 面板 sing-box JSON 只出 vless / trojan / vmess / ss 四种；
+  // 面板 sing-box JSON 出 vless / trojan / vmess / ss / anytls / socks
+  // （切片 10 起）；
   // HY2 / TUIC 在这里会被面板跳过，只在 base64/plain 里保留。
   if (protocol == NodeProtocol.unknown) return null;
   final tag = ob['tag'] as String?;
@@ -117,10 +121,27 @@ Node? _nodeFromSingboxOutbound(Map<String, dynamic> ob) {
   final method = ob['method'] as String?;
   final uuidOrPassword = switch (protocol) {
     NodeProtocol.vless || NodeProtocol.vmess => ob['uuid'] as String?,
-    NodeProtocol.trojan || NodeProtocol.shadowsocks => ob['password'] as String?,
+    NodeProtocol.trojan ||
+    NodeProtocol.shadowsocks ||
+    NodeProtocol.anytls ||
+    NodeProtocol.socks5 => ob['password'] as String?,
     _ => null,
   };
   if (uuidOrPassword == null || uuidOrPassword.isEmpty) return null;
+  // REALITY（切片 10）：tls.reality 块。public_key 缺了说明这条 REALITY
+  // 出站不完整（面板不会下发这种），按失败计，不静默降级成普通 TLS。
+  final reality = tls?['reality'] as Map<String, dynamic>?;
+  final realityEnabled = reality?['enabled'] == true;
+  final realityPublicKey = reality?['public_key'] as String?;
+  if (realityEnabled &&
+      (realityPublicKey == null || realityPublicKey.isEmpty)) {
+    return null;
+  }
+  final utls = tls?['utls'] as Map<String, dynamic>?;
+  final username = ob['username'] as String?;
+  final flow = ob['flow'] as String?;
+  // AnyTLS 恒为 TLS：面板的出站即使没写 tls 块也不算明文。
+  final nodeTls = protocol == NodeProtocol.anytls || tlsEnabled;
   return Node(
     name: tag,
     protocol: protocol,
@@ -129,12 +150,19 @@ Node? _nodeFromSingboxOutbound(Map<String, dynamic> ob) {
     source: _sourceFromName(tag),
     uuidOrPassword: uuidOrPassword,
     transport: transportType,
-    tls: tlsEnabled,
+    tls: nodeTls,
     sni: (sni == null || sni.isEmpty) ? null : sni,
     wsPath: (wsPath == null || wsPath.isEmpty) ? null : wsPath,
     wsHost: (wsHost == null || wsHost.isEmpty) ? null : wsHost,
     method: (method == null || method.isEmpty) ? null : method,
-    isPlainText: !tlsEnabled,
+    isPlainText: !nodeTls,
+    username: (username == null || username.isEmpty) ? null : username,
+    realityPublicKey: (realityPublicKey == null || realityPublicKey.isEmpty)
+        ? null
+        : realityPublicKey,
+    realityShortId: _nonEmptyString(reality?['short_id']),
+    fingerprint: _nonEmptyString(utls?['fingerprint']),
+    flow: (flow == null || flow.isEmpty) ? null : flow,
   );
 }
 
@@ -144,7 +172,10 @@ Node? _nodeFromSingboxOutbound(Map<String, dynamic> ob) {
 /// （规则由客户端自己生成，见 docs/api/panel-adapter.md §6.2）。
 /// proxy 字段（面板 `clashProxyFromLink` 的实际形状）：
 /// name/type/server/port/uuid 或 password/cipher、tls（bool）、servername、
-/// network、ws-opts{path, headers.Host}、udp。
+/// network、ws-opts{path, headers.Host}、udp。REALITY 的 VLESS 另带
+/// `reality-opts{public-key, short-id}`、`fingerprint`、`flow`
+/// （见实施方案 §8.2）；AnyTLS 带 `password` 与 `sni`；
+/// SOCKS5 带 `username` 与 `password`。
 SubscriptionParseResult parseClashYaml(String body) {
   final doc = loadYaml(body);
   if (doc is! YamlMap) {
@@ -175,7 +206,8 @@ Node? _nodeFromClashProxy(YamlMap proxy) {
   final type = (proxy['type'] as String?)?.toLowerCase();
   if (type == null) return null;
   final protocol = NodeProtocolLabel.fromString(type);
-  // 面板 Clash 里只出 vless / trojan / vmess / ss 四种；
+  // 面板 Clash 里出 vless / trojan / vmess / ss / anytls / socks5
+  // （切片 10 起）；
   // HY2 / TUIC 在这里会被面板跳过，只在 base64/plain 里保留。
   if (protocol == NodeProtocol.unknown) return null;
   final name = proxy['name'] as String?;
@@ -186,12 +218,20 @@ Node? _nodeFromClashProxy(YamlMap proxy) {
   }
   final uuidOrPassword = switch (protocol) {
     NodeProtocol.vless || NodeProtocol.vmess => proxy['uuid'] as String?,
-    NodeProtocol.trojan || NodeProtocol.shadowsocks => proxy['password'] as String?,
+    NodeProtocol.trojan ||
+    NodeProtocol.shadowsocks ||
+    NodeProtocol.anytls ||
+    NodeProtocol.socks5 => proxy['password'] as String?,
     _ => null,
   };
   if (uuidOrPassword == null || uuidOrPassword.isEmpty) return null;
-  final tls = proxy['tls'] == true;
-  final sni = proxy['servername'] as String?;
+  // AnyTLS 恒为 TLS：面板的 proxy 即使没写 tls 字段也不算明文。
+  final tls = protocol == NodeProtocol.anytls || proxy['tls'] == true;
+  var sni = proxy['servername'] as String?;
+  // AnyTLS 的 SNI 在 Clash 里写 `sni` 字段，不写 `servername`。
+  if ((sni == null || sni.isEmpty) && protocol == NodeProtocol.anytls) {
+    sni = proxy['sni'] as String?;
+  }
   final network = (proxy['network'] as String?) ?? 'tcp';
   String? wsPath;
   String? wsHost;
@@ -202,6 +242,28 @@ Node? _nodeFromClashProxy(YamlMap proxy) {
     if (headers is YamlMap) wsHost = headers['Host'] as String?;
   }
   final method = proxy['cipher'] as String?;
+  // REALITY（切片 10）：reality-opts 块。public-key 缺了说明这条 REALITY
+  // 节点不完整，按失败计，不静默降级成普通 TLS。
+  final realityOpts = proxy['reality-opts'];
+  String? realityPublicKey;
+  String? realityShortId;
+  if (realityOpts is YamlMap) {
+    realityPublicKey = realityOpts['public-key'] as String?;
+    realityShortId = realityOpts['short-id'] as String?;
+    if (realityPublicKey != null && realityPublicKey.isEmpty) {
+      realityPublicKey = null;
+    }
+    if (realityShortId != null && realityShortId.isEmpty) {
+      realityShortId = null;
+    }
+  }
+  if (realityOpts is YamlMap &&
+      (realityPublicKey == null || realityPublicKey.isEmpty)) {
+    return null;
+  }
+  final username = proxy['username'] as String?;
+  final flow = proxy['flow'] as String?;
+  final fingerprint = proxy['fingerprint'] as String?;
   return Node(
     name: name,
     protocol: protocol,
@@ -216,12 +278,20 @@ Node? _nodeFromClashProxy(YamlMap proxy) {
     wsHost: (wsHost == null || wsHost.isEmpty) ? null : wsHost,
     method: (method == null || method.isEmpty) ? null : method,
     isPlainText: !tls,
+    username: (username == null || username.isEmpty) ? null : username,
+    realityPublicKey: realityPublicKey,
+    realityShortId: realityShortId,
+    fingerprint: (fingerprint == null || fingerprint.isEmpty)
+        ? null
+        : fingerprint,
+    flow: (flow == null || flow.isEmpty) ? null : flow,
   );
 }
 
 /// 解析 base64 / plain 节点链接列表（面板 `?format=base64` 或 `plain`）。
 ///
-/// 每行一条链接：vless://、vmess://、trojan://、ss://、hysteria2://、tuic://。
+/// 每行一条链接：vless://、vmess://、trojan://、ss://、hysteria2://、
+/// tuic://、anytls://、socks5://。
 /// 正文若不含 `://`，先当 base64 解一次再按行解析；解不开就按明文行解析。
 /// 空行跳过（不计失败）；垃圾行计入 failedCount。
 SubscriptionParseResult parseLinkList(String body) {
@@ -245,8 +315,8 @@ SubscriptionParseResult parseLinkList(String body) {
   return SubscriptionParseResult(nodes: nodes, failedCount: failed);
 }
 
-/// 解析一条节点链接（vless / vmess / trojan / ss / hysteria2 / tuic）。
-/// 解析不了返回 null（调用方计入失败数）。
+/// 解析一条节点链接（vless / vmess / trojan / ss / hysteria2 / tuic /
+/// anytls / socks5）。解析不了返回 null（调用方计入失败数）。
 Node? parseNodeLink(String link) {
   final trimmed = link.trim();
   final schemeEnd = trimmed.indexOf('://');
@@ -258,6 +328,8 @@ Node? parseNodeLink(String link) {
     'ss' => _nodeFromSsLink(trimmed),
     'hysteria2' || 'hy2' => _nodeFromHy2Link(trimmed),
     'tuic' => _nodeFromTuicLink(trimmed),
+    'anytls' => _nodeFromAnytlsLink(trimmed),
+    'socks5' || 'socks' => _nodeFromSocks5Link(trimmed),
     _ => null,
   };
 }
@@ -267,13 +339,21 @@ Node? _nodeFromUriLink(String link, String scheme) {
   if (uri == null || uri.host.isEmpty || !uri.hasPort) return null;
   final id = uri.userInfo.isEmpty ? null : _decodeComponentSafe(uri.userInfo);
   if (id == null || id.isEmpty) return null;
+  // 查询参数按名取，不依赖顺序；`encryption=none` 有无都不影响解析
+  // （VLESS 固定不加密，这里不校验它）。
   final query = uri.queryParameters;
-  final tls = query['security']?.toLowerCase() == 'tls';
+  final security = query['security']?.toLowerCase();
+  final isReality = security == 'reality';
+  final tls = security == 'tls' || isReality;
   var sni = query['sni'];
   if (sni == null || sni.isEmpty) sni = query['host'];
   final network = query['type'] ?? 'ws';
   final name = _linkName(uri);
   if (name.isEmpty) return null;
+  // REALITY（切片 10，实施方案 §8.2）：pbk / sid / fp / flow。
+  // security=reality 但没给 pbk 时解析失败，不静默降级成普通 TLS。
+  final realityPublicKey = _nonEmptyString(query['pbk']);
+  if (isReality && realityPublicKey == null) return null;
   return Node(
     name: name,
     protocol: scheme == 'vless' ? NodeProtocol.vless : NodeProtocol.trojan,
@@ -288,6 +368,10 @@ Node? _nodeFromUriLink(String link, String scheme) {
     // host 参数是 WS Host 头（同时也是 sni 为空时的回退，见上）。
     wsHost: (network == 'ws' || network == 'h2') ? query['host'] : null,
     isPlainText: !tls,
+    realityPublicKey: realityPublicKey,
+    realityShortId: _nonEmptyString(query['sid']),
+    fingerprint: _nonEmptyString(query['fp']),
+    flow: _nonEmptyString(query['flow']),
   );
 }
 
@@ -435,6 +519,70 @@ Node? _nodeFromTuicLink(String link) {
     sni: (sni == null || sni.isEmpty) ? null : sni,
     isPlainText: false,
   );
+}
+
+/// AnyTLS 链接（切片 10）：`anytls://<uuid>@<host>:<port>?sni=<域名>#<名字>`。
+/// 凭证口径与 HY2/TUIC 一致：password 就是用户 UUID（见实施方案 §12
+/// 切片 5 实施细化）；SNI 是入站域名。
+Node? _nodeFromAnytlsLink(String link) {
+  final uri = Uri.tryParse(link);
+  if (uri == null || uri.host.isEmpty || !uri.hasPort) return null;
+  final password = uri.userInfo.isEmpty
+      ? null
+      : _decodeComponentSafe(uri.userInfo);
+  if (password == null || password.isEmpty) return null;
+  final name = _linkName(uri);
+  if (name.isEmpty) return null;
+  final sni = uri.queryParameters['sni'];
+  return Node(
+    name: name,
+    protocol: NodeProtocol.anytls,
+    address: uri.host,
+    port: uri.port,
+    source: _sourceFromName(name),
+    uuidOrPassword: password,
+    transport: 'tcp',
+    tls: true,
+    sni: (sni == null || sni.isEmpty) ? null : sni,
+    isPlainText: false,
+  );
+}
+
+/// SOCKS5 链接（切片 10）：`socks5://<用户名>:<密码>@<host>:<port>#<名字>`。
+/// 用户名进 [Node.username]、密码进 `uuidOrPassword`；账号缺一半
+/// （无用户名、无密码）时解析失败，不生成无认证的出站。
+Node? _nodeFromSocks5Link(String link) {
+  final uri = Uri.tryParse(link);
+  if (uri == null || uri.host.isEmpty || !uri.hasPort) return null;
+  final userInfo = uri.userInfo.isEmpty
+      ? null
+      : _decodeComponentSafe(uri.userInfo);
+  if (userInfo == null || userInfo.isEmpty) return null;
+  final colon = userInfo.indexOf(':');
+  if (colon <= 0) return null;
+  final username = userInfo.substring(0, colon);
+  final password = userInfo.substring(colon + 1);
+  if (username.isEmpty || password.isEmpty) return null;
+  final name = _linkName(uri);
+  if (name.isEmpty) return null;
+  return Node(
+    name: name,
+    protocol: NodeProtocol.socks5,
+    address: uri.host,
+    port: uri.port,
+    source: _sourceFromName(name),
+    uuidOrPassword: password,
+    transport: 'tcp',
+    tls: false,
+    username: username,
+    isPlainText: true,
+  );
+}
+
+/// 空串当 null：可选字段统一用它归一化，避免空串进模型。
+String? _nonEmptyString(Object? value) {
+  if (value is! String) return null;
+  return value.isEmpty ? null : value;
 }
 
 /// 节点名后缀决定来源：`-中转` → 中转，`-直连` → 直连；无后缀默认直连

@@ -189,6 +189,221 @@ void main() {
     });
   });
 
+  group('切片 10：REALITY / AnyTLS / SOCKS5（对齐契约）', () {
+    // 契约样例（~/workspace/slice10-fixtures/contract.md 与 links.txt，
+    // 脱敏值，逐字照抄）。
+    const realityLink =
+        'vless://11111111-2222-3333-4444-555555555555@203.0.113.1:443'
+        '?encryption=none&security=reality'
+        '&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+        '&sid=abcdef01&sni=www.microsoft.com&fp=chrome&type=tcp'
+        '&flow=xtls-rprx-vision#example-node-reality-443';
+    const anytlsLink =
+        'anytls://11111111-2222-3333-4444-555555555555@203.0.113.1:443'
+        '?sni=example.com#example-node-anytls-443';
+    const socks5Link =
+        'socks5://user1:pass1234@203.0.113.1:1080#example-node-socks-1080';
+    // 契约的 base64 订阅（subscription-base64.txt，逐字照抄）。
+    const contractBase64 =
+        'dmxlc3M6Ly8xMTExMTExMS0yMjIyLTMzMzMtNDQ0NC01NTU1NTU1NTU1NTVAMjAzLjAuMTEzLjE6NDQzP2VuY3J5cHRpb249bm9uZSZzZWN1cml0eT1yZWFsaXR5JnBiaz1BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBJnNpZD1hYmNkZWYwMSZzbmk9d3d3Lm1pY3Jvc29mdC5jb20mZnA9Y2hyb21lJnR5cGU9dGNwJmZsb3c9eHRscy1ycHJ4LXZpc2lvbiNleGFtcGxlLW5vZGUtcmVhbGl0eS00NDMKYW55dGxzOi8vMTExMTExMTEtMjIyMi0zMzMzLTQ0NDQtNTU1NTU1NTU1NTU1QDIwMy4wLjExMy4xOjQ0Mz9zbmk9ZXhhbXBsZS5jb20jZXhhbXBsZS1ub2RlLWFueXRscy00NDMKc29ja3M1Oi8vdXNlcjE6cGFzczEyMzRAMjAzLjAuMTEzLjE6MTA4MCNleGFtcGxlLW5vZGUtc29ja3MtMTA4MAo=';
+
+    test('契约 base64 订阅：3 节点 0 失败，REALITY 字段齐全', () {
+      final result = parseLinkList(contractBase64);
+      expect(result.nodes.length, 3);
+      expect(result.failedCount, 0);
+
+      final reality = result.nodes[0];
+      expect(reality.name, 'example-node-reality-443');
+      expect(reality.protocol, NodeProtocol.vless);
+      expect(reality.address, '203.0.113.1');
+      expect(reality.port, 443);
+      expect(
+        reality.uuidOrPassword,
+        '11111111-2222-3333-4444-555555555555',
+      );
+      expect(reality.tls, isTrue);
+      expect(reality.isPlainText, isFalse);
+      expect(reality.transport, 'tcp');
+      expect(
+        reality.realityPublicKey,
+        'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+      );
+      expect(reality.realityShortId, 'abcdef01');
+      expect(reality.sni, 'www.microsoft.com');
+      expect(reality.fingerprint, 'chrome');
+      expect(reality.flow, 'xtls-rprx-vision');
+
+      final anytls = result.nodes[1];
+      expect(anytls.name, 'example-node-anytls-443');
+      expect(anytls.protocol, NodeProtocol.anytls);
+      expect(
+        anytls.uuidOrPassword,
+        '11111111-2222-3333-4444-555555555555',
+      );
+      expect(anytls.tls, isTrue);
+      expect(anytls.sni, 'example.com');
+
+      final socks = result.nodes[2];
+      expect(socks.name, 'example-node-socks-1080');
+      expect(socks.protocol, NodeProtocol.socks5);
+      expect(socks.address, '203.0.113.1');
+      expect(socks.port, 1080);
+      expect(socks.username, 'user1');
+      expect(socks.uuidOrPassword, 'pass1234');
+      expect(socks.isPlainText, isTrue);
+    });
+
+    test('契约 plain 三行：与 base64 同样的 3 个节点', () {
+      final result = parseLinkList(
+        '$realityLink\n$anytlsLink\n$socks5Link\n',
+      );
+      expect(result.nodes.length, 3);
+      expect(result.failedCount, 0);
+      expect(
+        result.nodes.map((n) => n.name),
+        [
+          'example-node-reality-443',
+          'example-node-anytls-443',
+          'example-node-socks-1080',
+        ],
+      );
+    });
+
+    test('REALITY 不依赖参数顺序，encryption=none 有无都能解', () {
+      final shuffled = parseNodeLink(
+        'vless://11111111-2222-3333-4444-555555555555@203.0.113.1:443'
+        '?flow=xtls-rprx-vision&fp=chrome&sni=www.microsoft.com'
+        '&sid=abcdef01&type=tcp&security=reality'
+        '&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+        '#example-node-reality-443',
+      );
+      expect(shuffled, isNotNull);
+      expect(shuffled!.realityPublicKey,
+          'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
+      expect(shuffled.realityShortId, 'abcdef01');
+      expect(shuffled.sni, 'www.microsoft.com');
+      expect(shuffled.fingerprint, 'chrome');
+      expect(shuffled.flow, 'xtls-rprx-vision');
+      expect(shuffled.tls, isTrue);
+    });
+
+    test('REALITY 缺 pbk：解析失败，不降级成普通 TLS', () {
+      expect(
+        parseNodeLink(
+          'vless://11111111-2222-3333-4444-555555555555@203.0.113.1:443'
+          '?security=reality&sid=abcdef01&sni=www.microsoft.com'
+          '&fp=chrome&type=tcp&flow=xtls-rprx-vision'
+          '#example-node-reality-443',
+        ),
+        isNull,
+      );
+    });
+
+    test('SOCKS5 缺用户名或缺密码：解析失败', () {
+      expect(
+        parseNodeLink(
+          'socks5://user1@203.0.113.1:1080#example-node-socks-1080',
+        ),
+        isNull,
+      );
+      expect(
+        parseNodeLink('socks5://203.0.113.1:1080#example-node-socks-1080'),
+        isNull,
+      );
+    });
+
+    test('sing-box JSON：REALITY / AnyTLS / SOCKS5 三种出站都能解', () {
+      final result = parseSingboxJson('''
+{
+  "outbounds": [
+    {"type": "vless", "tag": "example-node-reality-443",
+     "server": "203.0.113.1", "server_port": 443,
+     "uuid": "11111111-2222-3333-4444-555555555555",
+     "flow": "xtls-rprx-vision",
+     "tls": {"enabled": true, "server_name": "www.microsoft.com",
+             "utls": {"enabled": true, "fingerprint": "chrome"},
+             "reality": {"enabled": true,
+                         "public_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                         "short_id": "abcdef01"}}},
+    {"type": "anytls", "tag": "example-node-anytls-443",
+     "server": "203.0.113.1", "server_port": 443,
+     "password": "11111111-2222-3333-4444-555555555555",
+     "tls": {"enabled": true, "server_name": "example.com"}},
+    {"type": "socks", "tag": "example-node-socks-1080",
+     "server": "203.0.113.1", "server_port": 1080, "version": "5",
+     "username": "user1", "password": "pass1234"}
+  ]
+}
+''');
+      expect(result.nodes.length, 3);
+      expect(result.failedCount, 0);
+      final reality = result.nodes[0];
+      expect(reality.protocol, NodeProtocol.vless);
+      expect(reality.realityPublicKey,
+          'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
+      expect(reality.realityShortId, 'abcdef01');
+      expect(reality.fingerprint, 'chrome');
+      expect(reality.flow, 'xtls-rprx-vision');
+      expect(reality.sni, 'www.microsoft.com');
+      final anytls = result.nodes[1];
+      expect(anytls.protocol, NodeProtocol.anytls);
+      expect(anytls.tls, isTrue);
+      expect(anytls.sni, 'example.com');
+      final socks = result.nodes[2];
+      expect(socks.protocol, NodeProtocol.socks5);
+      expect(socks.username, 'user1');
+      expect(socks.uuidOrPassword, 'pass1234');
+    });
+
+    test('Clash YAML：REALITY / AnyTLS / SOCKS5 三种 proxy 都能解', () {
+      final result = parseClashYaml('''
+proxies:
+  - name: example-node-reality-443
+    type: vless
+    server: 203.0.113.1
+    port: 443
+    uuid: 11111111-2222-3333-4444-555555555555
+    tls: true
+    servername: www.microsoft.com
+    fingerprint: chrome
+    network: tcp
+    flow: xtls-rprx-vision
+    reality-opts:
+      public-key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+      short-id: abcdef01
+  - name: example-node-anytls-443
+    type: anytls
+    server: 203.0.113.1
+    port: 443
+    password: 11111111-2222-3333-4444-555555555555
+    sni: example.com
+  - name: example-node-socks-1080
+    type: socks5
+    server: 203.0.113.1
+    port: 1080
+    username: user1
+    password: pass1234
+''');
+      expect(result.nodes.length, 3);
+      expect(result.failedCount, 0);
+      final reality = result.nodes[0];
+      expect(reality.protocol, NodeProtocol.vless);
+      expect(reality.realityPublicKey,
+          'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
+      expect(reality.realityShortId, 'abcdef01');
+      expect(reality.fingerprint, 'chrome');
+      expect(reality.flow, 'xtls-rprx-vision');
+      final anytls = result.nodes[1];
+      expect(anytls.protocol, NodeProtocol.anytls);
+      expect(anytls.tls, isTrue);
+      expect(anytls.sni, 'example.com');
+      final socks = result.nodes[2];
+      expect(socks.protocol, NodeProtocol.socks5);
+      expect(socks.username, 'user1');
+      expect(socks.uuidOrPassword, 'pass1234');
+    });
+  });
+
   group('格式猜测', () {
     test('JSON → singbox；含 proxies: → clash；其他 → base64', () {
       expect(detectFormat('{"outbounds": []}'), SubscriptionFormat.singbox);

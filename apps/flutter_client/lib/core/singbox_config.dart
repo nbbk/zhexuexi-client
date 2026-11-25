@@ -172,6 +172,12 @@ class SingboxConfigBuilder {
 /// [tunEnabled]（切片 6）：为 true 时加一条 `tun` 入站（系统级
 /// TUN 接管流量，gvisor 栈 + 自动路由）；为 false 时不写 tun 入站。
 /// TUN 只改入站，不改出站与规则。
+///
+/// 同节点多入站 fallback 组（切片 10）：备注名 `<节点名>-<入站 tag>`
+/// 归组，≥2 个入站的组出一个 urltest 组（组名就是节点名，成员是该
+/// 节点各入站的出站 tag），selector 里该节点只占组 tag 一位，组内
+/// 由 urltest 健康检查自动切入站；单个入站的节点不成组。'自动选择'
+/// 仍列全部节点自己的 tag。
 static SingboxConfigResult build(
   List<Node> nodes, {
   RoutingMode mode = RoutingMode.rule,
@@ -198,17 +204,61 @@ static SingboxConfigResult build(
       outbounds.add(outbound);
     }
 
+    // 同节点多入站 fallback 组（切片 10，见契约）：备注名
+    // `<节点名>-<入站 tag>` 归组，同一节点名的多个入站为一组，每组
+    // 一个 urltest 组，组名就是节点名；只有 ≥2 个入站的组才建组
+    // （单个入站的节点不需要组，直接进 selector）。
+    // selector 里成组节点只占组 tag 一位（按节点顺序首次出现的位置），
+    // 组内由 urltest 健康检查自动切入站；未成组节点占自己的 tag。
+    // '自动选择' 仍列全部节点自己的 tag（原有行为，不动）。
+    final groupMembers = <String, List<int>>{};
+    for (var i = 0; i < keptNodes.length; i++) {
+      final group = _groupName(keptNodes[i].name);
+      if (group == null) continue;
+      groupMembers.putIfAbsent(group, () => []).add(i);
+    }
+    groupMembers.removeWhere((_, members) => members.length < 2);
+    // 每个节点在 selector 里的成员 tag：成组的是组 tag，否则是自己的 tag。
+    final memberTagByIndex = List<String>.generate(
+      keptNodes.length,
+      (i) => nodeTags[i],
+    );
+    for (final entry in groupMembers.entries) {
+      // 组 tag 与出站 tag 同一套去重，避免组名撞上节点名。
+      final groupTag = _uniqueTag(entry.key, usedTags);
+      usedTags.add(groupTag);
+      for (final i in entry.value) {
+        memberTagByIndex[i] = groupTag;
+      }
+      outbounds.add({
+        'type': 'urltest',
+        'tag': groupTag,
+        'outbounds': entry.value.map((i) => nodeTags[i]).toList(),
+        'url': 'http://www.gstatic.com/generate_204',
+        'interval': '5m',
+      });
+    }
+
     if (nodeTags.isNotEmpty) {
-      // selector 默认选第一个直连节点，没有直连节点时取第一个节点（面板规则）。
+      // selector 成员：成组节点只占组 tag 一位，未成组节点占自己的 tag。
+      final selectorOutbounds = <String>[];
+      for (var i = 0; i < keptNodes.length; i++) {
+        final member = memberTagByIndex[i];
+        if (!selectorOutbounds.contains(member)) {
+          selectorOutbounds.add(member);
+        }
+      }
+      // selector 默认选第一个直连节点，没有直连节点时取第一个节点（面板规则）；
+      // 选中的节点成组时默认就是组 tag（组内再自动选入站）。
       final defaultTag = _defaultNodeTag(
         keptNodes,
-        nodeTags,
+        memberTagByIndex,
         selectedNodeName: selectedNodeName,
       );
       outbounds.add({
         'type': 'selector',
         'tag': 'Proxy',
-        'outbounds': nodeTags,
+        'outbounds': selectorOutbounds,
         'default': defaultTag,
       });
       outbounds.add({
@@ -455,6 +505,10 @@ static SingboxConfigResult build(
   /// 去重规则与 [build] 完全一致（重名加 ` (2)` 后缀，按列表顺序），
   /// 所以同一个列表算出来的 tag 与配置里的 tag 一一对应。
   /// [target] 必须是 [nodes] 里的同一个对象（按 identity 认）。
+  ///
+  /// 注意：返回的是节点自己的出站 tag，不是它所属的 fallback 组 tag
+  /// （成组节点在 selector 里占组 tag 一位，见 [build]）；测速调
+  /// delay 接口必须用节点自己的 tag，组 tag 没有 delay 数据。
   static String? tagForNode(List<Node> nodes, Node target) {
     final usedTags = <String>{};
     for (final node in nodes) {
@@ -485,6 +539,7 @@ static SingboxConfigResult build(
         'server': node.address,
         'server_port': node.port,
         'uuid': credential,
+        if (node.flow != null) 'flow': node.flow,
         'tls': ?_tlsObjectOrNull(node),
         'transport': ?_transportObject(node),
       },
@@ -528,6 +583,28 @@ static SingboxConfigResult build(
         'tls': _tlsObject(node),
       },
       NodeProtocol.tuic => _tuicOutbound(node, tag, credential),
+      // AnyTLS（切片 10，契约形状）：password 就是用户 UUID，TLS 只开
+      // enabled + server_name（入站域名）。
+      NodeProtocol.anytls => {
+        'type': 'anytls',
+        'tag': tag,
+        'server': node.address,
+        'server_port': node.port,
+        'password': credential,
+        'tls': _tlsObject(node),
+      },
+      // SOCKS5（切片 10，契约形状）：用户名 + 密码，version 固定 "5"。
+      NodeProtocol.socks5 => node.username == null
+          ? null
+          : {
+              'type': 'socks',
+              'tag': tag,
+              'server': node.address,
+              'server_port': node.port,
+              'version': '5',
+              'username': node.username,
+              'password': credential,
+            },
       NodeProtocol.unknown => null,
     };
   }
@@ -552,8 +629,33 @@ static SingboxConfigResult build(
   }
 
   /// TLS 对象；不启用 TLS 时返回 null（配合 null-aware 入口省略该键）。
-  static Map<String, dynamic>? _tlsObjectOrNull(Node node) =>
-      node.tls ? _tlsObject(node) : null;
+  /// REALITY 节点（realityPublicKey 非空）一定走 REALITY tls 块，
+  /// 不依赖 node.tls（解析器对 security=reality 本来就会置 tls=true，
+  /// 这里再兜底一次，避免手工构造的节点漏写 tls 标志就丢了 reality 块）。
+  static Map<String, dynamic>? _tlsObjectOrNull(Node node) {
+    if (node.realityPublicKey != null) return _realityTlsObject(node);
+    return node.tls ? _tlsObject(node) : null;
+  }
+
+  /// REALITY tls 块（切片 10，实施方案 §8.2 一字不差）：
+  /// server_name 是 SNI 目标，utls 指纹缺省 `chrome`，reality 块带
+  /// 公钥与 short id。
+  static Map<String, dynamic> _realityTlsObject(Node node) {
+    final tls = <String, dynamic>{'enabled': true};
+    if (node.sni != null && node.sni!.isNotEmpty) {
+      tls['server_name'] = node.sni;
+    }
+    tls['utls'] = {
+      'enabled': true,
+      'fingerprint': node.fingerprint ?? 'chrome',
+    };
+    tls['reality'] = {
+      'enabled': true,
+      'public_key': node.realityPublicKey,
+      if (node.realityShortId != null) 'short_id': node.realityShortId,
+    };
+    return tls;
+  }
 
   /// TLS 对象：有 SNI 时写 server_name，没有时只开 enabled。
   static Map<String, dynamic> _tlsObject(Node node) {
@@ -593,6 +695,22 @@ static SingboxConfigResult build(
     };
   }
 
+  /// 同节点多入站的组名（切片 10）：备注名 `<节点名>-<入站 tag>` 里去掉
+  /// 末尾的入站 tag（以后端入站 tag 为准：reality-443、xhttp-443、
+  /// hy2-443、tuic-443、anytls-443、ss-8388、ss2022-*、socks-1080 等，
+  /// 另含 trojan/vless/vmess 以备面板以后按同规矩起名）。
+  /// 不带入站 tag 后缀的名字不成组，返回 null（例如 `智利-直连`）。
+  static String? _groupName(String name) {
+    final match = _inboundTagSuffix.firstMatch(name);
+    if (match == null) return null;
+    final group = match.group(1)!;
+    return group.isEmpty ? null : group;
+  }
+
+  static final _inboundTagSuffix = RegExp(
+    r'^(.+)-(ss2022|reality|xhttp|hy2|tuic|anytls|trojan|vless|vmess|ss|socks)-(.+)$',
+  );
+
   /// 跳过原因（与 [_nodeOutbound] 的 null 分支一一对应）。
   static String _skipReason(Node node) {
     if (node.protocol == NodeProtocol.unknown) return '未知协议';
@@ -601,6 +719,9 @@ static SingboxConfigResult build(
     }
     if (node.protocol == NodeProtocol.shadowsocks && node.method == null) {
       return '缺少加密方式';
+    }
+    if (node.protocol == NodeProtocol.socks5 && node.username == null) {
+      return '缺少 SOCKS5 用户名';
     }
     if (node.protocol == NodeProtocol.tuic &&
         !node.uuidOrPassword!.contains(':')) {

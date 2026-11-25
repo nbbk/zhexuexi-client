@@ -675,4 +675,178 @@ void main() {
       expect(text, contains('不可关闭'));
     });
   });
+
+  group('切片 10：REALITY / AnyTLS / SOCKS5 出站与同节点 fallback 组', () {
+    // 契约样例（~/workspace/slice10-fixtures/contract.md）：先解析
+    // 再生成，出站与分组必须与契约一致。
+    const contractBase64 =
+        'dmxlc3M6Ly8xMTExMTExMS0yMjIyLTMzMzMtNDQ0NC01NTU1NTU1NTU1NTVAMjAzLjAuMTEzLjE6NDQzP2VuY3J5cHRpb249bm9uZSZzZWN1cml0eT1yZWFsaXR5JnBiaz1BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBJnNpZD1hYmNkZWYwMSZzbmk9d3d3Lm1pY3Jvc29mdC5jb20mZnA9Y2hyb21lJnR5cGU9dGNwJmZsb3c9eHRscy1ycHJ4LXZpc2lvbiNleGFtcGxlLW5vZGUtcmVhbGl0eS00NDMKYW55dGxzOi8vMTExMTExMTEtMjIyMi0zMzMzLTQ0NDQtNTU1NTU1NTU1NTU1QDIwMy4wLjExMy4xOjQ0Mz9zbmk9ZXhhbXBsZS5jb20jZXhhbXBsZS1ub2RlLWFueXRscy00NDMKc29ja3M1Oi8vdXNlcjE6cGFzczEyMzRAMjAzLjAuMTEzLjE6MTA4MCNleGFtcGxlLW5vZGUtc29ja3MtMTA4MAo=';
+
+    List<Node> contractNodes() =>
+        parseLinkList(contractBase64).nodes;
+
+    test('契约三节点：出站形状与契约逐字一致', () {
+      final result = SingboxConfigBuilder.build(contractNodes());
+      expect(result.skipped, isEmpty);
+      final byTag = _outboundsByTag(result.config);
+
+      final reality = byTag['example-node-reality-443']!;
+      expect(reality, {
+        'type': 'vless',
+        'tag': 'example-node-reality-443',
+        'server': '203.0.113.1',
+        'server_port': 443,
+        'uuid': '11111111-2222-3333-4444-555555555555',
+        'flow': 'xtls-rprx-vision',
+        'tls': {
+          'enabled': true,
+          'server_name': 'www.microsoft.com',
+          'utls': {'enabled': true, 'fingerprint': 'chrome'},
+          'reality': {
+            'enabled': true,
+            'public_key':
+                'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+            'short_id': 'abcdef01',
+          },
+        },
+      });
+
+      final anytls = byTag['example-node-anytls-443']!;
+      expect(anytls, {
+        'type': 'anytls',
+        'tag': 'example-node-anytls-443',
+        'server': '203.0.113.1',
+        'server_port': 443,
+        'password': '11111111-2222-3333-4444-555555555555',
+        'tls': {'enabled': true, 'server_name': 'example.com'},
+      });
+
+      final socks = byTag['example-node-socks-1080']!;
+      expect(socks, {
+        'type': 'socks',
+        'tag': 'example-node-socks-1080',
+        'server': '203.0.113.1',
+        'server_port': 1080,
+        'version': '5',
+        'username': 'user1',
+        'password': 'pass1234',
+      });
+    });
+
+    test('契约三节点：urltest 组名就是节点名，成员是三个入站', () {
+      final result = SingboxConfigBuilder.build(contractNodes());
+      final byTag = _outboundsByTag(result.config);
+
+      final group = byTag['example-node']!;
+      expect(group['type'], 'urltest');
+      expect(group['outbounds'], [
+        'example-node-reality-443',
+        'example-node-anytls-443',
+        'example-node-socks-1080',
+      ]);
+      expect(group['url'], 'http://www.gstatic.com/generate_204');
+      expect(group['interval'], '5m');
+
+      // selector 里该节点只占组 tag 一位，默认就是组 tag。
+      final proxy = byTag['Proxy']!;
+      expect(proxy['type'], 'selector');
+      expect(proxy['outbounds'], ['example-node']);
+      expect(proxy['default'], 'example-node');
+
+      // '自动选择' 仍列全部节点自己的 tag（原有行为）。
+      final auto = byTag['自动选择']!;
+      expect(auto['outbounds'], [
+        'example-node-reality-443',
+        'example-node-anytls-443',
+        'example-node-socks-1080',
+      ]);
+    });
+
+    test('单个入站的节点不成组，直接进 selector', () {
+      final nodes = [
+        parseNodeLink(
+          'vless://11111111-2222-3333-4444-555555555555@203.0.113.1:443'
+          '?encryption=none&security=reality'
+          '&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+          '&sid=abcdef01&sni=www.microsoft.com&fp=chrome&type=tcp'
+          '&flow=xtls-rprx-vision#example-node-reality-443',
+        )!,
+      ];
+      final result = SingboxConfigBuilder.build(nodes);
+      final byTag = _outboundsByTag(result.config);
+      expect(byTag.containsKey('example-node'), isFalse);
+      expect(byTag['Proxy']!['outbounds'], ['example-node-reality-443']);
+      expect(byTag['Proxy']!['default'], 'example-node-reality-443');
+    });
+
+    test('成组节点＋未成组节点混排：selector 按顺序列组与单节点', () {
+      final nodes = [
+        ...contractNodes(),
+        Node(
+          name: '智利-直连',
+          protocol: NodeProtocol.vless,
+          address: '203.0.113.2',
+          port: 443,
+          source: NodeSource.direct,
+          uuidOrPassword: '11111111-2222-3333-4444-555555555555',
+          tls: true,
+          sni: 'cl04.example.com',
+        ),
+      ];
+      final result = SingboxConfigBuilder.build(nodes);
+      expect(result.skipped, isEmpty);
+      final byTag = _outboundsByTag(result.config);
+      expect(byTag['Proxy']!['outbounds'], ['example-node', '智利-直连']);
+      // 默认选第一个直连节点：契约三节点都是直连来源，第一个是组 tag。
+      expect(byTag['Proxy']!['default'], 'example-node');
+    });
+
+    test('selectedNodeName 指向成组节点时默认就是组 tag', () {
+      final result = SingboxConfigBuilder.build(
+        contractNodes(),
+        selectedNodeName: 'example-node-anytls-443',
+      );
+      final byTag = _outboundsByTag(result.config);
+      expect(byTag['Proxy']!['default'], 'example-node');
+    });
+
+    test('REALITY 指纹缺省时按 chrome 写；无 flow 时不写 flow', () {
+      final node = Node(
+        name: 'example-node-reality-443',
+        protocol: NodeProtocol.vless,
+        address: '203.0.113.1',
+        port: 443,
+        source: NodeSource.direct,
+        uuidOrPassword: '11111111-2222-3333-4444-555555555555',
+        tls: true,
+        sni: 'www.microsoft.com',
+        realityPublicKey: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+        realityShortId: 'abcdef01',
+      );
+      final result = SingboxConfigBuilder.build([node]);
+      final byTag = _outboundsByTag(result.config);
+      final reality = byTag['example-node-reality-443']!;
+      final tls = reality['tls'] as Map<String, dynamic>;
+      expect(
+        (tls['utls'] as Map<String, dynamic>)['fingerprint'],
+        'chrome',
+      );
+      expect(reality.containsKey('flow'), isFalse);
+    });
+
+    test('SOCKS5 缺用户名：跳过并给出原因', () {
+      final node = Node(
+        name: 'example-node-socks-1080',
+        protocol: NodeProtocol.socks5,
+        address: '203.0.113.1',
+        port: 1080,
+        source: NodeSource.direct,
+        uuidOrPassword: 'pass1234',
+      );
+      final result = SingboxConfigBuilder.build([node]);
+      expect(result.skipped, ['example-node-socks-1080：缺少 SOCKS5 用户名']);
+      final byTag = _outboundsByTag(result.config);
+      expect(byTag.containsKey('example-node-socks-1080'), isFalse);
+    });
+  });
 }

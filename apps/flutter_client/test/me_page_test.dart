@@ -203,10 +203,7 @@ void main() {
     expect(find.text('已用 / 总量：300 MB / 1 GB'), findsOneWidget);
     expect(find.textContaining('（剩'), findsOneWidget);
     expect(find.text('上次更新：2026-11-23 08:30'), findsOneWidget);
-    expect(
-      find.text('流量口径：仅中转（直连流量不计入）；限流只按中转流量算，直连不限流（节点侧按人计量未上线）'),
-      findsOneWidget,
-    );
+    expect(find.text('限流按全部节点流量算'), findsOneWidget);
   });
 
   testWidgets('无 userinfo 头：三格显示“—”不编数据', (tester) async {

@@ -228,7 +228,7 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  testWidgets('未绑定：未连接、节点未选择、三格全是“—”、写明仅中转', (
+  testWidgets('未绑定：未连接、节点未选择、三格全是“—”、写明全部节点', (
     tester,
   ) async {
     await pumpHome(tester);
@@ -236,7 +236,7 @@ void main() {
     expect(find.text('当前节点：未选择'), findsOneWidget);
     // 实时速率、已用 / 总量、剩余流量、到期日四格都是“—”。
     expect(find.text('—'), findsNWidgets(4));
-    expect(find.text('仅中转'), findsOneWidget);
+    expect(find.text('全部节点'), findsOneWidget);
     expect(find.textContaining('未拉到流量数据'), findsOneWidget);
     // 默认规则模式选中。
     final segmented = tester.widget<SegmentedButton<String>>(
@@ -264,7 +264,7 @@ void main() {
     expect(find.text('700 B'), findsOneWidget);
     // 到期格写“剩 N 天”（带空格，区别于“剩余流量”标签）。
     expect(find.textContaining('剩 '), findsOneWidget);
-    expect(find.textContaining('流量口径：仅中转'), findsOneWidget);
+    expect(find.textContaining('流量口径：全部节点'), findsOneWidget);
   });
 
   testWidgets('节点页选过的节点：首页当前节点跟着走，显示测到的延迟', (

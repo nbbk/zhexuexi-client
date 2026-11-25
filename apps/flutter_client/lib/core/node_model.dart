@@ -11,6 +11,8 @@ enum NodeProtocol {
   shadowsocks,
   hysteria2,
   tuic,
+  anytls,
+  socks5,
   unknown,
 }
 
@@ -22,6 +24,8 @@ extension NodeProtocolLabel on NodeProtocol {
         NodeProtocol.shadowsocks => 'SS',
         NodeProtocol.hysteria2 => 'Hysteria2',
         NodeProtocol.tuic => 'TUIC',
+        NodeProtocol.anytls => 'AnyTLS',
+        NodeProtocol.socks5 => 'SOCKS5',
         NodeProtocol.unknown => '未知',
       };
 
@@ -33,6 +37,8 @@ extension NodeProtocolLabel on NodeProtocol {
         'ss' || 'shadowsocks' => NodeProtocol.shadowsocks,
         'hysteria2' || 'hy2' => NodeProtocol.hysteria2,
         'tuic' => NodeProtocol.tuic,
+        'anytls' => NodeProtocol.anytls,
+        'socks' || 'socks5' => NodeProtocol.socks5,
         _ => NodeProtocol.unknown,
       };
 }
@@ -56,6 +62,11 @@ class Node {
     this.method,
     this.group,
     this.isPlainText = false,
+    this.username,
+    this.realityPublicKey,
+    this.realityShortId,
+    this.fingerprint,
+    this.flow,
   });
 
   /// 显示名（订阅里的节点名；中转节点名以“-中转”结尾，直连以“-直连”结尾）。
@@ -97,6 +108,24 @@ class Node {
 
   /// 明文节点（无 TLS）：节点页上标“明文”角标。
   final bool isPlainText;
+
+  /// SOCKS5 用户名（uuidOrPassword 存密码；其余协议不用）。
+  final String? username;
+
+  /// REALITY 公钥（链接 `pbk` 参数 / sing-box `tls.reality.public_key` /
+  /// Clash `reality-opts.public-key`）；非空即该 VLESS 节点走 REALITY。
+  final String? realityPublicKey;
+
+  /// REALITY short id（链接 `sid` 参数 / `tls.reality.short_id` /
+  /// Clash `reality-opts.short-id`）。
+  final String? realityShortId;
+
+  /// TLS 指纹（链接 `fp` 参数 / sing-box `tls.utls.fingerprint` /
+  /// Clash `fingerprint`；缺省时配置生成按 `chrome` 写）。
+  final String? fingerprint;
+
+  /// VLESS flow（链接 `flow` 参数，如 `xtls-rprx-vision`；没有时不写）。
+  final String? flow;
 
   /// 测速延迟（毫秒）；null 表示未测速。
   int? latencyMs;

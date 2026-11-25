@@ -311,8 +311,7 @@ class _MePageState extends ConsumerState<MePage> {
                   ],
                   const SizedBox(height: 4),
                   Text(
-                    '流量口径：仅中转（直连流量不计入）；限流只按中转流量算，'
-                    '直连不限流（节点侧按人计量未上线）',
+                    '限流按全部节点流量算',
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ],
