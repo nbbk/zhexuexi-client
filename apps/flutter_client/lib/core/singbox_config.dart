@@ -624,6 +624,10 @@ static SingboxConfigResult build(
       'server_port': node.port,
       'uuid': credential.substring(0, colon),
       'password': credential.substring(colon + 1),
+      // 拥塞控制（如 `bbr`，解析时取回来的原样写回去；没有就不写）。
+      if (node.congestionControl != null &&
+          node.congestionControl!.isNotEmpty)
+        'congestion_control': node.congestionControl,
       'tls': _tlsObject(node),
     };
   }
@@ -657,11 +661,15 @@ static SingboxConfigResult build(
     return tls;
   }
 
-  /// TLS 对象：有 SNI 时写 server_name，没有时只开 enabled。
+  /// TLS 对象：有 SNI 时写 server_name，没有时只开 enabled；
+  /// 有 ALPN 时写 `alpn`（HY2/TUIC 的 `h3`，解析时取回来的原样写回去）。
   static Map<String, dynamic> _tlsObject(Node node) {
     final tls = <String, dynamic>{'enabled': true};
     if (node.sni != null && node.sni!.isNotEmpty) {
       tls['server_name'] = node.sni;
+    }
+    if (node.alpn != null && node.alpn!.isNotEmpty) {
+      tls['alpn'] = [node.alpn];
     }
     return tls;
   }

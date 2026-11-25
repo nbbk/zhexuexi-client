@@ -21,6 +21,7 @@ import 'package:zhexuexi_client/core/userinfo.dart';
 import 'package:zhexuexi_client/features/home/home_page.dart';
 import 'package:zhexuexi_client/services/nodes_notifier.dart';
 import 'package:zhexuexi_client/services/remote_config_notifier.dart';
+import 'package:zhexuexi_client/widgets/power_button.dart';
 
 /// 插件 fake：只记调用、不碰平台通道，状态由测试手动推。
 class _FakePlugin extends FlutterSingBox {
@@ -215,24 +216,35 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  /// 点大开关（当前是未连接图标）。
+  /// 手动刷几帧（见 tapSwitch：开态下不用 pumpAndSettle）。
+  Future<void> pumpFrames(WidgetTester tester) async {
+    for (var i = 0; i < 5; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+  }
+
+  /// 点大开关（按按钮本身点，不按图标：中心图标是可替换组件，
+  /// 默认是金色信号弧占位，不写死电源符号）。
   ///
   /// 注意：开关处理里有真异步文件 IO（applyNodes 写配置），在
   /// testWidgets 的 fake 时间下等不到它完成；tap 与等待必须包在
-  /// runAsync（真实异步区）里，再 pumpAndSettle 刷界面。
+  /// runAsync（真实异步区）里，再手动刷几帧。
+  /// 不用 pumpAndSettle：大开关“开”时呼吸动画无限循环，
+  /// pumpAndSettle 永远等不到没有帧调度的时刻，会超时。
   Future<void> tapSwitch(WidgetTester tester) async {
     await tester.runAsync(() async {
-      await tester.tap(find.byIcon(Icons.power_settings_new));
+      await tester.tap(find.byType(BreathingPowerButton));
       await Future<void>.delayed(const Duration(milliseconds: 300));
     });
-    await tester.pumpAndSettle();
+    await pumpFrames(tester);
   }
 
-  testWidgets('未绑定：未连接、节点未选择、三格全是“—”、写明全部节点', (
+  testWidgets('未绑定：静候连接、节点未选择、三格全是“—”、写明全部节点', (
     tester,
   ) async {
     await pumpHome(tester);
-    expect(find.text('未连接'), findsOneWidget);
+    expect(find.text('静候连接'), findsOneWidget);
+    expect(find.text('轻触开启'), findsOneWidget);
     expect(find.text('当前节点：未选择'), findsOneWidget);
     // 实时速率、已用 / 总量、剩余流量、到期日四格都是“—”。
     expect(find.text('—'), findsNWidgets(4));
@@ -313,11 +325,12 @@ void main() {
     expect(find.text('已到期'), findsOneWidget);
   });
 
-  testWidgets('点开关（有节点）：先写配置再启动，状态变已连接', (tester) async {
+  testWidgets('点开关（有节点）：先写配置再启动，状态变运行中', (tester) async {
     await pumpHome(tester, nodes: [_node('甲-直连'), _node('乙-中转')]);
     await tapSwitch(tester);
     expect(plugin.startCalls, 1);
-    expect(find.text('已连接'), findsOneWidget);
+    expect(find.text('运行中'), findsOneWidget);
+    expect(find.textContaining('已连接 '), findsOneWidget);
     // 真文件 IO 也必须在 runAsync 里 await：testWidgets 的 fake 时间
     // 下直接 await File.exists() 永远等不到完成（实测挂 30 秒超时）。
     final configExists = await tester.runAsync(
@@ -325,14 +338,14 @@ void main() {
     );
     expect(configExists, isTrue);
     // 再点一次停核心：停也要在 runAsync 里点，不然插件流的第二跳
-    // 广播微任务在 fake 时间里赶不上 pumpAndSettle，界面还停在“已连接”。
+    // 广播微任务在 fake 时间里赶不上 pumpAndSettle，界面还停在“运行中”。
     await tester.runAsync(() async {
-      await tester.tap(find.byIcon(Icons.power));
+      await tester.tap(find.byType(BreathingPowerButton));
       await Future<void>.delayed(const Duration(milliseconds: 300));
     });
     await tester.pumpAndSettle();
     expect(plugin.stopCalls, 1);
-    expect(find.text('未连接'), findsOneWidget);
+    expect(find.text('静候连接'), findsOneWidget);
   });
 
   testWidgets('点开关（无节点）：不启动，提示先绑定订阅并跳到我的页', (
@@ -343,19 +356,19 @@ void main() {
     expect(plugin.startCalls, 0);
     expect(find.text('请先绑定订阅，再开启代理'), findsOneWidget);
     expect(goToMeCalls, 1);
-    expect(find.text('未连接'), findsOneWidget);
+    expect(find.text('静候连接'), findsOneWidget);
   });
 
   testWidgets('模式切换（已启动）：重载一次、磁盘配置跟着变', (tester) async {
     await pumpHome(tester, nodes: [_node('甲-直连')]);
     await tapSwitch(tester);
-    expect(find.text('已连接'), findsOneWidget);
+    expect(find.text('运行中'), findsOneWidget);
 
     await tester.runAsync(() async {
       await tester.tap(find.text('全局模式'));
       await Future<void>.delayed(const Duration(milliseconds: 300));
     });
-    await tester.pumpAndSettle();
+    await pumpFrames(tester);
     expect(plugin.reloadCalls, 1);
     // 读盘断言同样走 runAsync（见上）。
     var decoded =
@@ -369,7 +382,7 @@ void main() {
       await tester.tap(find.text('直连模式'));
       await Future<void>.delayed(const Duration(milliseconds: 300));
     });
-    await tester.pumpAndSettle();
+    await pumpFrames(tester);
     expect(plugin.reloadCalls, 2);
     decoded =
         jsonDecode((await tester.runAsync<String>(

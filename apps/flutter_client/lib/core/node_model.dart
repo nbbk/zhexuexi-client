@@ -67,6 +67,10 @@ class Node {
     this.realityShortId,
     this.fingerprint,
     this.flow,
+    this.alpn,
+    this.congestionControl,
+    this.subscriptionId,
+    this.subscriptionName,
   });
 
   /// 显示名（订阅里的节点名；中转节点名以“-中转”结尾，直连以“-直连”结尾）。
@@ -126,6 +130,39 @@ class Node {
 
   /// VLESS flow（链接 `flow` 参数，如 `xtls-rprx-vision`；没有时不写）。
   final String? flow;
+
+  /// TLS ALPN（如 `h3`，HY2/TUIC 链接的 `alpn` 参数 / sing-box
+  /// `tls.alpn` / Clash `alpn`）；配置生成时写回 `tls.alpn`。
+  final String? alpn;
+
+  /// 拥塞控制（如 `bbr`，TUIC 链接的 `congestion_control` 参数 /
+  /// sing-box `congestion_control` / Clash `congestion-controller`）；
+  /// 配置生成时写回 TUIC 出站的 `congestion_control`。
+  final String? congestionControl;
+
+  /// 多订阅：这条节点来自哪个订阅（合并时赋值；单订阅的老数据为 null）。
+  final String? subscriptionId;
+
+  /// 多订阅：来源订阅的显示名（节点页来源小标签用）。
+  final String? subscriptionName;
+
+  /// 去重键：节点内容相同即同一条（名字不同也算同一条，去重只看内容，
+  /// 不看名字与订阅来源）。多订阅合并时内容相同的只留第一条。
+  String get dedupKey => [
+        protocol.name,
+        address,
+        port.toString(),
+        uuidOrPassword ?? '',
+        sni ?? '',
+        transport,
+        wsPath ?? '',
+        method ?? '',
+        realityPublicKey ?? '',
+        flow ?? '',
+        username ?? '',
+        alpn ?? '',
+        congestionControl ?? '',
+      ].join('|');
 
   /// 测速延迟（毫秒）；null 表示未测速。
   int? latencyMs;

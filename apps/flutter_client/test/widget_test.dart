@@ -1,12 +1,19 @@
 // 冒烟测试：App 能启动、四个 tab 齐全、首页大开关占位在。
+import 'dart:ui';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:material_ui/material_ui.dart';
 
 import 'package:zhexuexi_client/main.dart';
+import 'package:zhexuexi_client/widgets/power_button.dart';
 
 void main() {
   testWidgets('App 启动：四个 tab 与首页大开关占位', (WidgetTester tester) async {
+    // 首页是 ListView 懒加载：默认 600 高视口下开关区在折叠线下
+    // 不会被构建，先把视口拉高再断言。
+    tester.view.physicalSize = const Size(800, 1400);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
     await tester.pumpWidget(const ProviderScope(child: ZhexuexiApp()));
     await tester.pumpAndSettle();
 
@@ -17,9 +24,11 @@ void main() {
     expect(find.text('我的'), findsOneWidget);
     expect(find.text('设置'), findsOneWidget);
 
-    // 首页默认显示“未连接”。
-    expect(find.text('未连接'), findsOneWidget);
-    expect(find.byIcon(Icons.power_settings_new), findsOneWidget);
+    // 首页默认显示“静候连接 / 轻触开启”，大开关是呼吸按钮
+    //（中心图标是金色信号弧占位，不写死电源符号）。
+    expect(find.text('静候连接'), findsOneWidget);
+    expect(find.text('轻触开启'), findsOneWidget);
+    expect(find.byType(BreathingPowerButton), findsOneWidget);
   });
 
   testWidgets('点底部导航能切到节点页', (WidgetTester tester) async {

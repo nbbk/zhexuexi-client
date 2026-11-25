@@ -10,6 +10,7 @@ import '../core/userinfo.dart';
 import 'remote_config_notifier.dart';
 import 'subscription_parser.dart';
 import 'subscription_service.dart';
+import 'subscription_store.dart';
 
 /// 订阅服务（可注入 fake 做测试）。
 final subscriptionServiceProvider = Provider<SubscriptionService>(
@@ -49,6 +50,8 @@ class NodesState {
     this.speedTestAt,
     this.autoSelectEnabled = false,
     this.addressNotice,
+    this.subscriptionSummaries = const [],
+    this.testingSingleNodeKey,
   });
 
   /// 节点列表。
@@ -105,6 +108,15 @@ class NodesState {
   /// 用户关掉后清空。成功换地址才有，平时为 null。
   final String? addressNotice;
 
+  /// 多订阅：每条订阅的摘要（流量/到期/节点数/报错），管理页按这个
+  /// 列表显示各订阅的情况；没有 userinfo 头的订阅对应项为 null，
+  /// 界面显示“—”。[userinfo] 仍是主订阅那一份（首页/我的页继续用）。
+  final List<SubscriptionSummary> subscriptionSummaries;
+
+  /// 正在单个测速的节点（按内容 key 认行；null 表示没有在测的单节点）。
+  /// 测速中芯片转圈用；一键测速进行中、或已有单节点在测时再点直接返回。
+  final String? testingSingleNodeKey;
+
   /// 中转节点（名字以 -中转结尾）。
   List<Node> get relayNodes =>
       nodes.where((n) => n.source == NodeSource.relay).toList();
@@ -148,6 +160,8 @@ class NodesState {
     Object? speedTestAt = _unset,
     bool? autoSelectEnabled,
     Object? addressNotice = _unset,
+    List<SubscriptionSummary>? subscriptionSummaries,
+    Object? testingSingleNodeKey = _unset,
   }) {
     return NodesState(
       nodes: nodes ?? this.nodes,
@@ -177,8 +191,79 @@ class NodesState {
       addressNotice: addressNotice == _unset
           ? this.addressNotice
           : addressNotice as String?,
+      subscriptionSummaries:
+          subscriptionSummaries ?? this.subscriptionSummaries,
+      testingSingleNodeKey: testingSingleNodeKey == _unset
+          ? this.testingSingleNodeKey
+          : testingSingleNodeKey as String?,
     );
   }
+}
+
+/// 一条订阅的拉取摘要（多订阅管理页按这个列表显示各订阅的
+/// 流量/到期/节点数/报错；没有 userinfo 头时 [userinfo] 为 null）。
+class SubscriptionSummary {
+  const SubscriptionSummary({
+    required this.id,
+    required this.name,
+    required this.isPrimary,
+    required this.enabled,
+    this.nodeCount = 0,
+    this.userinfo,
+    this.errorMessage,
+    this.lastUpdated,
+  });
+
+  /// 订阅 id（主订阅是 `primary`，手动加的是 `custom_…`）。
+  final String id;
+
+  /// 显示名。
+  final String name;
+
+  /// 是否主订阅（自家面板）。
+  final bool isPrimary;
+
+  /// 是否启用。
+  final bool enabled;
+
+  /// 这次拉到的节点数（停用的、拉失败的都是 0）。
+  final int nodeCount;
+
+  /// 流量与到期（该订阅自己的 `subscription-userinfo` 头；
+  /// 没有头时为 null，界面显示“—”）。
+  final SubscriptionUserinfo? userinfo;
+
+  /// 本次拉取失败的原因（给用户看的；成功时为 null）。
+  final String? errorMessage;
+
+  /// 该订阅上次成功拉取的时间。
+  final DateTime? lastUpdated;
+}
+
+/// 一条订阅最近一次拉取的缓存结果（单条刷新时只换这一条，
+/// 其余订阅用缓存重建合并列表，不用全量重拉）。
+class _CachedSubscriptionResult {
+  const _CachedSubscriptionResult({
+    required this.nodes,
+    required this.failedCount,
+    required this.userinfo,
+    required this.format,
+    required this.errorMessage,
+    required this.lastUpdated,
+  });
+
+  final List<Node> nodes;
+  final int failedCount;
+  final SubscriptionUserinfo? userinfo;
+  final SubscriptionFormat? format;
+
+  /// 拉取失败的原因（成功时为 null）。
+  final String? errorMessage;
+
+  /// 上次成功拉取的时间（从没成功过时为 null）。
+  final DateTime? lastUpdated;
+
+  bool get succeeded => errorMessage == null;
 }
 
 /// 节点列表的状态管理（切片 1：拉取＋解析＋列表；切片 4：测速与自动选择）。
@@ -263,71 +348,238 @@ class NodesNotifier extends Notifier<NodesState> {
     return state.nodes.indexOf(a).compareTo(state.nodes.indexOf(b));
   }
 
-  /// 拉一次订阅并更新列表。未绑定时保持 initial 状态（界面显示绑定入口）。
-  ///
-  /// 订阅 404（令牌查无此人）时不直接报“订阅已失效”：先拉远程配置
-  /// （切片 7），配置里有新订阅地址就换地址重试一次（令牌不变，
-  /// 只换地址）；新地址也拉不到才报原错。重试成功时节点页顶部
-  /// 显示一句“订阅地址已变，已自动切换到新地址”。
-  Future<void> refresh() async {
+  /// 各订阅最近一次拉取的缓存（单条刷新时只换这一条，
+  /// 其余订阅用缓存重建合并列表）。
+  final Map<String, _CachedSubscriptionResult> _cachedResults = {};
+
+  /// 读全部订阅条目：主订阅（有绑定才有，在前）＋手动加的（在后）。
+  Future<List<SubscriptionEntry>> _loadEntries() async {
     final service = ref.read(subscriptionServiceProvider);
-    final url = await service.readSubscriptionUrl();
-    if (url == null) {
+    final store = ref.read(subscriptionStoreProvider);
+    final primaryUrl = await service.readSubscriptionUrl();
+    return store.listSubscriptions(primaryUrl: primaryUrl);
+  }
+
+  /// 拉全部已启用的订阅并合并（多订阅）。
+  ///
+  /// 并行拉（`Future.wait`，各自 try/catch）：一条订阅拉取失败
+  /// 只记该条的错误、不影响其他条；有任一条成功就显示合并后的
+  /// 节点，全部失败才报错误状态。没有订阅时保持 initial 状态
+  ///（界面显示绑定入口）。
+  ///
+  /// 主订阅 404（令牌查无此人）时不直接报“订阅已失效”：先拉远程配置
+  ///（切片 7），配置里有新订阅地址就换地址重试一次（令牌不变，
+  /// 只换地址）；新地址也拉不到才报原错。重试成功时节点页顶部
+  /// 显示一句“订阅地址已变，已自动切换到新地址”。手动加的订阅
+  /// 不参与远程配置更新、不参与 404 重试。
+  Future<void> refresh() async {
+    final entries = await _loadEntries();
+    if (entries.isEmpty) {
+      _cachedResults.clear();
       state = state.copyWith(status: NodesStatus.initial);
       return;
     }
     state = state.copyWith(status: NodesStatus.loading);
+    final enabled = entries.where((e) => e.enabled).toList();
+    await Future.wait(enabled.map(_fetchIntoCache));
+    _rebuildFromCache(entries);
+  }
+
+  /// 只刷新一条订阅（管理页的单个刷新）：重拉这一条，
+  /// 其余订阅用缓存重建合并列表，不全量重拉。
+  /// 返回 true 表示这条拉成功了。
+  Future<bool> refreshSubscription(String id) async {
+    final entries = await _loadEntries();
+    SubscriptionEntry? entry;
+    for (final e in entries) {
+      if (e.id == id) entry = e;
+    }
+    if (entry == null || !entry.enabled) return false;
+    await _fetchIntoCache(entry);
+    _rebuildFromCache(entries);
+    return _cachedResults[id]?.succeeded ?? false;
+  }
+
+  /// 拉一条订阅进缓存（失败也记进缓存，不抛到调用方）。
+  /// 拉到的节点打上订阅来源（[Node.subscriptionId]/[subscriptionName]）。
+  Future<void> _fetchIntoCache(SubscriptionEntry entry) async {
+    final service = ref.read(subscriptionServiceProvider);
     try {
-      await _loadFrom(url);
+      final result = await service.fetchNodes(subscriptionUrl: entry.url);
+      _cachedResults[entry.id] = _CachedSubscriptionResult(
+        nodes: _tagNodes(result.nodes, entry),
+        failedCount: result.failedCount,
+        userinfo: result.userinfo,
+        format: result.format,
+        errorMessage: null,
+        lastUpdated: DateTime.now(),
+      );
     } on SubscriptionException catch (e) {
-      if (e.kind == SubscriptionErrorKind.invalid) {
-        final switched = await _retryWithRemoteConfig(url);
-        if (switched) return;
+      if (entry.isPrimary && e.kind == SubscriptionErrorKind.invalid) {
+        final retried = await _retryPrimaryWithRemoteConfig(entry.url);
+        if (retried != null) {
+          _cachedResults[entry.id] = retried;
+          state = state.copyWith(
+            addressNotice: '订阅地址已变，已自动切换到新地址',
+          );
+          return;
+        }
       }
-      state = state.copyWith(
-        status: NodesStatus.error,
+      _cachedResults[entry.id] = _CachedSubscriptionResult(
+        nodes: const [],
+        failedCount: 0,
+        userinfo: null,
+        format: null,
         errorMessage: e.message,
+        lastUpdated: null,
       );
     } catch (_) {
-      // 兜底：任何未预料的异常都变成错误状态，不让 Future 带着异常炸掉界面。
-      state = state.copyWith(
-        status: NodesStatus.error,
+      // 兜底：任何未预料的异常都记成该条的错误，不让 Future 炸掉界面。
+      _cachedResults[entry.id] = _CachedSubscriptionResult(
+        nodes: const [],
+        failedCount: 0,
+        userinfo: null,
+        format: null,
         errorMessage: '网络不通，检查订阅地址',
+        lastUpdated: null,
       );
     }
   }
 
-  /// 用指定地址拉一次订阅并写进状态（成功时清掉错误提示）。
-  /// 抛 [SubscriptionException] 由调用方处理。
-  Future<void> _loadFrom(String url) async {
-    final service = ref.read(subscriptionServiceProvider);
-    final result = await service.fetchNodes(subscriptionUrl: url);
+  /// 给拉到的节点打上订阅来源（返回新列表，原节点对象不动）。
+  List<Node> _tagNodes(List<Node> nodes, SubscriptionEntry entry) {
+    return nodes
+        .map(
+          (n) => Node(
+            name: n.name,
+            protocol: n.protocol,
+            address: n.address,
+            port: n.port,
+            source: n.source,
+            uuidOrPassword: n.uuidOrPassword,
+            transport: n.transport,
+            tls: n.tls,
+            sni: n.sni,
+            wsPath: n.wsPath,
+            wsHost: n.wsHost,
+            method: n.method,
+            group: n.group,
+            isPlainText: n.isPlainText,
+            username: n.username,
+            realityPublicKey: n.realityPublicKey,
+            realityShortId: n.realityShortId,
+            fingerprint: n.fingerprint,
+            flow: n.flow,
+            alpn: n.alpn,
+            congestionControl: n.congestionControl,
+            subscriptionId: entry.id,
+            subscriptionName: entry.name,
+          ),
+        )
+        .toList();
+  }
+
+  /// 用缓存重建合并后的状态。
+  ///
+  /// 合并：按订阅顺序拼接（主订阅在前，手动加的按列表顺序）；
+  /// 去重按节点内容（[Node.dedupKey]），内容相同的只留第一条。
+  /// [NodesState.userinfo] 仍是主订阅那一份（首页/我的页继续用，
+  /// 不改那两处）；各订阅的 userinfo 在 [subscriptionSummaries] 里。
+  void _rebuildFromCache(List<SubscriptionEntry> entries) {
+    final merged = <Node>[];
+    final seen = <String>{};
+    var failedCount = 0;
+    var anySuccess = false;
+    String? firstError;
+    SubscriptionFormat? format;
+    SubscriptionUserinfo? primaryUserinfo;
+    final summaries = <SubscriptionSummary>[];
+    for (final entry in entries) {
+      final cached = _cachedResults[entry.id];
+      if (!entry.enabled || cached == null) {
+        summaries.add(
+          SubscriptionSummary(
+            id: entry.id,
+            name: entry.name,
+            isPrimary: entry.isPrimary,
+            enabled: entry.enabled,
+          ),
+        );
+        continue;
+      }
+      failedCount += cached.failedCount;
+      if (cached.succeeded) {
+        anySuccess = true;
+        format ??= cached.format;
+        if (entry.isPrimary) primaryUserinfo = cached.userinfo;
+        for (final node in cached.nodes) {
+          if (seen.add(node.dedupKey)) merged.add(node);
+        }
+      } else {
+        firstError ??= cached.errorMessage;
+      }
+      summaries.add(
+        SubscriptionSummary(
+          id: entry.id,
+          name: entry.name,
+          isPrimary: entry.isPrimary,
+          enabled: entry.enabled,
+          nodeCount: cached.nodes.length,
+          userinfo: cached.userinfo,
+          errorMessage: cached.errorMessage,
+          lastUpdated: cached.lastUpdated,
+        ),
+      );
+    }
     // 刷新后节点是新对象，延迟清零重测；选中名字还在就保留，
     // 不在了回落默认规则；自动选择开关保持。
     final prevSelected = state.selectedNodeName;
-    final stillThere = prevSelected != null &&
-        result.nodes.any((n) => n.name == prevSelected);
+    final stillThere =
+        prevSelected != null && merged.any((n) => n.name == prevSelected);
     final selected = stillThere
         ? prevSelected
-        : SingboxConfigBuilder.defaultNodeName(result.nodes);
-    state = NodesState(
-      nodes: result.nodes,
-      failedCount: result.failedCount,
-      userinfo: result.userinfo,
-      status: NodesStatus.loaded,
-      lastUpdated: DateTime.now(),
-      format: result.format,
-      selectedNodeName: selected,
-      autoSelectEnabled: state.autoSelectEnabled,
-      addressNotice: state.addressNotice,
-    );
+        : SingboxConfigBuilder.defaultNodeName(merged);
+    if (anySuccess) {
+      state = NodesState(
+        nodes: merged,
+        failedCount: failedCount,
+        userinfo: primaryUserinfo,
+        status: NodesStatus.loaded,
+        lastUpdated: DateTime.now(),
+        format: format,
+        selectedNodeName: selected,
+        autoSelectEnabled: state.autoSelectEnabled,
+        addressNotice: state.addressNotice,
+        subscriptionSummaries: summaries,
+      );
+    } else if (entries.every((e) => !e.enabled)) {
+      // 全都停用了：不是失败，显示空列表（管理页可再打开）。
+      state = NodesState(
+        nodes: const [],
+        failedCount: 0,
+        status: NodesStatus.loaded,
+        lastUpdated: state.lastUpdated,
+        selectedNodeName: null,
+        autoSelectEnabled: state.autoSelectEnabled,
+        addressNotice: state.addressNotice,
+        subscriptionSummaries: summaries,
+      );
+    } else {
+      state = state.copyWith(
+        status: NodesStatus.error,
+        errorMessage: firstError ?? '网络不通，检查订阅地址',
+        subscriptionSummaries: summaries,
+      );
+    }
   }
 
-  /// 订阅 404 后的重试：拉远程配置，按“主订阅地址 → 备用地址”
-  /// 的顺序试新地址（只换 base、令牌不变），第一个拉通的就用。
-  /// 成功返回 true（状态已写好，含换地址提示）；都没拉通返回 false，
-  /// 本地绑定不动，调用方报原来的 404 错误。
-  Future<bool> _retryWithRemoteConfig(String oldUrl) async {
+  /// 主订阅 404 后的重试：拉远程配置，按“主订阅地址 → 备用地址”
+  /// 的顺序试新地址（只换 base、令牌不变），第一个拉通的返回结果；
+  /// 都没拉通返回 null，本地绑定换回旧地址，别留一个半截的新地址。
+  /// 只针对主订阅，手动加的订阅不走这里。
+  Future<_CachedSubscriptionResult?> _retryPrimaryWithRemoteConfig(
+    String oldUrl,
+  ) async {
     // 走 notifier 的 refresh：缓存与界面上的品牌/订阅地址一起换，
     // 不只换 service 里的缓存。
     final configResult =
@@ -346,11 +598,27 @@ class NodesNotifier extends Notifier<NodesState> {
       try {
         final url = await service.readSubscriptionUrl();
         if (url == null) continue;
-        await _loadFrom(url);
-        state = state.copyWith(
-          addressNotice: '订阅地址已变，已自动切换到新地址',
+        final result = await service.fetchNodes(subscriptionUrl: url);
+        // 换地址后主订阅的显示名不变（仍是“自家面板”或用户改过的名）。
+        final entries = await _loadEntries();
+        var entry = const SubscriptionEntry(
+          id: SubscriptionEntry.primaryId,
+          name: SubscriptionEntry.primaryDefaultName,
+          url: '',
+          enabled: true,
+          isPrimary: true,
         );
-        return true;
+        for (final e in entries) {
+          if (e.isPrimary) entry = e;
+        }
+        return _CachedSubscriptionResult(
+          nodes: _tagNodes(result.nodes, entry),
+          failedCount: result.failedCount,
+          userinfo: result.userinfo,
+          format: result.format,
+          errorMessage: null,
+          lastUpdated: DateTime.now(),
+        );
       } on SubscriptionException {
         continue;
       } catch (_) {
@@ -359,7 +627,7 @@ class NodesNotifier extends Notifier<NodesState> {
     }
     // 候选地址都没拉通：把本地绑定换回旧地址，别留一个半截的新地址。
     await service.updateBaseUrl(oldBase);
-    return false;
+    return null;
   }
 
   /// 关掉节点页顶部的“订阅地址已变”提示。
@@ -402,10 +670,12 @@ class NodesNotifier extends Notifier<NodesState> {
     );
   }
 
-  /// 退出登录 / 换绑时清除绑定与列表。
+  /// 退出登录 / 换绑时清除绑定与列表（只清主订阅绑定，
+  /// 手动加的订阅不动；缓存一起清掉）。
   Future<void> clear() async {
     final service = ref.read(subscriptionServiceProvider);
     await service.clearBinding();
+    _cachedResults.clear();
     state = const NodesState();
   }
 
@@ -426,7 +696,6 @@ class NodesNotifier extends Notifier<NodesState> {
       return false;
     }
     _ensureRetestTimer();
-    final api = ref.read(clashApiClientProvider);
     final nodes = state.nodes;
     for (final node in nodes) {
       node.latencyMs = null;
@@ -444,22 +713,7 @@ class NodesNotifier extends Notifier<NodesState> {
       final batch = nodes.skip(i).take(_speedTestConcurrency).toList();
       await Future.wait(
         batch.map((node) async {
-          final tag = SingboxConfigBuilder.tagForNode(nodes, node);
-          if (tag == null) {
-            // 配置里根本没有这个出站（未知协议、缺 UUID、grpc 等），
-            // 不调接口，直接标失败。
-            node.latencyFailed = true;
-          } else {
-            final delay = await api.proxyDelay(
-              tag,
-              timeout: _speedTestTimeout,
-            );
-            if (delay == null) {
-              node.latencyFailed = true;
-            } else {
-              node.latencyMs = delay;
-            }
-          }
+          await _testOneNode(node, nodes);
           tested++;
           state = state.copyWith(
             nodes: List.of(nodes),
@@ -473,6 +727,61 @@ class NodesNotifier extends Notifier<NodesState> {
       speedTestAt: DateTime.now(),
     );
     return true;
+  }
+
+  /// 只测一个节点（节点行延迟芯片点一下触发）。
+  ///
+  /// 复用 [_testOneNode] 与一键测速同一套逻辑与超时：只改这一行的
+  /// 延迟/失败标记，不碰其他行、不重排列表；测速中只这一行的芯片
+  /// 转圈。核心未启动时不发请求，直接报和一键测速一样的提示。
+  /// 一键测速进行中、或已有单节点在测时直接返回 false（两轮测速
+  /// 不打架）；后台重测定时器不由单测启动。
+  Future<bool> testSingleSpeed(Node node) async {
+    if (state.nodes.isEmpty ||
+        state.testingSpeed ||
+        state.testingSingleNodeKey != null) {
+      return false;
+    }
+    final core = ref.read(coreServiceProvider);
+    if (core.status != CoreStatus.started) {
+      state = state.copyWith(
+        speedTestError: '核心未启动，先在首页打开开关再测速',
+      );
+      return false;
+    }
+    final nodes = state.nodes;
+    node.latencyMs = null;
+    node.latencyFailed = false;
+    state = state.copyWith(
+      nodes: List.of(nodes),
+      testingSingleNodeKey: node.dedupKey,
+    );
+    await _testOneNode(node, nodes);
+    state = state.copyWith(
+      nodes: List.of(nodes),
+      testingSingleNodeKey: null,
+      speedTestAt: DateTime.now(),
+    );
+    return true;
+  }
+
+  /// 测一个节点的延迟：调 Clash API delay 接口，测到的写进
+  /// [Node.latencyMs]，测不到的标 [Node.latencyFailed]。
+  /// 配置里根本没有这个出站（未知协议、缺 UUID、grpc 等）时
+  /// 不调接口，直接标失败。
+  Future<void> _testOneNode(Node node, List<Node> nodes) async {
+    final tag = SingboxConfigBuilder.tagForNode(nodes, node);
+    if (tag == null) {
+      node.latencyFailed = true;
+      return;
+    }
+    final api = ref.read(clashApiClientProvider);
+    final delay = await api.proxyDelay(tag, timeout: _speedTestTimeout);
+    if (delay == null) {
+      node.latencyFailed = true;
+    } else {
+      node.latencyMs = delay;
+    }
   }
 
   /// 自动选择：延迟最低的可用节点。

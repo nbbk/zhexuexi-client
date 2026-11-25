@@ -22,6 +22,7 @@ import 'package:zhexuexi_client/services/nodes_notifier.dart';
 import 'package:zhexuexi_client/services/remote_config_notifier.dart';
 import 'package:zhexuexi_client/services/remote_config_service.dart';
 import 'package:zhexuexi_client/services/subscription_service.dart';
+import 'package:zhexuexi_client/services/subscription_store.dart';
 
 /// 测试内临时生成的一对 Ed25519 密钥（只活在测试进程里）。
 class _TempKeys {
@@ -528,6 +529,7 @@ void main() {
       required Dio subDio,
       required RemoteConfigService configService,
       required _FakeSecureStorage storage,
+      required SharedPreferences prefs,
     }) async {
       final container = ProviderContainer(
         overrides: [
@@ -535,6 +537,10 @@ void main() {
             SubscriptionService(dio: subDio, storage: storage),
           ),
           remoteConfigServiceProvider.overrideWithValue(configService),
+          // 订阅列表走假存储＋测试偏好：不碰真安全存储的 MethodChannel。
+          subscriptionStoreProvider.overrideWithValue(
+            SubscriptionStore(storage: storage, prefs: prefs),
+          ),
         ],
       );
       addTearDown(container.dispose);
@@ -616,6 +622,7 @@ void main() {
         subDio: subDio(newBaseWorks: true),
         configService: configService,
         storage: storage,
+        prefs: prefs,
       );
       await container.read(nodesProvider.notifier).refresh();
       final state = container.read(nodesProvider);
@@ -652,6 +659,7 @@ void main() {
         subDio: subDio(newBaseWorks: false),
         configService: configService,
         storage: storage,
+        prefs: prefs,
       );
       await container.read(nodesProvider.notifier).refresh();
       final state = container.read(nodesProvider);
@@ -722,6 +730,7 @@ void main() {
         subDio: dio,
         configService: configService,
         storage: storage,
+        prefs: prefs,
       );
       await container.read(nodesProvider.notifier).refresh();
       final state = container.read(nodesProvider);

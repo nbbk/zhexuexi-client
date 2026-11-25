@@ -100,9 +100,9 @@ Node? _nodeFromSingboxOutbound(Map<String, dynamic> ob) {
     return null;
   }
   final protocol = NodeProtocolLabel.fromString(type);
-  // 面板 sing-box JSON 出 vless / trojan / vmess / ss / anytls / socks
-  // （切片 10 起）；
-  // HY2 / TUIC 在这里会被面板跳过，只在 base64/plain 里保留。
+  // 面板 sing-box JSON 出 vless / trojan / vmess / ss / anytls / socks /
+  // hysteria2 / tuic（1.4.23 起面板不再跳过 HY2/TUIC，订阅与单条链接
+  // 共用同一套拼法，8 种协议全覆盖）。
   if (protocol == NodeProtocol.unknown) return null;
   final tag = ob['tag'] as String?;
   final server = ob['server'] as String?;
@@ -123,8 +123,15 @@ Node? _nodeFromSingboxOutbound(Map<String, dynamic> ob) {
     NodeProtocol.vless || NodeProtocol.vmess => ob['uuid'] as String?,
     NodeProtocol.trojan ||
     NodeProtocol.shadowsocks ||
+    NodeProtocol.hysteria2 ||
     NodeProtocol.anytls ||
     NodeProtocol.socks5 => ob['password'] as String?,
+    // TUIC：uuid 与 password 分开写，拼回 `uuid:password`
+    //（配置生成按这个拆；缺一半就丢，不生成连不上的出站）。
+    NodeProtocol.tuic => _tuicCredential(
+      ob['uuid'] as String?,
+      ob['password'] as String?,
+    ),
     _ => null,
   };
   if (uuidOrPassword == null || uuidOrPassword.isEmpty) return null;
@@ -140,8 +147,21 @@ Node? _nodeFromSingboxOutbound(Map<String, dynamic> ob) {
   final utls = tls?['utls'] as Map<String, dynamic>?;
   final username = ob['username'] as String?;
   final flow = ob['flow'] as String?;
-  // AnyTLS 恒为 TLS：面板的出站即使没写 tls 块也不算明文。
-  final nodeTls = protocol == NodeProtocol.anytls || tlsEnabled;
+  // ALPN 与拥塞控制（1.4.23 缺口）：HY2/TUIC 的 tls.alpn（如 `h3`）
+  // 与 TUIC 的 congestion_control（如 `bbr`），解析不到就丢，
+  // 配置生成时写回去。
+  final alpn = _alpnFrom(tls?['alpn']);
+  final congestionControl = _nonEmptyString(ob['congestion_control']);
+  // HY2/TUIC 恒为 TLS、走 UDP：面板的出站即使没写 tls 块也不算明文。
+  final nodeTls =
+      protocol == NodeProtocol.anytls ||
+      protocol == NodeProtocol.hysteria2 ||
+      protocol == NodeProtocol.tuic ||
+      tlsEnabled;
+  final nodeTransport =
+      protocol == NodeProtocol.hysteria2 || protocol == NodeProtocol.tuic
+      ? 'udp'
+      : transportType;
   return Node(
     name: tag,
     protocol: protocol,
@@ -149,7 +169,7 @@ Node? _nodeFromSingboxOutbound(Map<String, dynamic> ob) {
     port: port,
     source: _sourceFromName(tag),
     uuidOrPassword: uuidOrPassword,
-    transport: transportType,
+    transport: nodeTransport,
     tls: nodeTls,
     sni: (sni == null || sni.isEmpty) ? null : sni,
     wsPath: (wsPath == null || wsPath.isEmpty) ? null : wsPath,
@@ -163,6 +183,8 @@ Node? _nodeFromSingboxOutbound(Map<String, dynamic> ob) {
     realityShortId: _nonEmptyString(reality?['short_id']),
     fingerprint: _nonEmptyString(utls?['fingerprint']),
     flow: (flow == null || flow.isEmpty) ? null : flow,
+    alpn: alpn,
+    congestionControl: congestionControl,
   );
 }
 
@@ -206,9 +228,9 @@ Node? _nodeFromClashProxy(YamlMap proxy) {
   final type = (proxy['type'] as String?)?.toLowerCase();
   if (type == null) return null;
   final protocol = NodeProtocolLabel.fromString(type);
-  // 面板 Clash 里出 vless / trojan / vmess / ss / anytls / socks5
-  // （切片 10 起）；
-  // HY2 / TUIC 在这里会被面板跳过，只在 base64/plain 里保留。
+  // 面板 Clash 里出 vless / trojan / vmess / ss / anytls / socks5 /
+  // hysteria2 / tuic（1.4.23 起面板不再跳过 HY2/TUIC，订阅与单条链接
+  // 共用同一套拼法，8 种协议全覆盖）。
   if (protocol == NodeProtocol.unknown) return null;
   final name = proxy['name'] as String?;
   final server = proxy['server'] as String?;
@@ -220,19 +242,39 @@ Node? _nodeFromClashProxy(YamlMap proxy) {
     NodeProtocol.vless || NodeProtocol.vmess => proxy['uuid'] as String?,
     NodeProtocol.trojan ||
     NodeProtocol.shadowsocks ||
+    NodeProtocol.hysteria2 ||
     NodeProtocol.anytls ||
     NodeProtocol.socks5 => proxy['password'] as String?,
+    // TUIC：uuid 与 password 分开写，拼回 `uuid:password`（缺一半就丢）。
+    NodeProtocol.tuic => _tuicCredential(
+      proxy['uuid'] as String?,
+      proxy['password'] as String?,
+    ),
     _ => null,
   };
   if (uuidOrPassword == null || uuidOrPassword.isEmpty) return null;
-  // AnyTLS 恒为 TLS：面板的 proxy 即使没写 tls 字段也不算明文。
-  final tls = protocol == NodeProtocol.anytls || proxy['tls'] == true;
+  // HY2/TUIC/AnyTLS 恒为 TLS：面板的 proxy 即使没写 tls 字段也不算明文。
+  final tls =
+      protocol == NodeProtocol.anytls ||
+      protocol == NodeProtocol.hysteria2 ||
+      protocol == NodeProtocol.tuic ||
+      proxy['tls'] == true;
   var sni = proxy['servername'] as String?;
   // AnyTLS 的 SNI 在 Clash 里写 `sni` 字段，不写 `servername`。
   if ((sni == null || sni.isEmpty) && protocol == NodeProtocol.anytls) {
     sni = proxy['sni'] as String?;
   }
+  // HY2/TUIC 的 SNI 在 Clash 里也写 `sni` 字段。
+  if ((sni == null || sni.isEmpty) &&
+      (protocol == NodeProtocol.hysteria2 ||
+          protocol == NodeProtocol.tuic)) {
+    sni = proxy['sni'] as String?;
+  }
   final network = (proxy['network'] as String?) ?? 'tcp';
+  final nodeTransport =
+      protocol == NodeProtocol.hysteria2 || protocol == NodeProtocol.tuic
+      ? 'udp'
+      : network;
   String? wsPath;
   String? wsHost;
   final wsOpts = proxy['ws-opts'];
@@ -264,6 +306,13 @@ Node? _nodeFromClashProxy(YamlMap proxy) {
   final username = proxy['username'] as String?;
   final flow = proxy['flow'] as String?;
   final fingerprint = proxy['fingerprint'] as String?;
+  // ALPN 与拥塞控制（1.4.23 缺口）：Clash 的 `alpn`（列表或字符串，
+  // 如 `h3`）与 TUIC 的 `congestion-controller`（如 `bbr`，也认
+  // `congestion_control` 写法），配置生成时写回去。
+  final alpn = _alpnFrom(proxy['alpn']);
+  final congestionControl =
+      _nonEmptyString(proxy['congestion-controller']) ??
+      _nonEmptyString(proxy['congestion_control']);
   return Node(
     name: name,
     protocol: protocol,
@@ -271,7 +320,7 @@ Node? _nodeFromClashProxy(YamlMap proxy) {
     port: port,
     source: _sourceFromName(name),
     uuidOrPassword: uuidOrPassword,
-    transport: network,
+    transport: nodeTransport,
     tls: tls,
     sni: (sni == null || sni.isEmpty) ? null : sni,
     wsPath: (wsPath == null || wsPath.isEmpty) ? null : wsPath,
@@ -285,7 +334,34 @@ Node? _nodeFromClashProxy(YamlMap proxy) {
         ? null
         : fingerprint,
     flow: (flow == null || flow.isEmpty) ? null : flow,
+    alpn: alpn,
+    congestionControl: congestionControl,
   );
+}
+
+/// TUIC 凭证：uuid 与 password 分开写，拼回 `uuid:password`
+///（配置生成按这个拆；缺一半返回 null，节点直接丢，不生成连不上的出站）。
+String? _tuicCredential(String? uuid, String? password) {
+  if (uuid == null ||
+      uuid.isEmpty ||
+      password == null ||
+      password.isEmpty) {
+    return null;
+  }
+  return '$uuid:$password';
+}
+
+/// ALPN：sing-box `tls.alpn` 是列表、Clash `alpn` 是列表或字符串，
+/// 链接 `alpn` 参数是字符串；只取第一个（本客户端只用 `h3`）。
+String? _alpnFrom(dynamic value) {
+  if (value is List) {
+    for (final item in value) {
+      if (item is String && item.isNotEmpty) return item;
+    }
+    return null;
+  }
+  if (value is String && value.isNotEmpty) return value;
+  return null;
 }
 
 /// 解析 base64 / plain 节点链接列表（面板 `?format=base64` 或 `plain`）。
@@ -494,6 +570,11 @@ Node? _nodeFromHy2Link(String link) {
     tls: true,
     sni: (sni == null || sni.isEmpty) ? null : sni,
     isPlainText: false,
+    // HY2 链接的 alpn 参数（如 `alpn=h3`），配置生成时写回 tls.alpn。
+    alpn: _nonEmptyString(uri.queryParameters['alpn']),
+    congestionControl: _nonEmptyString(
+      uri.queryParameters['congestion_control'],
+    ),
   );
 }
 
@@ -518,6 +599,12 @@ Node? _nodeFromTuicLink(String link) {
     tls: true,
     sni: (sni == null || sni.isEmpty) ? null : sni,
     isPlainText: false,
+    // TUIC 链接的 congestion_control（如 `bbr`）与 alpn（如 `h3`），
+    // 配置生成时写回去。
+    alpn: _nonEmptyString(uri.queryParameters['alpn']),
+    congestionControl: _nonEmptyString(
+      uri.queryParameters['congestion_control'],
+    ),
   );
 }
 

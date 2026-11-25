@@ -313,6 +313,58 @@ void main() {
       expect(tuic['password'], 'example-password');
     });
 
+    test('HY2/TUIC：alpn 与 congestion_control 解析后写回出站', () {
+      final hy2 = Node(
+        name: 'HY2-直连',
+        protocol: NodeProtocol.hysteria2,
+        address: '203.0.113.1',
+        port: 443,
+        source: NodeSource.direct,
+        uuidOrPassword: '11111111-2222-3333-4444-555555555555',
+        tls: true,
+        sni: 'example.com',
+        alpn: 'h3',
+      );
+      final tuic = Node(
+        name: 'TUIC-直连',
+        protocol: NodeProtocol.tuic,
+        address: '203.0.113.20',
+        port: 443,
+        source: NodeSource.direct,
+        uuidOrPassword: '11111111-2222-3333-4444-555555555555:example-password',
+        tls: true,
+        sni: 'example.com',
+        alpn: 'h3',
+        congestionControl: 'bbr',
+      );
+      final result = SingboxConfigBuilder.build([hy2, tuic]);
+      expect(result.skipped, isEmpty);
+      final byTag = _outboundsByTag(result.config);
+      final hy2Out = byTag['HY2-直连']!;
+      expect((hy2Out['tls'] as Map)['alpn'], ['h3']);
+      final tuicOut = byTag['TUIC-直连']!;
+      expect(tuicOut['congestion_control'], 'bbr');
+      expect((tuicOut['tls'] as Map)['alpn'], ['h3']);
+    });
+
+    test('HY2/TUIC：没有 alpn 时不写 alpn 键、不写 congestion_control 键', () {
+      final hy2 = Node(
+        name: 'HY2-直连',
+        protocol: NodeProtocol.hysteria2,
+        address: '203.0.113.1',
+        port: 443,
+        source: NodeSource.direct,
+        uuidOrPassword: '11111111-2222-3333-4444-555555555555',
+        tls: true,
+        sni: 'example.com',
+      );
+      final result = SingboxConfigBuilder.build([hy2]);
+      expect(result.skipped, isEmpty);
+      final hy2Out = _outboundsByTag(result.config)['HY2-直连']!;
+      expect((hy2Out['tls'] as Map).containsKey('alpn'), isFalse);
+      expect(hy2Out.containsKey('congestion_control'), isFalse);
+    });
+
     test('grpc 节点跳过不静默当裸 TCP；SS 缺方法跳过', () {
       final grpc = Node(
         name: 'GRPC-直连',

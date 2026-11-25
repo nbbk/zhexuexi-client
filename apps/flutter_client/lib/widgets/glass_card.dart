@@ -1,0 +1,99 @@
+import 'dart:ui';
+
+import 'package:material_ui/material_ui.dart';
+
+import '../core/app_theme.dart';
+
+/// 苹果毛玻璃效果卡片（全端共用）：半透明＋背景模糊＋细边框＋柔和阴影。
+///
+/// 用 Flutter 跨端 API 实现（[BackdropFilter]＋半透明＋圆角），
+/// 不写端专属样式；浅色/深色两套透明度与边框色按当前
+/// [ThemeData.brightness] 走，不按平台分支。
+class GlassCard extends StatelessWidget {
+  const GlassCard({
+    super.key,
+    required this.child,
+    this.padding,
+    this.margin,
+    this.borderRadius = 16,
+  });
+
+  final Widget child;
+
+  /// 卡片内边距（不传时由 child 自己留白，与普通 Card 用法一致）。
+  final EdgeInsetsGeometry? padding;
+
+  /// 卡片外边距。
+  final EdgeInsetsGeometry? margin;
+
+  /// 圆角（全端统一，默认 16）。
+  final double borderRadius;
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = appThemeTokensOf(context);
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final radius = BorderRadius.circular(borderRadius);
+    return Container(
+      margin: margin,
+      decoration: BoxDecoration(
+        borderRadius: radius,
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: dark ? 0.35 : 0.10),
+            blurRadius: 20,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      child: ClipRRect(
+        borderRadius: radius,
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+          child: Container(
+            padding: padding,
+            decoration: BoxDecoration(
+              // 白天是象牙白半透明、夜晚是白 8% 半透明（品牌色走，
+              // 毛玻璃效果保留：半透明＋背景模糊＋细边框＋柔和阴影）。
+              color: dark
+                  ? Colors.white.withValues(alpha: 0.08)
+                  : tokens.background.withValues(alpha: 0.6),
+              borderRadius: radius,
+              border: Border.all(
+                color: dark
+                    ? Colors.white.withValues(alpha: 0.15)
+                    : Colors.white.withValues(alpha: 0.65),
+                width: 1,
+              ),
+            ),
+            child: child,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 毛玻璃页面的背景渐变（全端同一套，见当前主题的
+/// [AppThemeTokens.backgroundGradient]）：
+/// 包在页面最外层，给 [GlassCard] 留出“透”的层次。
+class GlassBackground extends StatelessWidget {
+  const GlassBackground({super.key, required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = appThemeTokensOf(context);
+    return Container(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: tokens.backgroundGradient,
+        ),
+      ),
+      child: child,
+    );
+  }
+}

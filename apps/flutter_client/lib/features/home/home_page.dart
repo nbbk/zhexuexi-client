@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:material_ui/material_ui.dart';
 
 import '../../core/clash_api_client.dart';
+import '../../core/app_theme.dart';
 import '../../core/core_provider.dart';
 import '../../core/node_model.dart';
 import '../../core/routing_mode.dart';
@@ -14,6 +15,8 @@ import '../../services/nodes_notifier.dart';
 import '../../services/remote_config_notifier.dart';
 import '../../services/routing_mode_notifier.dart';
 import '../../services/settings_notifier.dart';
+import '../../widgets/glass_card.dart';
+import '../../widgets/power_button.dart';
 
 /// 首页：一个大开关 + 当前节点 + 实时速率 + 流量三格 + 模式切换 + 公告栏。
 ///
@@ -38,6 +41,12 @@ class _HomePageState extends ConsumerState<HomePage> {
   StreamSubscription<CoreStatus>? _statusSub;
   StreamSubscription<TrafficSample>? _trafficSub;
 
+  /// 本轮连接开始的时间（“已连接 HH:MM:SS”用；断开后清掉）。
+  DateTime? _connectedSince;
+
+  /// 已连接时每秒刷一次时长（只在运行中跑，断开就停）。
+  Timer? _durationTimer;
+
   @override
   void initState() {
     super.initState();
@@ -47,6 +56,7 @@ class _HomePageState extends ConsumerState<HomePage> {
       if (!mounted) return;
       setState(() => _status = status);
       _syncTraffic();
+      _syncDurationTimer(status);
     });
     _syncTraffic();
   }
@@ -55,7 +65,22 @@ class _HomePageState extends ConsumerState<HomePage> {
   void dispose() {
     _statusSub?.cancel();
     _trafficSub?.cancel();
+    _durationTimer?.cancel();
     super.dispose();
+  }
+
+  /// 连接时长计时：运行中开始每秒刷一次，离开运行中就停并清掉起点。
+  void _syncDurationTimer(CoreStatus status) {
+    if (status == CoreStatus.started) {
+      _connectedSince ??= DateTime.now();
+      _durationTimer ??= Timer.periodic(const Duration(seconds: 1), (_) {
+        if (mounted && _status == CoreStatus.started) setState(() {});
+      });
+    } else {
+      _durationTimer?.cancel();
+      _durationTimer = null;
+      if (status != CoreStatus.starting) _connectedSince = null;
+    }
   }
 
   /// 核心已启动时订阅 Clash API 实时流量，否则取消订阅、速率回“—”。
@@ -217,16 +242,28 @@ class _HomePageState extends ConsumerState<HomePage> {
     return '未测速';
   }
 
-  String _statusText() {
-    final core = ref.read(coreServiceProvider);
+  /// 大开关状态文案（用户 2026-11-25 定稿，优雅简短、不要说明书口吻）：
+  /// 未连接「静候连接 / 轻触开启」，已连接「运行中 / 已连接 HH:MM:SS」
+  ///（只写已连接时长，不加操作说明）；连接中/断开中/失败同调子短句。
+  (String, String) _statusTexts() {
     return switch (_status) {
-      CoreStatus.stopped => '未连接',
-      CoreStatus.starting => '连接中…',
-      CoreStatus.started => '已连接',
-      CoreStatus.stopping => '断开中…',
-      CoreStatus.error =>
-        '连接失败${core.lastError == null ? '' : '：${core.lastError}'}',
+      CoreStatus.stopped => ('静候连接', '轻触开启'),
+      CoreStatus.starting => ('正在连接…', '稍等片刻'),
+      CoreStatus.started => ('运行中', _connectedDurationText()),
+      CoreStatus.stopping => ('正在断开…', '稍等片刻'),
+      CoreStatus.error => ('连接失败', '轻触重试'),
     };
+  }
+
+  /// 已连接时长：`已连接 HH:MM:SS`。
+  String _connectedDurationText() {
+    final since = _connectedSince;
+    if (since == null) return '已连接';
+    final d = DateTime.now().difference(since);
+    final h = d.inHours.toString().padLeft(2, '0');
+    final m = (d.inMinutes % 60).toString().padLeft(2, '0');
+    final s = (d.inSeconds % 60).toString().padLeft(2, '0');
+    return '已连接 $h:$m:$s';
   }
 
   /// 已用 / 总量格、剩余格、到期格的文案见 `userinfo.dart` 的同名
@@ -252,89 +289,87 @@ class _HomePageState extends ConsumerState<HomePage> {
         ? '↑ ${formatSpeed(_sample!.up)}\n↓ ${formatSpeed(_sample!.down)}'
         : '—';
 
-    return ListView(
-      padding: const EdgeInsets.all(16),
-      children: [
-        // 远程配置状态条（切片 7）：拉不到配置时给一句提示，不静默；
-        // 强制更新时拦住大开关（点开关弹升级说明）。
-        if (remoteState.forceUpdateRequired)
-          Card(
+    return GlassBackground(
+      child: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          // 远程配置状态条（切片 7）：拉不到配置时给一句提示，不静默；
+          // 强制更新时拦住大开关（点开关弹升级说明）。
+          if (remoteState.forceUpdateRequired)
+            GlassCard(
+              margin: const EdgeInsets.only(bottom: 8),
+              child: ListTile(
+                leading: const Icon(Icons.system_update_outlined),
+                title: const Text('当前版本过低，请升级后使用'),
+                subtitle: Text(
+                  '最低可用版本 ${remoteState.config.minAppVersion}',
+                ),
+                trailing: TextButton(
+                  onPressed: _showForceUpdateDialog,
+                  child: const Text('查看详情'),
+                ),
+              ),
+            ),
+          if (remoteState.offline)
+            GlassCard(
+              margin: const EdgeInsets.only(bottom: 8),
+              child: ListTile(
+                leading: const Icon(Icons.cloud_off_outlined),
+                title: const Text('配置中心暂时连不上，正在用上次的配置'),
+                trailing: TextButton(
+                  onPressed: _retryConfig,
+                  child: const Text('重试'),
+                ),
+              ),
+            ),
+          if (remoteState.source == RemoteConfigSource.bundled)
+            GlassCard(
+              margin: const EdgeInsets.only(bottom: 8),
+              child: ListTile(
+                leading: const Icon(Icons.cloud_off_outlined),
+                title: const Text('首次启动需要联网拉取配置'),
+                subtitle: const Text('拉不到配置也能先手动粘贴订阅使用'),
+                trailing: TextButton(
+                  onPressed: _retryConfig,
+                  child: const Text('重试'),
+                ),
+              ),
+            ),
+          // 公告栏（阶段 1 接面板公告；切片 5 前占位）。
+          const GlassCard(
+            margin: EdgeInsets.only(bottom: 8),
             child: ListTile(
-              leading: const Icon(Icons.system_update_outlined),
-              title: const Text('当前版本过低，请升级后使用'),
-              subtitle: Text(
-                '最低可用版本 ${remoteState.config.minAppVersion}',
-              ),
-              trailing: TextButton(
-                onPressed: _showForceUpdateDialog,
-                child: const Text('查看详情'),
-              ),
+              leading: Icon(Icons.campaign_outlined),
+              title: Text('暂无公告'),
+              subtitle: Text('面板公告会在这里显示'),
             ),
           ),
-        if (remoteState.offline)
-          Card(
-            child: ListTile(
-              leading: const Icon(Icons.cloud_off_outlined),
-              title: const Text('配置中心暂时连不上，正在用上次的配置'),
-              trailing: TextButton(
-                onPressed: _retryConfig,
-                child: const Text('重试'),
-              ),
+          const SizedBox(height: 24),
+          // 大开关：蓝→紫渐变＋呼吸动效（开）/灰色静态（关），
+          // 中心图标是可替换组件（图标方向等 UI 调研回来再定，
+          // 现默认放金色信号弧占位，不写死电源符号）。
+          Center(
+            child: BreathingPowerButton(
+              size: MediaQuery.of(context).size.width / 3,
+              isOn: _status == CoreStatus.started,
+              enabled: !switching,
+              onPressed: _onToggle,
             ),
           ),
-        if (remoteState.source == RemoteConfigSource.bundled)
-          Card(
-            child: ListTile(
-              leading: const Icon(Icons.cloud_off_outlined),
-              title: const Text('首次启动需要联网拉取配置'),
-              subtitle: const Text('拉不到配置也能先手动粘贴订阅使用'),
-              trailing: TextButton(
-                onPressed: _retryConfig,
-                child: const Text('重试'),
-              ),
+          const SizedBox(height: 8),
+          Center(
+            child: Text(
+              _statusTexts().$1,
+              style: theme.textTheme.titleMedium,
             ),
           ),
-        // 公告栏（阶段 1 接面板公告；切片 5 前占位）。
-        const Card(
-          child: ListTile(
-            leading: Icon(Icons.campaign_outlined),
-            title: Text('暂无公告'),
-            subtitle: Text('面板公告会在这里显示'),
+          const SizedBox(height: 2),
+          Center(
+            child: Text(_statusTexts().$2, style: theme.textTheme.bodySmall),
           ),
-        ),
-        const SizedBox(height: 24),
-        // 大开关：直径约为屏幕宽度的三分之一。
-        Center(
-          child: SizedBox(
-            width: MediaQuery.of(context).size.width / 3,
-            height: MediaQuery.of(context).size.width / 3,
-            child: ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                shape: const CircleBorder(),
-                backgroundColor: _status == CoreStatus.started
-                    ? theme.colorScheme.primary
-                    : theme.colorScheme.surfaceContainerHighest,
-              ),
-              onPressed: switching ? null : _onToggle,
-              child: Icon(
-                _status == CoreStatus.started
-                    ? Icons.power
-                    : Icons.power_settings_new,
-                size: 48,
-                color: _status == CoreStatus.started
-                    ? Colors.white
-                    : theme.colorScheme.onSurfaceVariant,
-              ),
-            ),
-          ),
-        ),
-        const SizedBox(height: 8),
-        Center(
-          child: Text(_statusText(), style: theme.textTheme.titleMedium),
-        ),
         const SizedBox(height: 24),
         // 当前节点。
-        Card(
+        GlassCard(
           child: ListTile(
             leading: const Icon(Icons.public),
             title: Text(
@@ -400,7 +435,16 @@ class _HomePageState extends ConsumerState<HomePage> {
         ],
         const SizedBox(height: 16),
         // 模式切换（三档，切换后重载配置，失败回滚旧模式）。
+        // 选中态：白天深蓝底白字、夜晚香槟金底墨蓝字（品牌主色）。
         SegmentedButton<String>(
+          style: SegmentedButton.styleFrom(
+            selectedBackgroundColor: appThemeTokensOf(
+              context,
+            ).segmentedSelectedBackground,
+            selectedForegroundColor: appThemeTokensOf(
+              context,
+            ).segmentedSelectedForeground,
+          ),
           segments: const [
             ButtonSegment(value: 'rule', label: Text('规则模式')),
             ButtonSegment(value: 'global', label: Text('全局模式')),
@@ -409,7 +453,8 @@ class _HomePageState extends ConsumerState<HomePage> {
           selected: {modeState.mode.storageValue},
           onSelectionChanged: modeState.switching ? null : _onModeChanged,
         ),
-      ],
+        ],
+      ),
     );
   }
 }
@@ -422,7 +467,7 @@ class _StatCell extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Card(
+    return GlassCard(
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 4),
         child: Column(

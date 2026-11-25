@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:material_ui/material_ui.dart';
 
+import '../../core/app_theme.dart';
 import '../../core/core_provider.dart';
 import '../../core/custom_rule.dart';
 import '../../core/routing_mode.dart';
@@ -16,6 +17,7 @@ import '../../services/remote_config_notifier.dart';
 import '../../services/remote_config_service.dart';
 import '../../services/routing_mode_notifier.dart';
 import '../../services/settings_notifier.dart';
+import '../../services/theme_notifier.dart';
 
 /// 设置页：常用在上、高级默认折叠在下，底部是“关于”（切片 6）。
 ///
@@ -268,7 +270,16 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
         const Text('常用设置', style: TextStyle(fontSize: 16)),
         const SizedBox(height: 8),
         // 分流模式：与首页同一套 provider，改一处两处都变。
+        // 选中态：白天深蓝底白字、夜晚香槟金底墨蓝字（品牌主色）。
         SegmentedButton<String>(
+          style: SegmentedButton.styleFrom(
+            selectedBackgroundColor: appThemeTokensOf(
+              context,
+            ).segmentedSelectedBackground,
+            selectedForegroundColor: appThemeTokensOf(
+              context,
+            ).segmentedSelectedForeground,
+          ),
           segments: const [
             ButtonSegment(value: 'rule', label: Text('规则模式')),
             ButtonSegment(value: 'global', label: Text('全局模式')),
@@ -290,6 +301,32 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
           value: settings.notifications,
           onChanged: (value) =>
               ref.read(settingsProvider.notifier).setNotifications(value),
+        ),
+        // 外观主题：可切换的注册表（现在白天/夜晚两档，后面再加更多
+        // 风格主题时只在 AppThemes 里加定义，不用改页面）；
+        // 切换后全端生效，存在本地偏好里，重启后还保持。
+        const ListTile(
+          title: Text('主题'),
+          subtitle: Text('白天 / 夜晚，后面还会加更多风格'),
+        ),
+        SegmentedButton<String>(
+          style: SegmentedButton.styleFrom(
+            selectedBackgroundColor: appThemeTokensOf(
+              context,
+            ).segmentedSelectedBackground,
+            selectedForegroundColor: appThemeTokensOf(
+              context,
+            ).segmentedSelectedForeground,
+          ),
+          segments: [
+            for (final theme in AppThemes.all)
+              ButtonSegment(value: theme.id, label: Text(theme.name)),
+          ],
+          selected: {ref.watch(appThemeProvider)},
+          onSelectionChanged: (selected) {
+            if (selected.isEmpty) return;
+            ref.read(appThemeProvider.notifier).setTheme(selected.first);
+          },
         ),
         const ListTile(
           title: Text('语言'),

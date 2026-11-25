@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:material_ui/material_ui.dart';
 
+import 'core/app_theme.dart';
 import 'core/core_provider.dart';
 import 'features/home/home_page.dart';
 import 'features/me/me_page.dart';
@@ -10,6 +11,7 @@ import 'features/nodes/nodes_page.dart';
 import 'features/settings/settings_page.dart';
 import 'services/remote_config_notifier.dart';
 import 'services/subscription_auto_refresh.dart';
+import 'services/theme_notifier.dart';
 
 /// 哲学系客户端入口（阶段 0：只搭架子 + 最小验证，未接真实面板/节点）。
 ///
@@ -57,18 +59,13 @@ class _ZhexuexiAppState extends ConsumerState<ZhexuexiApp> {
   @override
   Widget build(BuildContext context) {
     final brand = ref.watch(remoteConfigProvider).config.brand;
-    final primary = Color(brand.primaryColor);
-    final accent = Color(brand.accentColor);
+    // 外观主题（白天/夜晚，可切换的注册表）：设置页切换，
+    // 持久化在本地偏好里；主题定义见 AppThemes，页面只读 token。
+    final themeId = ref.watch(appThemeProvider);
+    final themeDef = AppThemes.byId(themeId);
     return MaterialApp(
       title: brand.appName,
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: primary,
-          primary: primary,
-          secondary: accent,
-        ),
-        useMaterial3: true,
-      ),
+      theme: themeDef.themeData,
       home: Scaffold(
         appBar: AppBar(title: Text(brand.appName)),
         body: IndexedStack(

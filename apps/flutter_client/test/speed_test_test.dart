@@ -9,8 +9,10 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_sing_box/flutter_sing_box.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:zhexuexi_client/core/clash_api_client.dart';
 import 'package:zhexuexi_client/core/core_provider.dart';
 import 'package:zhexuexi_client/core/node_model.dart';
@@ -18,6 +20,7 @@ import 'package:zhexuexi_client/core/singbox_core.dart';
 import 'package:zhexuexi_client/services/nodes_notifier.dart';
 import 'package:zhexuexi_client/services/subscription_parser.dart';
 import 'package:zhexuexi_client/services/subscription_service.dart';
+import 'package:zhexuexi_client/services/subscription_store.dart';
 
 /// 插件 fake：只提供状态流，不碰平台通道。
 class _FakePlugin extends FlutterSingBox {
@@ -51,6 +54,53 @@ class _StubCoreService extends CoreService {
 }
 
 /// 订阅桩：直接给节点列表，不拉网络、不碰密钥库。
+/// 假安全存储：内存 Map，不碰真密钥库的 MethodChannel。
+class _FakeSecureStorage extends FlutterSecureStorage {
+  final _map = <String, String>{};
+
+  @override
+  Future<String?> read({
+    required String key,
+    AndroidOptions? aOptions,
+    AppleOptions? iOptions,
+    LinuxOptions? lOptions,
+    WindowsOptions? wOptions,
+    WebOptions? webOptions,
+    AppleOptions? mOptions,
+  }) async => _map[key];
+
+  @override
+  Future<void> write({
+    required String key,
+    required String? value,
+    AndroidOptions? aOptions,
+    AppleOptions? iOptions,
+    LinuxOptions? lOptions,
+    WindowsOptions? wOptions,
+    WebOptions? webOptions,
+    AppleOptions? mOptions,
+  }) async {
+    if (value == null) {
+      _map.remove(key);
+    } else {
+      _map[key] = value;
+    }
+  }
+
+  @override
+  Future<void> delete({
+    required String key,
+    AndroidOptions? aOptions,
+    AppleOptions? iOptions,
+    LinuxOptions? lOptions,
+    WindowsOptions? wOptions,
+    WebOptions? webOptions,
+    AppleOptions? mOptions,
+  }) async {
+    _map.remove(key);
+  }
+}
+
 class _StubSubscriptionService extends SubscriptionService {
   List<Node> nodes = [];
 
@@ -73,10 +123,11 @@ Node _node(
   String name,
   NodeSource source, {
   String transport = 'tcp',
+  String address = '203.0.113.1',
 }) => Node(
   name: name,
   protocol: NodeProtocol.vless,
-  address: '203.0.113.1',
+  address: address,
   port: 443,
   source: source,
   uuidOrPassword: '11111111-2222-3333-4444-555555555555',
@@ -85,16 +136,32 @@ Node _node(
 );
 
 /// 五个节点：香港-中转 300ms、智利-直连 86ms、日本-直连 210ms、
-//  坏节点-直连测速失败、grpc-直连配置里没有出站（测速失败）。
+/// 坏节点-直连测速失败、grpc-直连配置里没有出站（测速失败）。
+/// 地址各不相同：多订阅合并按内容去重（去重键不含名字），
+/// 同地址＋同 UUID 的节点会被当成同一条。
 List<Node> _fiveNodes() => [
-  _node('香港-中转', NodeSource.relay),
-  _node('智利-直连', NodeSource.direct),
-  _node('日本-直连', NodeSource.direct),
-  _node('坏节点-直连', NodeSource.direct),
-  _node('grpc-直连', NodeSource.direct, transport: 'grpc'),
+  _node('香港-中转', NodeSource.relay, address: '203.0.113.1'),
+  _node('智利-直连', NodeSource.direct, address: '203.0.113.2'),
+  _node('日本-直连', NodeSource.direct, address: '203.0.113.3'),
+  _node('坏节点-直连', NodeSource.direct, address: '203.0.113.4'),
+  _node(
+    'grpc-直连',
+    NodeSource.direct,
+    transport: 'grpc',
+    address: '203.0.113.5',
+  ),
 ];
 
 void main() {
+  // refresh() 会读订阅列表（SharedPreferences）：普通 test() 没有
+  // binding，先初始化并给 mock 偏好（空绑定＝只有主订阅）。
+  // 注意：test binding 会把 HttpClient 换成永远回 400 的假实现，
+  // 假 Clash API 服务器要走真 HTTP，这里把它还原
+  //（setupHttpOverrides 只在 binding 创建时调一次，不会每测重设）。
+  TestWidgetsFlutterBinding.ensureInitialized();
+  HttpOverrides.global = null;
+  SharedPreferences.setMockInitialValues({});
+
   late HttpServer apiServer;
   late List<String> putBodies;
   late Map<String, int?> delays;
@@ -161,6 +228,13 @@ void main() {
         coreServiceProvider.overrideWithValue(core),
         clashApiClientProvider.overrideWithValue(
           ClashApiClient(baseUrl: baseUrl),
+        ),
+        // 订阅列表走假存储＋测试偏好：不碰真安全存储的 MethodChannel。
+        subscriptionStoreProvider.overrideWithValue(
+          SubscriptionStore(
+            storage: _FakeSecureStorage(),
+            prefs: await SharedPreferences.getInstance(),
+          ),
         ),
       ],
     );
@@ -340,9 +414,10 @@ void main() {
     );
 
     // 订阅更新后智利节点没了：回落到第一个直连节点。
+    // 地址各不相同（多订阅合并按内容去重，同地址＋同 UUID 算同一条）。
     subscription.nodes = [
-      _node('香港-中转', NodeSource.relay),
-      _node('日本-直连', NodeSource.direct),
+      _node('香港-中转', NodeSource.relay, address: '203.0.113.1'),
+      _node('日本-直连', NodeSource.direct, address: '203.0.113.3'),
     ];
     await notifier.refresh();
     expect(
@@ -359,5 +434,83 @@ void main() {
       container.read(nodesProvider).selectedNodeName,
       '日本-直连',
     );
+  });
+
+  group('单个测试 testSingleSpeed', () {
+    test('只测一个节点：只改这一行的延迟，其他行不动、不重排', () async {
+      core.statusValue = CoreStatus.started;
+      final notifier = await loadNodes();
+      final nodes = container.read(nodesProvider).nodes;
+      final target = nodes.firstWhere((n) => n.name == '智利-直连');
+      expect(await notifier.testSingleSpeed(target), isTrue);
+      final state = container.read(nodesProvider);
+      expect(state.nodes.map((n) => n.name).toList(), [
+        '香港-中转',
+        '智利-直连',
+        '日本-直连',
+        '坏节点-直连',
+        'grpc-直连',
+      ]);
+      expect(
+        state.nodes
+            .firstWhere((n) => n.name == '智利-直连')
+            .latencyMs,
+        86,
+      );
+      // 其他行没测过：延迟还是 null、没标失败。
+      for (final n in state.nodes) {
+        if (n.name == '智利-直连') continue;
+        expect(n.latencyMs, isNull);
+        expect(n.latencyFailed, isFalse);
+      }
+      expect(state.testingSingleNodeKey, isNull);
+      expect(state.speedTestAt, isNotNull);
+    });
+
+    test('核心未启动：不发请求，报和一键测速一样的提示', () async {
+      core.statusValue = CoreStatus.stopped;
+      final notifier = await loadNodes();
+      final nodes = container.read(nodesProvider).nodes;
+      expect(
+        await notifier.testSingleSpeed(nodes.first),
+        isFalse,
+      );
+      final state = container.read(nodesProvider);
+      expect(
+        state.speedTestError,
+        '核心未启动，先在首页打开开关再测速',
+      );
+      expect(nodes.first.latencyMs, isNull);
+    });
+
+    test('一键测速进行中：单个测试直接返回 false，不打架', () async {
+      core.statusValue = CoreStatus.started;
+      final notifier = await loadNodes();
+      final nodes = container.read(nodesProvider).nodes;
+      // 不 await：一键测速的同步段先把 testingSpeed 置 true，
+      // 单个测试看到就直接返回。
+      final allFuture = notifier.testAllSpeeds();
+      expect(await notifier.testSingleSpeed(nodes.first), isFalse);
+      await allFuture;
+    });
+
+    test('已有单节点在测：再点另一个直接返回 false', () async {
+      core.statusValue = CoreStatus.started;
+      final notifier = await loadNodes();
+      final nodes = container.read(nodesProvider).nodes;
+      final first = notifier.testSingleSpeed(nodes[0]);
+      expect(await notifier.testSingleSpeed(nodes[1]), isFalse);
+      await first;
+    });
+
+    test('测不到的节点标失败（配置里没有出站的 grpc 节点）', () async {
+      core.statusValue = CoreStatus.started;
+      final notifier = await loadNodes();
+      final nodes = container.read(nodesProvider).nodes;
+      final grpc = nodes.firstWhere((n) => n.name == 'grpc-直连');
+      expect(await notifier.testSingleSpeed(grpc), isTrue);
+      expect(grpc.latencyMs, isNull);
+      expect(grpc.latencyFailed, isTrue);
+    });
   });
 }

@@ -404,6 +404,109 @@ proxies:
     });
   });
 
+  group('1.4.23：HY2/TUIC 不再被 sing-box/Clash 订阅丢掉', () {
+    test('sing-box JSON：HY2 密码＋tls.alpn、TUIC uuid＋password＋congestion_control', () {
+      final result = parseSingboxJson('''
+{
+  "outbounds": [
+    {"type": "hysteria2", "tag": "example-node-hy2-443",
+     "server": "203.0.113.1", "server_port": 443,
+     "password": "11111111-2222-3333-4444-555555555555",
+     "tls": {"enabled": true, "server_name": "example.com", "alpn": ["h3"]}},
+    {"type": "tuic", "tag": "example-node-tuic-443",
+     "server": "203.0.113.1", "server_port": 443,
+     "uuid": "11111111-2222-3333-4444-555555555555", "password": "example-password",
+     "congestion_control": "bbr",
+     "tls": {"enabled": true, "server_name": "example.com", "alpn": ["h3"]}}
+  ]
+}
+''');
+      expect(result.nodes.length, 2);
+      expect(result.failedCount, 0);
+      final hy2 = result.nodes[0];
+      expect(hy2.protocol, NodeProtocol.hysteria2);
+      expect(hy2.uuidOrPassword, '11111111-2222-3333-4444-555555555555');
+      expect(hy2.tls, isTrue);
+      expect(hy2.transport, 'udp');
+      expect(hy2.sni, 'example.com');
+      expect(hy2.alpn, 'h3');
+      final tuic = result.nodes[1];
+      expect(tuic.protocol, NodeProtocol.tuic);
+      expect(
+        tuic.uuidOrPassword,
+        '11111111-2222-3333-4444-555555555555:example-password',
+      );
+      expect(tuic.tls, isTrue);
+      expect(tuic.transport, 'udp');
+      expect(tuic.congestionControl, 'bbr');
+      expect(tuic.alpn, 'h3');
+    });
+
+    test('sing-box JSON：TUIC 缺 password 丢掉，不生成连不上的出站', () {
+      final result = parseSingboxJson('''
+{
+  "outbounds": [
+    {"type": "tuic", "tag": "example-node-tuic-443",
+     "server": "203.0.113.1", "server_port": 443,
+     "uuid": "11111111-2222-3333-4444-555555555555",
+     "tls": {"enabled": true, "server_name": "example.com"}}
+  ]
+}
+''');
+      expect(result.nodes, isEmpty);
+      expect(result.failedCount, 1);
+    });
+
+    test('Clash YAML：HY2 alpn、TUIC congestion-controller 都保留', () {
+      final result = parseClashYaml('''
+proxies:
+  - name: example-node-hy2-443
+    type: hysteria2
+    server: 203.0.113.1
+    port: 443
+    password: 11111111-2222-3333-4444-555555555555
+    sni: example.com
+    alpn: [h3]
+  - name: example-node-tuic-443
+    type: tuic
+    server: 203.0.113.1
+    port: 443
+    uuid: 11111111-2222-3333-4444-555555555555
+    password: example-password
+    congestion-controller: bbr
+    sni: example.com
+    alpn: [h3]
+''');
+      expect(result.nodes.length, 2);
+      expect(result.failedCount, 0);
+      final hy2 = result.nodes[0];
+      expect(hy2.protocol, NodeProtocol.hysteria2);
+      expect(hy2.uuidOrPassword, '11111111-2222-3333-4444-555555555555');
+      expect(hy2.tls, isTrue);
+      expect(hy2.alpn, 'h3');
+      final tuic = result.nodes[1];
+      expect(tuic.protocol, NodeProtocol.tuic);
+      expect(
+        tuic.uuidOrPassword,
+        '11111111-2222-3333-4444-555555555555:example-password',
+      );
+      expect(tuic.congestionControl, 'bbr');
+      expect(tuic.alpn, 'h3');
+    });
+
+    test('链接：HY2 alpn=h3、TUIC congestion_control=bbr＋alpn=h3', () {
+      final parsed = parseLinkList('''
+hysteria2://11111111-2222-3333-4444-555555555555@203.0.113.1:443?sni=example.com&alpn=h3#HY2-直连
+tuic://11111111-2222-3333-4444-555555555555:example-password@203.0.113.1:443?sni=example.com&congestion_control=bbr&alpn=h3#TUIC-直连
+''');
+      expect(parsed.nodes.length, 2);
+      expect(parsed.failedCount, 0);
+      expect(parsed.nodes[0].alpn, 'h3');
+      expect(parsed.nodes[1].congestionControl, 'bbr');
+      expect(parsed.nodes[1].alpn, 'h3');
+    });
+  });
+
   group('格式猜测', () {
     test('JSON → singbox；含 proxies: → clash；其他 → base64', () {
       expect(detectFormat('{"outbounds": []}'), SubscriptionFormat.singbox);

@@ -395,4 +395,31 @@ void main() {
     expect(state.nodes[1].latencyFailed, isFalse);
     expect(state.speedTestAt, isNull);
   });
+
+  testWidgets('主题切换：白天/夜晚分段选，切换后持久化', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    await pumpSettings(tester);
+    expect(find.text('主题'), findsOneWidget);
+    expect(find.text('白天'), findsOneWidget);
+    expect(find.text('夜晚'), findsOneWidget);
+    // 设置页有两个 SegmentedButton（分流模式＋主题）：
+    // 按段值认主题那组（含 'night' 段）。
+    SegmentedButton<String> themeSegmented() {
+      final all = tester.widgetList<SegmentedButton<String>>(
+        find.byType(SegmentedButton<String>),
+      );
+      return all.firstWhere(
+        (s) => s.segments.any((seg) => seg.value == 'night'),
+      );
+    }
+
+    expect(themeSegmented().selected, {'day'});
+    await tapAsync(tester, find.text('夜晚'));
+    expect(themeSegmented().selected, {'night'});
+    final prefs = await SharedPreferences.getInstance();
+    expect(prefs.getString('app_theme_id'), 'night');
+    await tapAsync(tester, find.text('白天'));
+    expect(themeSegmented().selected, {'day'});
+    expect(prefs.getString('app_theme_id'), 'day');
+  });
 }

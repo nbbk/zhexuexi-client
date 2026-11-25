@@ -1375,3 +1375,33 @@ sing-box 落地没有按用户统计接口（官方发布的二进制默认不�
 ---
 
 *本文档结束。执行时以本文档为准，产品定义以 `docs/zhexuexi-client-plan.md` 为准，节点侧计量细节以节点侧按人计量完整方案 v1 为准；三者有冲突时，先停下来记进 §7，拍板后再改，不要擅自按自己的理解改。*
+
+## §13 多订阅＋整体风格重构＋主题注册表（2026-11-25）
+
+### 13.1 多订阅设计
+
+- 存储：主订阅（自家面板）不动现有存储（base URL 在 SharedPreferences `subscription_base_url`，令牌在 flutter_secure_storage；远程配置 `updateBaseUrl` 与 404 重试一字不改）。手动加的订阅整条 JSON 存 flutter_secure_storage（键 `custom_subscriptions`），不进 SharedPreferences。老单个订阅就是主订阅，不搬数据。列表 = [主订阅] + [手动加的]。手动加的默认名取 host、可改名，校验只要求合法 http(s) URL，不要求令牌以 `sub_` 开头。
+- 管理入口：节点页粘贴入口附近「管理订阅」按钮，进管理页（列表＋添加＋删除＋改名＋启用/停用＋单个/全部刷新）。删除与停用二次确认并讲清后果。主订阅只给改名/启用/刷新，不给删除（解绑走现有退出登录/换绑）。
+- 拉取与合并：`NodesNotifier.refresh` 并行拉全部已启用订阅（`Future.wait` 各自 try/catch），一条失败只记该条错误，有任一条成功就显示合并节点，全部失败才报错误。合并按订阅顺序拼接（主订阅在前），按节点内容去重只留第一条（`Node.dedupKey`，不含名字）。`Node.subscriptionId`/`subscriptionName` 在合并时赋值，节点页每条显示来源小 chip，不分组。
+- 流量：`NodesState.userinfo` 仍是主订阅的（首页/我的页继续用），新增 `subscriptionSummaries`（每条含 id、名字、是否主订阅、启用、节点数、userinfo、错误、上次更新）；没有 userinfo 头的显示「—」。远程配置仍是主订阅，404 重试只针对主订阅。
+- 单个测试：`NodesNotifier.testSingleSpeed(node)`，只测这一行（测速中只改该行状态，测完只更新该行 `latencyMs`/`latencyFailed`，不启动后台重测定时器）；`NodesState.testingSingleNodeKey` 按 `dedupKey` 认行；核心未启动时报和一键测速一样的提示；与一键测速互斥。
+
+### 13.2 整体风格与主题注册表
+
+- 毛玻璃卡片（`lib/widgets/glass_card.dart`）＋背景渐变（`GlassBackground`），全端同一套组件；配色从品牌 Logo 取（墨蓝 #0A1E36、次深蓝 #10263F、香槟金 #C2A15C、淡金 #D8C08A、白天底象牙白 #FAF7F0、夜晚底 #070F1C、次要文字蓝灰 #5C6B7A），金色只作细线点缀，紫色/粉色渐变已否。
+- 大电源开关（`lib/widgets/power_button.dart`）：深蓝渐变＋金色细环＋金色信号弧，呼吸光晕走柔金色；中心图标是可替换组件 `PowerButtonIcon`（图标由参数传入），默认信号弧＋哲人侧脸线条版，不用传统电源图标 ⏻。开/关状态明确区分，切换 200–300ms 平滑过渡。首页状态文案写死：未连接「静候连接 · 轻触开启」，已连接「运行中 · 已连接 HH:MM:SS」。
+- 动效统一 200–300ms（`lib/core/app_motion.dart`）：页面 `fadeSlideRoute`（淡入＋滑动 250ms）、按压 200ms、列表 250ms、状态 250ms。按钮图标统一 Material Icons outlined 细线型。节点列表每条毛玻璃卡片＋来源 chip＋延迟＋清晰选中态。多端不写 `Platform.isIOS/isAndroid/isWindows` 样式分支。
+- 主题注册表（`lib/core/app_theme.dart`）：`AppThemeTokens extends ThemeExtension`（全部颜色 token）＋`AppThemeDefinition`（id/name/brightness/tokens，`themeData` getter 派生 ThemeData）＋`AppThemes` 注册表（现注册 `day`/`night`，默认 `day`）。页面只读 `appThemeTokensOf(context)`，不写死色值；新增主题只加一个主题定义。`ThemeNotifier` 存主题 id 字符串（键 `app_theme_id`，provider `appThemeProvider`），切换入口在设置页（SegmentedButton，从 `AppThemes.all` 出选项），切换后全端生效、持久化保存。
+
+### 13.3 客户端侧缺口（面板 1.4.23 核对，2026-11-25 补）
+
+- sing-box/Clash 订阅解析丢 HY2/TUIC：`_nodeFromSingboxOutbound` 与 `_nodeFromClashProxy` 里 `uuidOrPassword` switch 没有这两支，走到 `_ => null` 整条被丢（计入失败数）；两处“HY2/TUIC 在这里会被面板跳过”的注释已失效（1.4.23 起面板不再跳过）。补法：switch 加分支（HY2 取 `password`；TUIC 的 `uuid`＋`password` 拼回 `uuid:password`，缺一半丢掉）；HY2/TUIC 恒为 TLS、走 UDP。
+- `alpn`/`congestion_control` 丢失：`Node` 加 `alpn` 与 `congestionControl` 字段；链接解析从 HY2/TUIC 链接里取（HY2 `alpn=h3`、TUIC `congestion_control=bbr`＋`alpn=h3`），sing-box/Clash 解析从 `tls.alpn`/`alpn` 与 `congestion_control`/`congestion-controller` 取；配置生成写回去（`_tlsObject` 写 `alpn: [..]`，TUIC 出站写 `congestion_control`）；去重键含这两个字段；多订阅合并（`_tagNodes`）透传不丢。真 sing-box 1.14.4 冒烟：含 HY2＋TUIC 的生成配置 `check` 过、`run` 起来。
+
+### 13.4 测试注意（本节踩过的坑）
+
+- `refresh()` 改走订阅列表后，普通 `test()` 里读 SharedPreferences/安全存储要先有 binding 与 mock：相关测试文件用 `subscriptionStoreProvider` 假存储覆盖（假安全存储＋`SharedPreferences.getInstance()` 的测试偏好），不要让 `NodesNotifier` 走真存储的 MethodChannel。
+- speed_test 的假 Clash API 要走真 HTTP：`TestWidgetsFlutterBinding.ensureInitialized()` 后须把 `HttpOverrides.global` 置空，不然 test binding 把 HttpClient 换成永远回 400 的假实现（`setupHttpOverrides` 只在 binding 创建时调一次，置空后不会每测重设）。
+- 测速桩节点：按内容去重（去重键不含名字），同地址＋同 UUID 的节点只留一条；桩节点须给不同地址。
+- 呼吸动画只在「开」时转：关态测试可用 `pumpAndSettle`，开态必须手动 `pump`。转圈（`CircularProgressIndicator`）同理。
+- 首页是 ListView 懒加载：冒烟测试断言开关区文案前要把测试视口拉高（`tester.view.physicalSize`），否则折叠线下的内容不被构建。
