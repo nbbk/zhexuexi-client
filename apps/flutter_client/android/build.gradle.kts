@@ -2,6 +2,8 @@ allprojects {
     repositories {
         google()
         mavenCentral()
+        // flutter_sing_box's libbox comes from JitPack (com.github.singbox-android:libbox).
+        maven("https://jitpack.io")
     }
 }
 
