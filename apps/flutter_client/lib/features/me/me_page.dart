@@ -3,6 +3,10 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:material_ui/material_ui.dart';
 
+import '../../core/app_motion.dart';
+import '../../widgets/app_icon.dart';
+import '../../core/app_tokens.dart';
+
 import '../../core/userinfo.dart';
 import '../../services/announcement_service.dart';
 import '../../services/auth_notifier.dart';
@@ -51,8 +55,7 @@ class _MePageState extends ConsumerState<MePage> {
   }
 
   Future<void> _loadAnnouncement() async {
-    final notice =
-        await ref.read(announcementServiceProvider).fetchNotice();
+    final notice = await ref.read(announcementServiceProvider).fetchNotice();
     if (mounted) {
       setState(() {
         _notice = notice;
@@ -62,8 +65,9 @@ class _MePageState extends ConsumerState<MePage> {
   }
 
   Future<void> _loadSubscriptionHost() async {
-    final url =
-        await ref.read(subscriptionServiceProvider).readSubscriptionUrl();
+    final url = await ref
+        .read(subscriptionServiceProvider)
+        .readSubscriptionUrl();
     final host = url == null ? null : Uri.tryParse(url)?.host;
     if (mounted && host != null && host.isNotEmpty) {
       setState(() => _subscriptionHost = host);
@@ -104,7 +108,7 @@ class _MePageState extends ConsumerState<MePage> {
   Future<void> _showBindDialog({required bool isRebind}) async {
     final controller = TextEditingController();
     String? error;
-    final ok = await showDialog<bool>(
+    final ok = await showAppDialog<bool>(
       context: context,
       builder: (context) => StatefulBuilder(
         builder: (context, setDialogState) => AlertDialog(
@@ -120,12 +124,10 @@ class _MePageState extends ConsumerState<MePage> {
                 ),
               ),
               if (error != null) ...[
-                const SizedBox(height: 8),
+                const SizedBox(height: AppTokens.spacingXs),
                 Text(
                   error!,
-                  style: TextStyle(
-                    color: Theme.of(context).colorScheme.error,
-                  ),
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
                 ),
               ],
             ],
@@ -145,9 +147,7 @@ class _MePageState extends ConsumerState<MePage> {
                 await ref.read(nodesProvider.notifier).bindAndRefresh(link);
                 final state = ref.read(nodesProvider);
                 if (state.status == NodesStatus.error) {
-                  setDialogState(
-                    () => error = state.errorMessage ?? '绑定失败',
-                  );
+                  setDialogState(() => error = state.errorMessage ?? '绑定失败');
                   return;
                 }
                 if (context.mounted) Navigator.pop(context, true);
@@ -172,7 +172,7 @@ class _MePageState extends ConsumerState<MePage> {
   Future<void> _onLogout() async {
     final loggedIn = ref.read(authProvider).loggedIn;
     if (loggedIn) {
-      final confirmed = await showDialog<bool>(
+      final confirmed = await showAppDialog<bool>(
         context: context,
         builder: (context) => AlertDialog(
           title: const Text('退出登录'),
@@ -194,7 +194,7 @@ class _MePageState extends ConsumerState<MePage> {
       if (mounted) _showSnack('已退出登录，订阅不受影响');
       return;
     }
-    final confirmed = await showDialog<bool>(
+    final confirmed = await showAppDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('退出登录'),
@@ -229,52 +229,54 @@ class _MePageState extends ConsumerState<MePage> {
     final username = auth.username;
 
     return ListView(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(AppTokens.spacingMd),
       children: [
         // 账号区：已登录显示账号名；未登录显示绑定状态。
         Card(
           child: ListTile(
-            leading: const CircleAvatar(child: Icon(Icons.person)),
-            title: Text(username != null
-                ? '已登录：$username'
-                : (bound ? '已绑定订阅' : '未登录（免登录模式）')),
+            leading: const CircleAvatar(child: AppIcon(icon: AppIcons.user)),
+            title: Text(
+              username != null
+                  ? '已登录：$username'
+                  : (bound ? '已绑定订阅' : '未登录（免登录模式）'),
+            ),
             subtitle: Text(
               username != null
                   ? '账号登录'
                   : (bound
-                      ? (_subscriptionHost ?? '绑定订阅即可使用，无需注册账号')
-                      : '绑定订阅即可使用，无需注册账号'),
+                        ? (_subscriptionHost ?? '绑定订阅即可使用，无需注册账号')
+                        : '绑定订阅即可使用，无需注册账号'),
             ),
           ),
         ),
         // 账号登录入口（切片 9）：只在未登录时显示。
         if (username == null) ...[
-          const SizedBox(height: 16),
+          const SizedBox(height: AppTokens.spacingMd),
           Card(
             child: ListTile(
-              leading: const Icon(Icons.login),
+              leading: const AppIcon(icon: AppIcons.logIn),
               title: const Text('账号登录'),
               subtitle: const Text('用面板账号登录，换设备不用重新导链接'),
               onTap: () => Navigator.push(
                 context,
-                MaterialPageRoute(builder: (_) => const LoginPage()),
+                appPageRoute(context, (_) => const LoginPage()),
               ),
             ),
           ),
         ],
-        const SizedBox(height: 16),
+        const SizedBox(height: AppTokens.spacingMd),
         // 订阅卡片：剩余流量大字 + 已用/总量 + 到期日（userinfo 口径）。
         Card(
           child: Padding(
-            padding: const EdgeInsets.all(16),
+            padding: const EdgeInsets.all(AppTokens.spacingMd),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Text('我的订阅', style: TextStyle(fontSize: 16)),
-                const SizedBox(height: 12),
+                const SizedBox(height: AppTokens.spacingSm),
                 if (!bound) ...[
                   const Text('未绑定订阅'),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: AppTokens.spacingSm),
                   ElevatedButton(
                     onPressed: () => _showBindDialog(isRebind: false),
                     child: const Text('绑定订阅'),
@@ -286,7 +288,7 @@ class _MePageState extends ConsumerState<MePage> {
                   ),
                   const SizedBox(height: 4),
                   const Text('剩余流量'),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: AppTokens.spacingSm),
                   Text('已用 / 总量：${usedTotalText(info)}'),
                   const SizedBox(height: 4),
                   Text('到期日：${expireText(info)}'),
@@ -294,14 +296,15 @@ class _MePageState extends ConsumerState<MePage> {
                   // 限流展示（切片 8）：进度条 + 状态文案，只按 userinfo 头
                   // 里已有的数算；不限量或没拉到用量时不显示这一段。
                   if (info != null && info.usedRatio != null) ...[
-                    const SizedBox(height: 8),
+                    const SizedBox(height: AppTokens.spacingXs),
                     LinearProgressIndicator(value: info.usedRatio),
                     if (trafficLimitText(info) != null) ...[
-                      const SizedBox(height: 8),
+                      const SizedBox(height: AppTokens.spacingXs),
                       Text(
                         trafficLimitText(info)!,
                         style: TextStyle(
-                          color: trafficLimitStatus(info) ==
+                          color:
+                              trafficLimitStatus(info) ==
                                   TrafficLimitStatus.exceeded
                               ? Theme.of(context).colorScheme.error
                               : Theme.of(context).colorScheme.onSurface,
@@ -319,16 +322,16 @@ class _MePageState extends ConsumerState<MePage> {
             ),
           ),
         ),
-        const SizedBox(height: 16),
+        const SizedBox(height: AppTokens.spacingMd),
         // 订阅更新：上次更新时间 + 手动刷新；失败原因常驻显示。
         Card(
           child: Padding(
-            padding: const EdgeInsets.all(16),
+            padding: const EdgeInsets.all(AppTokens.spacingMd),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Text('订阅更新', style: TextStyle(fontSize: 16)),
-                const SizedBox(height: 8),
+                const SizedBox(height: AppTokens.spacingXs),
                 Text(
                   '上次更新：${nodesState.lastUpdated == null ? '尚未更新' : formatDateTime(nodesState.lastUpdated!)}',
                 ),
@@ -336,7 +339,7 @@ class _MePageState extends ConsumerState<MePage> {
                 const Text('每天自动更新一次（仅 Wi-Fi）'),
                 if (nodesState.status == NodesStatus.error &&
                     nodesState.errorMessage != null) ...[
-                  const SizedBox(height: 8),
+                  const SizedBox(height: AppTokens.spacingXs),
                   Text(
                     '更新失败：${nodesState.errorMessage}',
                     style: TextStyle(
@@ -344,13 +347,11 @@ class _MePageState extends ConsumerState<MePage> {
                     ),
                   ),
                 ],
-                const SizedBox(height: 12),
+                const SizedBox(height: AppTokens.spacingSm),
                 Row(
                   children: [
                     ElevatedButton(
-                      onPressed: (_refreshing || loading)
-                          ? null
-                          : _onRefresh,
+                      onPressed: (_refreshing || loading) ? null : _onRefresh,
                       child: Text(_refreshing ? '刷新中…' : '刷新订阅'),
                     ),
                   ],
@@ -359,37 +360,33 @@ class _MePageState extends ConsumerState<MePage> {
             ),
           ),
         ),
-        const SizedBox(height: 16),
+        const SizedBox(height: AppTokens.spacingMd),
         // 公告列表：面板 public-info 的 login_notice。
         Card(
           child: ListTile(
-            leading: const Icon(Icons.campaign_outlined),
+            leading: const AppIcon(icon: AppIcons.megaphone),
             title: const Text('公告'),
-            subtitle: Text(
-              !_noticeLoaded
-                  ? '加载中…'
-                  : (_notice ?? '暂无公告'),
-            ),
-            trailing: const Icon(Icons.chevron_right),
+            subtitle: Text(!_noticeLoaded ? '加载中…' : (_notice ?? '暂无公告')),
+            trailing: const AppIcon(icon: AppIcons.chevronRight),
           ),
         ),
-        const SizedBox(height: 16),
+        const SizedBox(height: AppTokens.spacingMd),
         Card(
           child: ListTile(
-            leading: const Icon(Icons.swap_horiz),
+            leading: const AppIcon(icon: AppIcons.swap),
             title: const Text('换绑订阅'),
             subtitle: const Text('更换订阅链接或账号'),
             onTap: () => _showBindDialog(isRebind: true),
           ),
         ),
-        const SizedBox(height: 16),
+        const SizedBox(height: AppTokens.spacingMd),
         Card(
           child: ListTile(
-            leading: const Icon(Icons.logout),
+            leading: const AppIcon(icon: AppIcons.logOut),
             title: const Text('退出登录'),
-            subtitle: Text(username != null
-                ? '只清除本地登录会话，订阅与节点不受影响'
-                : '退出后订阅与本地配置一并清除'),
+            subtitle: Text(
+              username != null ? '只清除本地登录会话，订阅与节点不受影响' : '退出后订阅与本地配置一并清除',
+            ),
             onTap: _onLogout,
           ),
         ),

@@ -3,6 +3,10 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:material_ui/material_ui.dart';
 
+import '../../core/app_motion.dart';
+import '../../widgets/app_icon.dart';
+import '../../core/app_tokens.dart';
+
 import '../../core/clash_api_client.dart';
 import '../../core/app_theme.dart';
 import '../../core/core_provider.dart';
@@ -186,7 +190,7 @@ class _HomePageState extends ConsumerState<HomePage> {
     final config = ref.read(remoteConfigProvider).config;
     final downloadUrl = config.downloadUrl;
     if (!mounted) return;
-    await showDialog<void>(
+    await showAppDialog<void>(
       context: context,
       barrierDismissible: false,
       builder: (context) => AlertDialog(
@@ -195,12 +199,9 @@ class _HomePageState extends ConsumerState<HomePage> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              config.forceUpdateMessage ??
-                  '当前版本无法解析新订阅格式，请升级到最新版。',
-            ),
+            Text(config.forceUpdateMessage ?? '当前版本无法解析新订阅格式，请升级到最新版。'),
             if (downloadUrl.isNotEmpty) ...[
-              const SizedBox(height: 12),
+              const SizedBox(height: AppTokens.spacingSm),
               const Text('下载地址（长按复制）：'),
               const SizedBox(height: 4),
               SelectableText(downloadUrl),
@@ -225,9 +226,8 @@ class _HomePageState extends ConsumerState<HomePage> {
 
   void _showSnack(String message) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message)),
-    );
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
   }
 
   /// 当前节点：节点页选中的节点（[NodesState.selectedNode]），没选过
@@ -282,7 +282,8 @@ class _HomePageState extends ConsumerState<HomePage> {
     final remoteState = ref.watch(remoteConfigProvider);
     final info = nodesState.userinfo;
     final currentNode = nodesState.selectedNode;
-    final switching = _status == CoreStatus.starting ||
+    final switching =
+        _status == CoreStatus.starting ||
         _status == CoreStatus.stopping ||
         _busy;
     final rateText = _status == CoreStatus.started && _sample != null
@@ -291,19 +292,17 @@ class _HomePageState extends ConsumerState<HomePage> {
 
     return GlassBackground(
       child: ListView(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.all(AppTokens.spacingMd),
         children: [
           // 远程配置状态条（切片 7）：拉不到配置时给一句提示，不静默；
           // 强制更新时拦住大开关（点开关弹升级说明）。
           if (remoteState.forceUpdateRequired)
             GlassCard(
-              margin: const EdgeInsets.only(bottom: 8),
+              margin: const EdgeInsets.only(bottom: AppTokens.spacingXs),
               child: ListTile(
-                leading: const Icon(Icons.system_update_outlined),
+                leading: const AppIcon(icon: AppIcons.download),
                 title: const Text('当前版本过低，请升级后使用'),
-                subtitle: Text(
-                  '最低可用版本 ${remoteState.config.minAppVersion}',
-                ),
+                subtitle: Text('最低可用版本 ${remoteState.config.minAppVersion}'),
                 trailing: TextButton(
                   onPressed: _showForceUpdateDialog,
                   child: const Text('查看详情'),
@@ -312,9 +311,9 @@ class _HomePageState extends ConsumerState<HomePage> {
             ),
           if (remoteState.offline)
             GlassCard(
-              margin: const EdgeInsets.only(bottom: 8),
+              margin: const EdgeInsets.only(bottom: AppTokens.spacingXs),
               child: ListTile(
-                leading: const Icon(Icons.cloud_off_outlined),
+                leading: const AppIcon(icon: AppIcons.cloudOff),
                 title: const Text('配置中心暂时连不上，正在用上次的配置'),
                 trailing: TextButton(
                   onPressed: _retryConfig,
@@ -324,9 +323,9 @@ class _HomePageState extends ConsumerState<HomePage> {
             ),
           if (remoteState.source == RemoteConfigSource.bundled)
             GlassCard(
-              margin: const EdgeInsets.only(bottom: 8),
+              margin: const EdgeInsets.only(bottom: AppTokens.spacingXs),
               child: ListTile(
-                leading: const Icon(Icons.cloud_off_outlined),
+                leading: const AppIcon(icon: AppIcons.cloudOff),
                 title: const Text('首次启动需要联网拉取配置'),
                 subtitle: const Text('拉不到配置也能先手动粘贴订阅使用'),
                 trailing: TextButton(
@@ -337,14 +336,14 @@ class _HomePageState extends ConsumerState<HomePage> {
             ),
           // 公告栏（阶段 1 接面板公告；切片 5 前占位）。
           const GlassCard(
-            margin: EdgeInsets.only(bottom: 8),
+            margin: EdgeInsets.only(bottom: AppTokens.spacingXs),
             child: ListTile(
-              leading: Icon(Icons.campaign_outlined),
+              leading: AppIcon(icon: AppIcons.megaphone),
               title: Text('暂无公告'),
               subtitle: Text('面板公告会在这里显示'),
             ),
           ),
-          const SizedBox(height: 24),
+          const SizedBox(height: AppTokens.spacingMd + AppTokens.spacingXs),
           // 大开关：蓝→紫渐变＋呼吸动效（开）/灰色静态（关），
           // 中心图标是可替换组件（图标方向等 UI 调研回来再定，
           // 现默认放金色信号弧占位，不写死电源符号）。
@@ -356,103 +355,98 @@ class _HomePageState extends ConsumerState<HomePage> {
               onPressed: _onToggle,
             ),
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: AppTokens.spacingXs),
           Center(
-            child: Text(
-              _statusTexts().$1,
-              style: theme.textTheme.titleMedium,
-            ),
+            child: Text(_statusTexts().$1, style: theme.textTheme.titleMedium),
           ),
           const SizedBox(height: 2),
           Center(
             child: Text(_statusTexts().$2, style: theme.textTheme.bodySmall),
           ),
-        const SizedBox(height: 24),
-        // 当前节点。
-        GlassCard(
-          child: ListTile(
-            leading: const Icon(Icons.public),
-            title: Text(
-              currentNode == null ? '当前节点：未选择' : '当前节点：${currentNode.name}',
+          const SizedBox(height: AppTokens.spacingMd + AppTokens.spacingXs),
+          // 当前节点。
+          GlassCard(
+            child: ListTile(
+              leading: const AppIcon(icon: AppIcons.globe),
+              title: Text(
+                currentNode == null ? '当前节点：未选择' : '当前节点：${currentNode.name}',
+              ),
+              subtitle: Text(_currentNodeSubtitle(currentNode)),
+              trailing: currentNode == null
+                  ? TextButton(
+                      onPressed: widget.onGoToMe,
+                      child: const Text('去订阅'),
+                    )
+                  : null,
             ),
-            subtitle: Text(_currentNodeSubtitle(currentNode)),
-            trailing: currentNode == null
-                ? TextButton(
-                    onPressed: widget.onGoToMe,
-                    child: const Text('去订阅'),
-                  )
-                : null,
           ),
-        ),
-        const SizedBox(height: 16),
-        // 实时速率 + 流量三格（userinfo 头，中转口径）。
-        Row(
-          children: [
-            Expanded(
-              child: _StatCell(label: '实时速率', value: rateText),
-            ),
-            Expanded(
-              child: _StatCell(label: '已用 / 总量', value: _usedTotalText(info)),
-            ),
-            Expanded(
-              child: _StatCell(label: '剩余流量', value: _remainingText(info)),
-            ),
-          ],
-        ),
-        const SizedBox(height: 8),
-        Row(
-          children: [
-            Expanded(
-              child: _StatCell(label: '到期日', value: _expireText(info)),
-            ),
-            const Expanded(
-              child: _StatCell(label: '流量口径', value: '全部节点'),
-            ),
-            const Expanded(child: SizedBox.shrink()),
-          ],
-        ),
-        const SizedBox(height: 4),
-        Text(
-          info == null
-              ? '未拉到流量数据，刷新订阅后显示；流量按全部节点算'
-              : '流量口径：全部节点（限流按全部节点流量算，以面板用量为准）',
-          style: theme.textTheme.bodySmall,
-          textAlign: TextAlign.center,
-        ),
-        // 限流状态行（切片 8）：只在接近限额 / 已超量时出现，
-        // 文案与我的页订阅卡片同一套口径。
-        if (trafficLimitText(info) != null) ...[
+          const SizedBox(height: AppTokens.spacingMd),
+          // 实时速率 + 流量三格（userinfo 头，中转口径）。
+          Row(
+            children: [
+              Expanded(
+                child: _StatCell(label: '实时速率', value: rateText),
+              ),
+              Expanded(
+                child: _StatCell(label: '已用 / 总量', value: _usedTotalText(info)),
+              ),
+              Expanded(
+                child: _StatCell(label: '剩余流量', value: _remainingText(info)),
+              ),
+            ],
+          ),
+          const SizedBox(height: AppTokens.spacingXs),
+          Row(
+            children: [
+              Expanded(
+                child: _StatCell(label: '到期日', value: _expireText(info)),
+              ),
+              const Expanded(
+                child: _StatCell(label: '流量口径', value: '全部节点'),
+              ),
+              const Expanded(child: SizedBox.shrink()),
+            ],
+          ),
           const SizedBox(height: 4),
           Text(
-            trafficLimitText(info)!,
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: trafficLimitStatus(info) == TrafficLimitStatus.exceeded
-                  ? theme.colorScheme.error
-                  : theme.colorScheme.onSurface,
-            ),
+            info == null
+                ? '未拉到流量数据，刷新订阅后显示；流量按全部节点算'
+                : '流量口径：全部节点（限流按全部节点流量算，以面板用量为准）',
+            style: theme.textTheme.bodySmall,
             textAlign: TextAlign.center,
           ),
-        ],
-        const SizedBox(height: 16),
-        // 模式切换（三档，切换后重载配置，失败回滚旧模式）。
-        // 选中态：白天深蓝底白字、夜晚香槟金底墨蓝字（品牌主色）。
-        SegmentedButton<String>(
-          style: SegmentedButton.styleFrom(
-            selectedBackgroundColor: appThemeTokensOf(
-              context,
-            ).segmentedSelectedBackground,
-            selectedForegroundColor: appThemeTokensOf(
-              context,
-            ).segmentedSelectedForeground,
-          ),
-          segments: const [
-            ButtonSegment(value: 'rule', label: Text('规则模式')),
-            ButtonSegment(value: 'global', label: Text('全局模式')),
-            ButtonSegment(value: 'direct', label: Text('直连模式')),
+          // 限流状态行（切片 8）：只在接近限额 / 已超量时出现，
+          // 文案与我的页订阅卡片同一套口径。
+          if (trafficLimitText(info) != null) ...[
+            const SizedBox(height: 4),
+            Text(
+              trafficLimitText(info)!,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: trafficLimitStatus(info) == TrafficLimitStatus.exceeded
+                    ? theme.colorScheme.error
+                    : theme.colorScheme.onSurface,
+              ),
+              textAlign: TextAlign.center,
+            ),
           ],
-          selected: {modeState.mode.storageValue},
-          onSelectionChanged: modeState.switching ? null : _onModeChanged,
-        ),
+          const SizedBox(height: AppTokens.spacingMd),
+          // 模式切换（三档，切换后重载配置，失败回滚旧模式）。
+          // 选中态：白天深蓝底白字、夜晚香槟金底墨蓝字（品牌主色）。
+          SegmentedButton<String>(
+            style: SegmentedButton.styleFrom(
+              selectedBackgroundColor: appThemeTokensOf(context)
+                  .segmentedSelectedBackground,
+              selectedForegroundColor: appThemeTokensOf(context)
+                  .segmentedSelectedForeground,
+            ),
+            segments: const [
+              ButtonSegment(value: 'rule', label: Text('规则模式')),
+              ButtonSegment(value: 'global', label: Text('全局模式')),
+              ButtonSegment(value: 'direct', label: Text('直连模式')),
+            ],
+            selected: {modeState.mode.storageValue},
+            onSelectionChanged: modeState.switching ? null : _onModeChanged,
+          ),
         ],
       ),
     );
@@ -469,7 +463,10 @@ class _StatCell extends StatelessWidget {
   Widget build(BuildContext context) {
     return GlassCard(
       child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 4),
+        padding: const EdgeInsets.symmetric(
+          vertical: AppTokens.spacingMd,
+          horizontal: 4,
+        ),
         child: Column(
           children: [
             Text(

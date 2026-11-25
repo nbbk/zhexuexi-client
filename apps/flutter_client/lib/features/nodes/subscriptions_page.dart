@@ -1,6 +1,10 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:material_ui/material_ui.dart';
 
+import '../../core/app_motion.dart';
+import '../../widgets/app_icon.dart';
+import '../../core/app_tokens.dart';
+
 import '../../core/app_theme.dart';
 import '../../core/userinfo.dart';
 import '../../services/nodes_notifier.dart';
@@ -24,8 +28,7 @@ class SubscriptionsPage extends ConsumerStatefulWidget {
   const SubscriptionsPage({super.key});
 
   @override
-  ConsumerState<SubscriptionsPage> createState() =>
-      _SubscriptionsPageState();
+  ConsumerState<SubscriptionsPage> createState() => _SubscriptionsPageState();
 }
 
 class _SubscriptionsPageState extends ConsumerState<SubscriptionsPage> {
@@ -40,9 +43,7 @@ class _SubscriptionsPageState extends ConsumerState<SubscriptionsPage> {
   @override
   void initState() {
     super.initState();
-    Future.microtask(
-      () => ref.read(subscriptionsProvider.notifier).load(),
-    );
+    Future.microtask(() => ref.read(subscriptionsProvider.notifier).load());
   }
 
   @override
@@ -122,7 +123,7 @@ class _SubscriptionsPageState extends ConsumerState<SubscriptionsPage> {
         title: const Text('管理订阅'),
         actions: [
           IconButton(
-            icon: const Icon(Icons.refresh_outlined),
+            icon: const AppIcon(icon: AppIcons.refresh),
             tooltip: '全部刷新',
             onPressed: () async {
               await ref.read(subscriptionsProvider.notifier).refreshAll();
@@ -133,11 +134,11 @@ class _SubscriptionsPageState extends ConsumerState<SubscriptionsPage> {
       ),
       body: GlassBackground(
         child: Padding(
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.all(AppTokens.spacingMd),
           child: Column(
             children: [
               _buildAddCard(),
-              const SizedBox(height: 8),
+              const SizedBox(height: AppTokens.spacingXs),
               Expanded(
                 child: _entries.isEmpty
                     ? Center(
@@ -162,7 +163,7 @@ class _SubscriptionsPageState extends ConsumerState<SubscriptionsPage> {
                         },
                       ),
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: AppTokens.spacingXs),
               Text(
                 '订阅链接只存本机，令牌进系统密钥库，不会明文保存。',
                 textAlign: TextAlign.center,
@@ -179,9 +180,8 @@ class _SubscriptionsPageState extends ConsumerState<SubscriptionsPage> {
   }
 
   void _showSnack(String message) {
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text(message)));
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
   }
 
   /// AnimatedList 的一项：淡入＋高度展开（250ms）。
@@ -201,7 +201,7 @@ class _SubscriptionsPageState extends ConsumerState<SubscriptionsPage> {
 
   Widget _buildAddCard() {
     return GlassCard(
-      padding: const EdgeInsets.all(12),
+      padding: const EdgeInsets.all(AppTokens.spacingSm),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -215,10 +215,10 @@ class _SubscriptionsPageState extends ConsumerState<SubscriptionsPage> {
             minLines: 1,
           ),
           if (_addError != null) ...[
-            const SizedBox(height: 8),
+            const SizedBox(height: AppTokens.spacingXs),
             Text(_addError!, style: const TextStyle(color: Colors.red)),
           ],
-          const SizedBox(height: 12),
+          const SizedBox(height: AppTokens.spacingSm),
           FilledButton.icon(
             onPressed: () async {
               final link = _addController.text.trim();
@@ -235,7 +235,7 @@ class _SubscriptionsPageState extends ConsumerState<SubscriptionsPage> {
                 _showSnack('已添加订阅');
               }
             },
-            icon: const Icon(Icons.add, size: 20),
+            icon: const AppIcon(icon: AppIcons.plus, size: AppIconSize.sm),
             label: const Text('添加订阅'),
           ),
         ],
@@ -249,8 +249,8 @@ class _SubscriptionsPageState extends ConsumerState<SubscriptionsPage> {
   ) {
     final refreshing = _refreshingIds.contains(entry.id);
     return GlassCard(
-      margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.all(12),
+      margin: const EdgeInsets.only(bottom: AppTokens.spacingXs),
+      padding: const EdgeInsets.all(AppTokens.spacingSm),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -272,7 +272,8 @@ class _SubscriptionsPageState extends ConsumerState<SubscriptionsPage> {
                     vertical: 2,
                   ),
                   decoration: BoxDecoration(
-                    color: appThemeTokensOf(context).gold.withValues(alpha: 0.18),
+                    color: appThemeTokensOf(context).gold
+                        .withValues(alpha: 0.18),
                     borderRadius: BorderRadius.circular(4),
                   ),
                   child: Text(
@@ -324,19 +325,28 @@ class _SubscriptionsPageState extends ConsumerState<SubscriptionsPage> {
                         height: 16,
                         child: CircularProgressIndicator(strokeWidth: 2),
                       )
-                    : const Icon(Icons.refresh_outlined, size: 20),
+                    : const AppIcon(
+                        icon: AppIcons.refresh,
+                        size: AppIconSize.sm,
+                      ),
                 label: const Text('刷新'),
               ),
               TextButton.icon(
                 onPressed: () => _onRename(entry),
-                icon: const Icon(Icons.edit_outlined, size: 20),
+                icon: const AppIcon(
+                  icon: AppIcons.pencil,
+                  size: AppIconSize.sm,
+                ),
                 label: const Text('改名'),
               ),
               // 主订阅不给删除按钮：解绑走现有的退出登录/换绑流程。
               if (!entry.isPrimary)
                 TextButton.icon(
                   onPressed: () => _onDelete(entry),
-                  icon: const Icon(Icons.delete_outline, size: 20),
+                  icon: const AppIcon(
+                    icon: AppIcons.trash,
+                    size: AppIconSize.sm,
+                  ),
                   label: const Text('删除'),
                 ),
             ],
@@ -347,10 +357,7 @@ class _SubscriptionsPageState extends ConsumerState<SubscriptionsPage> {
   }
 
   /// 摘要行：节点数 · 已用/总量 · 到期；没拉到 userinfo 头时对应项是“—”。
-  String _summaryLine(
-    SubscriptionEntry entry,
-    SubscriptionSummary? summary,
-  ) {
+  String _summaryLine(SubscriptionEntry entry, SubscriptionSummary? summary) {
     if (!entry.enabled) return '已停用';
     if (summary == null) return '还没拉过';
     final info = summary.userinfo;
@@ -359,13 +366,11 @@ class _SubscriptionsPageState extends ConsumerState<SubscriptionsPage> {
 
   Future<void> _onToggle(SubscriptionEntry entry, bool value) async {
     if (!value) {
-      final ok = await showDialog<bool>(
+      final ok = await showAppDialog<bool>(
         context: context,
         builder: (context) => AlertDialog(
           title: const Text('停用这个订阅？'),
-          content: Text(
-            '停用后暂时不拉取「${entry.name}」，它的节点会从列表里消失，随时可以再打开。',
-          ),
+          content: Text('停用后暂时不拉取「${entry.name}」，它的节点会从列表里消失，随时可以再打开。'),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context, false),
@@ -395,7 +400,7 @@ class _SubscriptionsPageState extends ConsumerState<SubscriptionsPage> {
 
   Future<void> _onRename(SubscriptionEntry entry) async {
     final controller = TextEditingController(text: entry.name);
-    final name = await showDialog<String>(
+    final name = await showAppDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('改名'),
@@ -425,7 +430,7 @@ class _SubscriptionsPageState extends ConsumerState<SubscriptionsPage> {
   }
 
   Future<void> _onDelete(SubscriptionEntry entry) async {
-    final ok = await showDialog<bool>(
+    final ok = await showAppDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('删除这个订阅？'),

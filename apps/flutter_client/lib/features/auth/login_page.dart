@@ -1,6 +1,9 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:material_ui/material_ui.dart';
 
+import '../../widgets/app_icon.dart';
+import '../../core/app_tokens.dart';
+
 import '../../services/auth_notifier.dart';
 
 /// 账号密码登录页（切片 9，DEV-PLAN §10.2）。
@@ -39,8 +42,7 @@ class _LoginPageState extends ConsumerState<LoginPage> {
   }
 
   Future<void> _loadDefaultDomain() async {
-    final domain =
-        await ref.read(authProvider.notifier).defaultPanelDomain();
+    final domain = await ref.read(authProvider.notifier).defaultPanelDomain();
     if (!mounted) return;
     setState(() {
       if (domain.isNotEmpty) _domainController.text = domain;
@@ -57,7 +59,9 @@ class _LoginPageState extends ConsumerState<LoginPage> {
   }
 
   Future<void> _onLogin() async {
-    final ok = await ref.read(authProvider.notifier).login(
+    final ok = await ref
+        .read(authProvider.notifier)
+        .login(
           panelDomain: _domainController.text,
           username: _usernameController.text,
           password: _passwordController.text,
@@ -74,13 +78,13 @@ class _LoginPageState extends ConsumerState<LoginPage> {
     return Scaffold(
       appBar: AppBar(title: const Text('账号登录')),
       body: ListView(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.all(AppTokens.spacingMd),
         children: [
           const Text(
             '用面板账号登录，登录后自动绑定该账号的订阅；'
             '换设备登上去就回来，不用重新导链接。',
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: AppTokens.spacingMd),
           TextField(
             controller: _domainController,
             enabled: _domainLoaded,
@@ -93,20 +97,18 @@ class _LoginPageState extends ConsumerState<LoginPage> {
             autofillHints: const [AutofillHints.url],
           ),
           if (_domainLoaded && _domainController.text.isEmpty) ...[
-            const SizedBox(height: 8),
+            const SizedBox(height: AppTokens.spacingXs),
             Text(
               '面板地址未配置，请填写面板域名',
-              style: TextStyle(
-                color: Theme.of(context).colorScheme.error,
-              ),
+              style: TextStyle(color: Theme.of(context).colorScheme.error),
             ),
           ],
-          const SizedBox(height: 8),
+          const SizedBox(height: AppTokens.spacingXs),
           const Text(
             '登录走 9870–9880 端口，默认 9876，端口被封会自动换端口重试。',
             style: TextStyle(fontSize: 12),
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: AppTokens.spacingMd),
           TextField(
             controller: _usernameController,
             decoration: const InputDecoration(
@@ -116,7 +118,7 @@ class _LoginPageState extends ConsumerState<LoginPage> {
             textInputAction: TextInputAction.next,
             autofillHints: const [AutofillHints.username],
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: AppTokens.spacingMd),
           TextField(
             controller: _passwordController,
             obscureText: !_passwordVisible,
@@ -124,32 +126,27 @@ class _LoginPageState extends ConsumerState<LoginPage> {
               labelText: '密码',
               hintText: '面板登录密码',
               suffixIcon: IconButton(
-                icon: Icon(
-                  _passwordVisible
-                      ? Icons.visibility_off
-                      : Icons.visibility,
+                icon: AppIcon(
+                  icon: _passwordVisible ? AppIcons.eyeOff : AppIcons.eye,
                 ),
-                onPressed: () => setState(
-                  () => _passwordVisible = !_passwordVisible,
-                ),
+                onPressed: () =>
+                    setState(() => _passwordVisible = !_passwordVisible),
               ),
             ),
             textInputAction: TextInputAction.done,
             autofillHints: const [AutofillHints.password],
             onSubmitted: (_) => _onLogin(),
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: AppTokens.spacingXs),
           const Text('忘记密码？请联系管理员找回，客户端不做找回页面。'),
           if (error != null) ...[
-            const SizedBox(height: 16),
+            const SizedBox(height: AppTokens.spacingMd),
             Text(
               error,
-              style: TextStyle(
-                color: Theme.of(context).colorScheme.error,
-              ),
+              style: TextStyle(color: Theme.of(context).colorScheme.error),
             ),
           ],
-          const SizedBox(height: 24),
+          const SizedBox(height: AppTokens.spacingMd + AppTokens.spacingXs),
           FilledButton(
             onPressed: loading ? null : _onLogin,
             child: loading
@@ -161,7 +158,7 @@ class _LoginPageState extends ConsumerState<LoginPage> {
                         height: 16,
                         child: CircularProgressIndicator(strokeWidth: 2),
                       ),
-                      SizedBox(width: 8),
+                      SizedBox(width: AppTokens.spacingXs),
                       Text('登录中…'),
                     ],
                   )

@@ -4,6 +4,10 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:material_ui/material_ui.dart';
 
+import '../../core/app_motion.dart';
+import '../../widgets/app_icon.dart';
+import '../../core/app_tokens.dart';
+
 import '../../core/app_theme.dart';
 import '../../core/core_provider.dart';
 import '../../core/custom_rule.dart';
@@ -126,7 +130,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       ),
     );
     if (!mounted) return;
-    await showDialog<void>(
+    await showAppDialog<void>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('诊断包'),
@@ -156,7 +160,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
         .read(diagnosticsServiceProvider)
         .checkConnectivity(coreRunning: core.status == CoreStatus.started);
     if (!mounted) return;
-    await showDialog<void>(
+    await showAppDialog<void>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('连接检测'),
@@ -186,7 +190,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
 
   /// 清除缓存：只清已测的节点延迟结果（节点列表与配置不动）。
   Future<void> _clearCache() async {
-    final confirmed = await showDialog<bool>(
+    final confirmed = await showAppDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('清除缓存'),
@@ -224,7 +228,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
         '配置中心暂时连不上，正在用上次的配置（v${result.config.configVersion}）。',
       RemoteConfigRefreshStatus.failed => '检查失败，请检查网络后重试。',
     };
-    await showDialog<void>(
+    await showAppDialog<void>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('检查更新'),
@@ -252,9 +256,8 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
 
   void _showSnack(String message) {
     if (!mounted) return;
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text(message)));
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
   }
 
   @override
@@ -265,20 +268,18 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     final remoteState = ref.watch(remoteConfigProvider);
 
     return ListView(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(AppTokens.spacingMd),
       children: [
         const Text('常用设置', style: TextStyle(fontSize: 16)),
-        const SizedBox(height: 8),
+        const SizedBox(height: AppTokens.spacingXs),
         // 分流模式：与首页同一套 provider，改一处两处都变。
         // 选中态：白天深蓝底白字、夜晚香槟金底墨蓝字（品牌主色）。
         SegmentedButton<String>(
           style: SegmentedButton.styleFrom(
-            selectedBackgroundColor: appThemeTokensOf(
-              context,
-            ).segmentedSelectedBackground,
-            selectedForegroundColor: appThemeTokensOf(
-              context,
-            ).segmentedSelectedForeground,
+            selectedBackgroundColor: appThemeTokensOf(context)
+                .segmentedSelectedBackground,
+            selectedForegroundColor: appThemeTokensOf(context)
+                .segmentedSelectedForeground,
           ),
           segments: const [
             ButtonSegment(value: 'rule', label: Text('规则模式')),
@@ -305,18 +306,13 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
         // 外观主题：可切换的注册表（现在白天/夜晚两档，后面再加更多
         // 风格主题时只在 AppThemes 里加定义，不用改页面）；
         // 切换后全端生效，存在本地偏好里，重启后还保持。
-        const ListTile(
-          title: Text('主题'),
-          subtitle: Text('白天 / 夜晚，后面还会加更多风格'),
-        ),
+        const ListTile(title: Text('主题'), subtitle: Text('白天 / 夜晚，后面还会加更多风格')),
         SegmentedButton<String>(
           style: SegmentedButton.styleFrom(
-            selectedBackgroundColor: appThemeTokensOf(
-              context,
-            ).segmentedSelectedBackground,
-            selectedForegroundColor: appThemeTokensOf(
-              context,
-            ).segmentedSelectedForeground,
+            selectedBackgroundColor: appThemeTokensOf(context)
+                .segmentedSelectedBackground,
+            selectedForegroundColor: appThemeTokensOf(context)
+                .segmentedSelectedForeground,
           ),
           segments: [
             for (final theme in AppThemes.all)
@@ -350,7 +346,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
             onChanged: (value) =>
                 ref.read(settingsProvider.notifier).setKeepAlive(value),
           ),
-        const SizedBox(height: 16),
+        const SizedBox(height: AppTokens.spacingMd),
         ExpansionTile(
           title: const Text('高级设置'),
           children: [
@@ -378,7 +374,9 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
             ListTile(
               title: const Text('自定义规则'),
               subtitle: Text(
-                rules.isEmpty ? '暂无自定义规则，默认按内置规则分流' : '${rules.length} 条规则（优先于内置规则）',
+                rules.isEmpty
+                    ? '暂无自定义规则，默认按内置规则分流'
+                    : '${rules.length} 条规则（优先于内置规则）',
               ),
             ),
             for (final rule in rules)
@@ -395,7 +393,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                           .setEnabled(rule.id, value),
                     ),
                     IconButton(
-                      icon: const Icon(Icons.delete_outline),
+                      icon: const AppIcon(icon: AppIcons.trash),
                       tooltip: '删除规则',
                       onPressed: () => ref
                           .read(customRulesProvider.notifier)
@@ -406,7 +404,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
               ),
             ListTile(
               title: const Text('添加规则'),
-              leading: const Icon(Icons.add),
+              leading: const AppIcon(icon: AppIcons.plus),
               onTap: () => _showAddRuleDialog(),
             ),
             const ListTile(
@@ -417,26 +415,26 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
             ListTile(
               title: const Text('导出诊断包'),
               subtitle: const Text('版本号、状态、节点名、DNS 配置与最近错误；不含订阅链接、令牌与节点地址'),
-              leading: const Icon(Icons.bug_report_outlined),
+              leading: const AppIcon(icon: AppIcons.bug),
               onTap: _exportDiagnostics,
             ),
             ListTile(
               title: const Text('连接检测'),
               subtitle: const Text('只查本机核心与 Clash API，不发外网请求'),
-              leading: const Icon(Icons.network_check_outlined),
+              leading: const AppIcon(icon: AppIcons.network),
               onTap: _checkConnectivity,
             ),
             ListTile(
               title: const Text('清除缓存'),
               subtitle: const Text('清除已测的节点延迟结果'),
-              leading: const Icon(Icons.delete_sweep_outlined),
+              leading: const AppIcon(icon: AppIcons.trash),
               onTap: _clearCache,
             ),
           ],
         ),
-        const SizedBox(height: 16),
+        const SizedBox(height: AppTokens.spacingMd),
         const Text('关于', style: TextStyle(fontSize: 16)),
-        const SizedBox(height: 8),
+        const SizedBox(height: AppTokens.spacingXs),
         const ListTile(title: Text('客户端版本'), trailing: Text('0.1.0')),
         ListTile(
           title: const Text('sing-box 核心版本'),
@@ -464,7 +462,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   Future<void> _showAddRuleDialog() async {
     final domainController = TextEditingController();
     var action = CustomRuleAction.proxy;
-    final saved = await showDialog<bool>(
+    final saved = await showAppDialog<bool>(
       context: context,
       builder: (context) => StatefulBuilder(
         builder: (context, setDialogState) => AlertDialog(
@@ -479,7 +477,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                   hintText: '例如 example.com',
                 ),
               ),
-              const SizedBox(height: 12),
+              const SizedBox(height: AppTokens.spacingSm),
               SegmentedButton<CustomRuleAction>(
                 segments: const [
                   ButtonSegment(

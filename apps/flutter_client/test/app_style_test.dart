@@ -38,9 +38,7 @@ void main() {
       // 没有紫色/粉色渐变。
       expect(
         t.powerGradient.any(
-          (c) =>
-              c == const Color(0xFF8B5CF6) ||
-              c == const Color(0xFF3B82F6),
+          (c) => c == const Color(0xFF8B5CF6) || c == const Color(0xFF3B82F6),
         ),
         isFalse,
       );
@@ -98,9 +96,7 @@ void main() {
           MaterialApp(
             theme: theme.themeData,
             home: const Scaffold(
-              body: GlassBackground(
-                child: GlassCard(child: Text('卡片内容')),
-              ),
+              body: GlassBackground(child: GlassCard(child: Text('卡片内容'))),
             ),
           ),
         );
@@ -122,9 +118,7 @@ void main() {
   });
 
   group('呼吸电源开关', () {
-    testWidgets('关态：点一下回调、不写死电源图标、显示信号弧线条画', (
-      tester,
-    ) async {
+    testWidgets('关态：点一下回调、不写死电源图标、显示信号弧线条画', (tester) async {
       var taps = 0;
       await tester.pumpWidget(
         MaterialApp(
@@ -149,10 +143,7 @@ void main() {
       final iconFinder = find.byType(PowerButtonIcon);
       expect(iconFinder, findsNWidgets(2));
       expect(
-        find.descendant(
-          of: iconFinder,
-          matching: find.byType(CustomPaint),
-        ),
+        find.descendant(of: iconFinder, matching: find.byType(CustomPaint)),
         findsNWidgets(2),
       );
       await tester.tap(find.byType(BreathingPowerButton));
@@ -180,9 +171,7 @@ void main() {
       expect(taps, 0);
     });
 
-    testWidgets('开态：深蓝渐变（不用 pumpAndSettle，呼吸动画在转）', (
-      tester,
-    ) async {
+    testWidgets('开态：深蓝渐变（不用 pumpAndSettle，呼吸动画在转）', (tester) async {
       await tester.pumpWidget(
         MaterialApp(
           theme: AppThemes.day.themeData,
@@ -209,9 +198,7 @@ void main() {
       expect(decoration.border, isNotNull);
     });
 
-    testWidgets('PowerButtonIcon：传图标就用图标，不传画信号弧', (
-      tester,
-    ) async {
+    testWidgets('PowerButtonIcon：传图标就用图标，不传画信号弧', (tester) async {
       await tester.pumpWidget(
         MaterialApp(
           home: Scaffold(
@@ -235,24 +222,21 @@ void main() {
       );
       expect(placeholder, findsOneWidget);
       expect(
-        find.descendant(
-          of: placeholder,
-          matching: find.byType(CustomPaint),
-        ),
+        find.descendant(of: placeholder, matching: find.byType(CustomPaint)),
         findsOneWidget,
       );
     });
   });
 
   group('平滑转场', () {
-    test('fadeSlideRoute：淡入滑动，时长统一 250ms', () {
+    test('fadeSlideRoute：淡入滑动，时长统一 300ms', () {
       final route = fadeSlideRoute((_) => const Text('x'));
-      expect(route.transitionDuration, const Duration(milliseconds: 250));
+      expect(route.transitionDuration, const Duration(milliseconds: 300));
       expect(
         route.reverseTransitionDuration,
-        const Duration(milliseconds: 250),
+        const Duration(milliseconds: 300),
       );
-      expect(AppMotion.page, const Duration(milliseconds: 250));
+      expect(AppMotion.page, const Duration(milliseconds: 300));
       expect(AppMotion.press, const Duration(milliseconds: 200));
       expect(AppMotion.list, const Duration(milliseconds: 250));
       expect(AppMotion.state, const Duration(milliseconds: 250));

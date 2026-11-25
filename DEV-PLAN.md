@@ -1405,3 +1405,49 @@ sing-box 落地没有按用户统计接口（官方发布的二进制默认不�
 - 测速桩节点：按内容去重（去重键不含名字），同地址＋同 UUID 的节点只留一条；桩节点须给不同地址。
 - 呼吸动画只在「开」时转：关态测试可用 `pumpAndSettle`，开态必须手动 `pump`。转圈（`CircularProgressIndicator`）同理。
 - 首页是 ListView 懒加载：冒烟测试断言开关区文案前要把测试视口拉高（`tester.view.physicalSize`），否则折叠线下的内容不被构建。
+
+## §14 UI 优化落地：多端导航＋设计 token＋Lucide＋剩余动效＋哲人侧脸终稿（2026-11-25）
+
+### 14.1 多端导航
+
+- `lib/widgets/app_shell.dart`（`AppShell`，`main.dart` 的 home 改用它）：只导航容器分端，页面内容同一套组件。用宽度断点、不用平台分支：宽度 ≥ `AppTokens.navBreakpoint`（700）用桌面左侧导航栏（`NavigationRail`，`labelType: all`，顶上放包内 Logo `assets/logo/logo.png` 40px 圆角），< 700 用手机底部导航栏（`BottomNavigationBar`，fixed）。四 tab（首页/节点/我的/设置）定义共用一份（图标＋文案），不各写一份。`HomePage` 的 `onGoToMe` 切到 tab 2（我的）。
+- 桌面窗口拉窄了也能用底部栏；测试里改视口宽度就能覆盖两档（见 14.6）。
+
+### 14.2 设计 token
+
+- `lib/core/app_tokens.dart`（`AppTokens`＋`AppIconSize`）：圆角 `radiusSmall 10` / `radiusMedium 12` / `radiusLarge 16` / `radiusXLarge 28`；间距 `spacingXs 8` / `spacingSm 12` / `spacingMd 16`；图标四档 `xs 16/1.5`、`sm 20/1.75`、`md 24/2.0`、`lg 32/2.25`（像素/线宽）；导航断点 `navBreakpoint 700`；节点行高 `nodeRowHeight 64`；列表缓存 `listCacheExtent 500`。
+- 各页面只用 token，不写死数值：home/me/settings/subscriptions/login/nodes 六页 100 余处迁完（16→spacingMd、12→spacingSm、8→spacingXs；24 写成 `spacingMd + spacingXs`）。2/4px 微间隙与 4px chip 圆角、6/2 chip 内边距在 token 下限之下，有意保留字面量，不硬凑 token。`glass_card.dart` 默认圆角改走 `radiusLarge`。
+
+### 14.3 图标统一 Lucide
+
+- 调研定稿全端统一 Lucide 细线（24px 网格、2px 线、圆角端点）：依赖 `flutter_lucide 1.79.0`＋`animations 3.0.0`（`OpenContainer` 用）。**flutter_lucide 1.x 用 snake_case 命名**（与 Lucide 官方 kebab-case 对应），不是 camelCase：`house`（旧 home）、`circle_check`、`refresh_cw`、`eye_closed`（旧 eye-off）、`arrow_down_to_line`、`log_in` 等；字体族为 `lucide`。
+- `lib/widgets/app_icon.dart`：`AppIcon`（const 可构造，IconData＋AppIconSize＋color）＋`AppIcons` 映射表（Material 旧名 → Lucide，26 个，含注释）。大按钮与 Logo 例外用品牌符号（`PowerButtonIcon` 由参数传入、可替换；`AppShell` 顶上 Logo 是图片）。
+- 迁移：85 处 `Icons.*`→`AppIcons.*`、`Icon(`→`AppIcon(`（脚本 `/tmp/migrate-icons.py`，已删），`showDialog<`→`showAppDialog<`（12 处）；lib 里无 `Icons.` 残留（除 `app_icon.dart` 自身注释）；`Icon(` 只剩 `power_button.dart`（品牌按钮按参数注入 IconData，有意保留）与 `app_icon.dart`（包装器本身）。
+- 页面跳转统一走 `appPageRoute`（nodes 页的 `_openSubscriptions`、me 页去登录页的 `MaterialPageRoute` 都改了）。
+
+### 14.4 剩余动效
+
+- `lib/core/app_motion.dart`：page 300ms（原 250ms）、press 200、list 250、state 250；新增 stagger 80ms、detail 450ms、expand 350ms。`effective(context, duration)`（减弱动态归零）与 `animationsDisabled(context)`；`fadeSlideRoute` 加 duration 参数；新增 `appPageRoute(context, builder)`（iOS 走 `_FadeSlideCupertinoRoute`——`CupertinoPageRoute` 子类，覆写 transitionDuration 与 buildTransitions 做淡入＋右滑 300ms，保留原生右滑返回手势；其他端走 fadeSlideRoute）；新增 `showAppDialog`（showGeneralDialog，淡入＋缩放 0.96→1，350ms）。
+- 列表入场：`_StaggeredFadeInRow`（StatefulWidget，delay＝组内序号×80ms，只首次；行按 ValueKey(dedupKey) 复用，刷新不重播）；减弱动态时由父级传 `animate: false`，行直接显示、**不建延迟定时器**（initState 里读不到 MediaQuery，见 14.6 的坑）。
+- 节点进详情：`OpenContainer`（transitionDuration 用 `effective(detail)` 450ms，tappable: false，closedBuilder 是 IconButton＋chevronRight，openBuilder 是 `NodeDetailPage`；点箭头只进详情、不选中）。详情页（`lib/features/nodes/node_detail_page.dart`）：Scaffold＋AppBar＋GlassCard 信息行（地址、协议、延迟、来源订阅、明文）；“设为当前节点”调 selectNode 成功后 pop、失败给 SnackBar；“测速”调 testSingleSpeed；易变数据用 `nodesProvider.select` 读 record，不重建列表。
+- 性能红线：节点列表 `CustomScrollView`（`key: ValueKey(structureKeys)`，`scrollCacheExtent` 500）＋组头 `SliverToBoxAdapter`＋`SliverFixedExtentList(itemExtent: 64)`；行高 64 的构成：卡片上下边距 4＋内边距 6＋协议圆圈 44；测速逐条更新（`_NodeRow` 用 select 读 record，只重建该行）。Flutter 3.41 起 `cacheExtent` 废弃，改 `scrollCacheExtent: ScrollCacheExtent.pixels(500)`（见 14.6）。
+- 节点页结构（本次重写）：build() 改结构性监听（一个 select record：status、keys 签名、selected、failed、testing、tested、total、notice、speedError、reason、error、updated；keys 签名＝各节点 `${dedupKey}|${name}|${isPlainText}|${subscriptionName}` 拼起来，延迟变化不改变签名）；节点列表用 `ref.read` 在结构变化时读；`_NodeRow` 改为 ConsumerWidget，用 select 读 record（latencyMs、failed、selected、testingThis、testingAll）；`_LatencyChip` 改为 ConsumerWidget，接行传下来的易变值。选中置顶排序保留。**dedupKey 不含名字**：同地址同 UUID 只差名字的两节点会撞 key，select 找当前节点要在同 key 里优先取同名的（见 14.6 的回归）。延迟格式沿用旧契约 `86ms`（无空格）。
+
+### 14.5 哲人侧脸终稿
+
+- `SignalPhilosopherPainter`（`lib/widgets/power_button.dart`，公开类、可测试）按 Logo v1 重画：侧脸朝右（头顶—额头—眉—鼻尖—唇—下巴—大胡子尖；鼻尖顶出去、头顶与后脑分开起笔不闭环）、后脑—颈、眉＋实心圆点眼、月桂枝（茎＋三片叶脉线）、脸右侧三道信号弧（弧心 (0.72, 0.47)，半径 0.11/0.18/0.25，起角 -0.9、扫角 1.8，比脸线细一档 0.65×，开态满透明度也不糊成扇形）；开时弧光逐圈亮起（`pulse = 0.5 - 0.5*cos(2π*(progress - i/3))`，alpha 0.45＋0.55×pulse），关时淡轮廓（脸 0.35、弧 0.25），静态（减弱动态）时三道全亮；线宽按 `AppIconSize.md.stroke × (w/24)`。
+- `PowerButtonIcon` 新增 `isOn`（默认 true）与 `animation`（Animation<double>?）参数，有 animation 时用 AnimatedBuilder 跟随控制器，无 animation 时静态画。`BreathingPowerButton`：呼吸同步改走 didChangeDependencies（initState 里不能读 MediaQuery）；减弱动态时控制器停住归零、图标不接控制器；亮/暗两层交叉淡入淡出保留（现有测试依赖 PowerButtonIcon 有 2 个、CustomPaint 有 2 个）。
+- 视觉预览核过四版（临时测试渲染 PNG 看，见 14.6 的做法）：第一版三道弧糊成扇形、月桂叶连成横条、脸像问号；第二版弧分开、脸像耳朵；第三版鼻尖顶出去、脸能认出是朝右的侧脸；第四版（终稿）脸左移留出鼻子与弧线之间的空位、月桂改叶脉线。120px 大图：侧脸（额头—鼻尖—胡须）能认出、三道弧清晰分开；48px 真实尺寸：抽象品牌标记＋清晰信号弧，月桂是头顶一小簇。**终稿等用户在真机上看**，再调只动 painter 坐标、不动接口。
+
+### 14.6 测试注意（本节踩过的坑）
+
+- flutter_test 里真实异步（`RepaintBoundary.toImage`、dart:io 文件写）要包在 `tester.runAsync` 里：fake async 区等不到引擎光栅化与 IO 完成，测试会卡住不动（第一次预览测试卡了 8 分钟、两次 `timeout` 杀掉后工具报 `Cannot close sink while adding stream`）。临时预览测试用完删除，不进推仓清单。
+- `/tmp` 是 512M tmpfs：`flutter test` 每次在 `/tmp/flutter_tools.*` 留几百 M 编译产物，被杀掉的运行不清理；磁盘满时后续测试在 copy dill 那步报 `No space left on device`（errno 28）、整轮卡住。跑全套前先清 `/tmp/flutter_tools.*` 残留；`pkill` 的模式串别出现在自己命令行里（会杀掉自己的 shell，2026-11-22 的老教训又踩一遍）。
+- `_StaggeredFadeInRow` 的 `Future.delayed` 不能在 `initState` 里无条件建：减弱动态时 build 虽然直接返回 child，但定时器还挂在 fake async 里，测试收尾报 pending timer。改由父级传 `animate` 参数（initState 里读不到 MediaQuery）。
+- dedupKey 不含名字：同地址同 UUID 只差名字的两节点（测试桩常见）会撞 key；`_NodeRow` 与 `NodeDetailPage` 的 select 找当前节点时，同 key 里优先取同名、取不到再取第一条。否则“使用中”角标与延迟都找错行（本次修回归 2 处）。
+- 延迟格式是 `86ms`（无空格）：`_LatencyChip` 与详情页都别写成 `86 ms`（本次修回归 1 处）。
+- Flutter 3.50 的废弃：`cacheExtent` → `scrollCacheExtent: ScrollCacheExtent.pixels(...)`（double 直接传会报 `argument_type_not_assignable`）；`package:flutter/cupertino.dart` → `package:cupertino_ui/cupertino_ui.dart`（`flutter pub add cupertino_ui` 成直接依赖，`app_motion.dart` 与测试两处都改）。`dart format` 后 `if (anim == null) return ...;` 这类单行 if 会触发 `curly_braces_in_flow_control_structures`，加花括号。
+- `widget_test` 默认 800×600 视口会走桌面左侧栏：手机路径的测试要显式设窄视口（390×844，`tester.view.physicalSize`＋`addTearDown(tester.view.reset)`）。
+- 登录页测试找眼睛图标要用 `AppIcons.eye`（Lucide）：Material 的 `Icons.visibility` 码点（U+0E6BD）已不在，`find.byIcon(Icons.visibility)` 找到 0 个。
+- `AppShell` 宽屏左侧栏顶上 `Image.asset('assets/logo/logo.png')`：pubspec 已声明，测试里能加载，不用 mock。
+- 哲人图标预览做法：临时测试 `test/philosopher_preview_test.dart`（用完删除），把 `PowerButtonIcon`（开态金色、关态灰色）渲染在 240px 深蓝渐变圆上，`toImage`＋文件写包 `runAsync`，存 `/tmp/philosopher_on.png` 与 `/tmp/philosopher_off.png`；另加 48px 真实尺寸一版（120px 按钮里的 48px 图标），大图与小图各看一次再定稿。

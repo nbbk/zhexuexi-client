@@ -3,6 +3,7 @@ import 'dart:ui';
 import 'package:material_ui/material_ui.dart';
 
 import '../core/app_theme.dart';
+import '../core/app_tokens.dart';
 
 /// 苹果毛玻璃效果卡片（全端共用）：半透明＋背景模糊＋细边框＋柔和阴影。
 ///
@@ -15,7 +16,7 @@ class GlassCard extends StatelessWidget {
     required this.child,
     this.padding,
     this.margin,
-    this.borderRadius = 16,
+    this.borderRadius = AppTokens.radiusLarge,
   });
 
   final Widget child;
@@ -26,7 +27,7 @@ class GlassCard extends StatelessWidget {
   /// 卡片外边距。
   final EdgeInsetsGeometry? margin;
 
-  /// 圆角（全端统一，默认 16）。
+  /// 圆角（全端统一，默认 16，见 [AppTokens.radiusLarge]）。
   final double borderRadius;
 
   @override

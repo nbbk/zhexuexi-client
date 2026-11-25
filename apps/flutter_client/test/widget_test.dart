@@ -10,8 +10,9 @@ import 'package:zhexuexi_client/widgets/power_button.dart';
 void main() {
   testWidgets('App 启动：四个 tab 与首页大开关占位', (WidgetTester tester) async {
     // 首页是 ListView 懒加载：默认 600 高视口下开关区在折叠线下
-    // 不会被构建，先把视口拉高再断言。
-    tester.view.physicalSize = const Size(800, 1400);
+    // 不会被构建，先把视口拉高再断言；宽 390 走手机底部栏
+    //（默认 800 宽会走桌面左侧栏）。
+    tester.view.physicalSize = const Size(390, 1400);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
     await tester.pumpWidget(const ProviderScope(child: ZhexuexiApp()));
@@ -32,6 +33,10 @@ void main() {
   });
 
   testWidgets('点底部导航能切到节点页', (WidgetTester tester) async {
+    // 手机尺寸走底部栏（默认 800 宽会走桌面左侧栏）。
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
     await tester.pumpWidget(const ProviderScope(child: ZhexuexiApp()));
     await tester.pumpAndSettle();
 
