@@ -7,13 +7,16 @@
 # 四个输入（workflow_dispatch）：
 #   brand_name：应用名（默认“哲学系”），只改包内 brand.json 的 app_name。
 #   version：版本号 x.y.z（留空时产物名用分支/tag 名）。
-#   logo_url：Logo 图片地址（PNG，选填）。空着用仓里自带的 Logo；
+#   logo_url：Logo 图片地址（选填）。空着用仓里自带的 Logo；
 #     填了会在构建前下载，替换包内 Logo（assets/logo/logo.png，
 #     应用内顶栏与启动器图标源图都用它），并重编 Android 启动器图标。
-#     启动器图标做法：Logo 等比缩放、居中贴在 1600×1600 墨蓝底
-#     （#082E63）上，再缩到各密度；Logo 本身不改色，只加底
+#     支持 PNG / JPG / WebP / BMP / GIF 等常见格式（见
+#     apps/flutter_client/tool/normalize_logo.py），下载后统一转成
+#     PNG；不是图片时构建直接报错，不出包。
+#     Logo 是整个换的：底色也是 Logo 的一部分，传什么底色、启动器
+#     图标就是什么底色，不再贴到墨蓝底上。最好传方形图（含底色），
+#     如 1024×1024；非方形按 cover 居中裁切填满，不拉伸
 #     （见 apps/flutter_client/tool/regen_launcher_icons.py）。
-#     不是 PNG 时构建直接报错，不出包。
 #   remote_config_domain：远程配置域名（选填，如 cc.jiankong.cf）。
 #     空着用仓里默认值；填了只换远程配置默认地址
 #     （lib/services/remote_config_service.dart 的 workerConfigUrl）
@@ -63,7 +66,7 @@ on:
         default: ""
         type: string
       logo_url:
-        description: "Logo 图片地址（PNG，选填；空着用仓里自带的 Logo）"
+        description: "Logo 图片地址（PNG/JPG/WebP 等，选填；空着用仓里自带的 Logo；底色也是 Logo 的一部分，整个换）"
         required: false
         default: ""
         type: string
@@ -122,7 +125,8 @@ jobs:
 
       - name: Logo 与远程配置域名注入
         # logo_url 为空 → 用仓里自带的 Logo；remote_config_domain 为空 →
-        # 用仓里默认值。Logo 填了：下载 PNG → 替换 assets/logo/logo.png
+        # 用仓里默认值。Logo 填了：下载图片（PNG/JPG/WebP/BMP/GIF 等，
+        # 见 tool/normalize_logo.py）→ 转成 PNG 替换 assets/logo/logo.png
         # （应用内顶栏用它；Android 启动器图标在 Android job 里另行重编）。
         # 远程配置域名填了：只换 remote_config_service.dart 里
         # workerConfigUrl 的域名，其他代码不动。
@@ -130,11 +134,11 @@ jobs:
           $logoUrl = "${{ inputs.logo_url }}"
           if ($logoUrl -ne '') {
             $logoFile = "assets/logo/logo.png"
-            Invoke-WebRequest -Uri $logoUrl -OutFile $logoFile
-            $bytes = [IO.File]::ReadAllBytes($logoFile)
-            if ($bytes.Length -lt 8 -or $bytes[0] -ne 0x89 -or $bytes[1] -ne 0x50 -or $bytes[2] -ne 0x4E -or $bytes[3] -ne 0x47) {
-              throw "logo_url 下载到的不是 PNG，请检查地址：$logoUrl"
-            }
+            $logoTmp = "logo-download.bin"
+            Invoke-WebRequest -Uri $logoUrl -OutFile $logoTmp
+            python -m pip install --quiet pillow
+            python tool/normalize_logo.py $logoTmp $logoFile
+            Remove-Item $logoTmp -ErrorAction SilentlyContinue
             Write-Host "Logo 已替换：$logoFile"
           } else {
             Write-Host "Logo 跳过：用仓里自带的 Logo"
@@ -240,19 +244,18 @@ jobs:
 
       - name: Logo 与远程配置域名注入
         # 与 Windows job 相同，另加一步：给了 logo_url 时重编 5 档
-        # Android 启动器图标（tool/regen_launcher_icons.py；Logo 等比
-        # 缩放、居中贴在墨蓝底上，Logo 本身不改色）。
+        # Android 启动器图标（tool/regen_launcher_icons.py；Logo 整个
+        # 换，底色也是 Logo 的一部分，不加底；非方形按 cover 居中裁切）。
         run: |
           $logoUrl = "${{ inputs.logo_url }}"
           if ($logoUrl -ne '') {
             $logoFile = "assets/logo/logo.png"
-            Invoke-WebRequest -Uri $logoUrl -OutFile $logoFile
-            $bytes = [IO.File]::ReadAllBytes($logoFile)
-            if ($bytes.Length -lt 8 -or $bytes[0] -ne 0x89 -or $bytes[1] -ne 0x50 -or $bytes[2] -ne 0x4E -or $bytes[3] -ne 0x47) {
-              throw "logo_url 下载到的不是 PNG，请检查地址：$logoUrl"
-            }
-            Write-Host "Logo 已替换：$logoFile"
+            $logoTmp = "logo-download.bin"
+            Invoke-WebRequest -Uri $logoUrl -OutFile $logoTmp
             python -m pip install --quiet pillow
+            python tool/normalize_logo.py $logoTmp $logoFile
+            Remove-Item $logoTmp -ErrorAction SilentlyContinue
+            Write-Host "Logo 已替换：$logoFile"
             python tool/regen_launcher_icons.py $logoFile
           } else {
             Write-Host "Logo 跳过：用仓里自带的 Logo"

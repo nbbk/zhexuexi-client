@@ -872,3 +872,73 @@
 - **再验速度**：YouTube 首屏/首帧、微信、百度，规则与全局各测 3 次取中位，与 0.1.6 的“有网但慢”对照；关开关基线也要测一次。
 - **定罪判定**：HY2 节点上 M1/M2 改善 ⇒ Brutal 定罪（慢的主因就是双重拥塞控制）；变差 ⇒ 报“数值要调”，不要自己再改一版。切到 REALITY 后慢会回来是设计边界、不是失败信号。
 - 0.1.2/0.1.3/0.1.4 的待真机验证项仍有效（规则模式 YouTube、夜晚模式、公告栏、开关新图案、登录页域名栏隐藏、远程配置）。
+
+## 2026-11-27：0.1.8——删 HY2 出站 up_mbps / down_mbps，回 BBR（单变量；已推仓，CI 已通，正式包待 Secrets）
+
+背景：0.1.7 真机验证结论——没完全修好，症状变了：起连慢、页面不全，但流起来之后吞吐还行；随后美国01那条线 3 分钟内从 366ms 飙到 804ms 然后全死（规则先死、全局后死、关开关恢复）。本版只做这一件事：删掉 HY2 出站的 Brutal 两行，回 BBR。
+
+### 根因与证据链
+
+- **美国01的渐进退化是定罪的主线：366ms → 804ms → 全死，3 分钟内单调爬升。** 能产生单调爬升延迟曲线的机制才有资格当主因；瞬时判定或二值翻转的机制没有。
+- **头号嫌疑：Brutal 100 在美国01线路上洪泛。** sing-quic BrutalSender 是固定速率 pacer，丢包不降速：拥塞事件空实现；pacer 速率 = bps/ackRate 且 ackRate 下限钳 0.8，丢包反而发得更快、最高 1.25 倍；拥塞窗口 = bps×RTT×2/ackRate，RTT 一涨窗口跟着涨——三条正反馈串起来正是爬升曲线。100 这个数是按测试机那条路取的测试值（节点侧 10MB 下载实测约 512Mbps），美国01真实容量未知、现存唯一容量信号是 015 沙箱经 REALITY 的 TCP 约 74Mbps < 100。测试机能扛 100 而美国01不能，正是洪泛的预测、不是反证。
+- **“规则死、全局活”的模式对照不成立。** 全局“有网（慢）”那次在测试机-hy2-443-A（00:32，289ms），规则“没网”与全局“后来也没网”都在美国01-hy2-443-A——模式对照被节点切换污染。规则模式那张诊断包的“只有 direct”也不能当作路由判决的证据：Proxy 方向的流在洪泛下先超时死掉、从连接表里消失，只剩 direct 流可见。
+- **pacer → sniff 没有可成立的机制。** sniff 读的是 TUN 入口的 App 发包，发生在路由、发生在出站拨号之前；Brutal pacer 只能影响路由之后的出站发包。规则模式没网不需要、也不应该用“pacer 干扰 sniff”来解释。
+- **(g) 不是异常，是 urltest fallback 的正常表现，且是 HY2 专属死亡的旁证。** 00:42 实时连接走美国01-ss-8388-A 而当前节点是 HY2-A：同节点多入站成 urltest 组，HY2 延迟恶化后组自动切向延迟更低的 SS 成员。SS（TCP、无 Brutal）能走流量，HY2（UDP 443、Brutal 100）不能——死的是 HY2 路径，不是节点机器、不是客户端环路。
+- **sniff 在本案里的角色：无关，至多是规则模式下的症状放大器。** sniff 是无记忆的瞬时判定，产生不了一条 3 分钟的爬升曲线；规则模式下嗅探失败落 final=direct 撞墙，让退化显得更早更彻底。sniff 的两项改动（全局去 sniff、规则 fail-closed）降级为与事故解耦的稳健性改进，事故修好之后再发。
+- **DNS、MTU、栈都不动。** DNS 有缓存、平时很快，洪泛下是受害者不是元凶；MTU 1500 无分片/重传证据且是常量、解释不了 3 分钟恶化；默认栈 mixed（UDP 走 gVisor）是恒定开销的放大器，没有渐进崩溃的机制，且配置层改不了栈（插件模型无 stack 字段，三件套另立项）。
+- **0.1.5“QUIC 阻断正式定罪”的脚注：** 0.1.7 在没有阻断规则的情况下复现了同一形态（开关开着全死、关开关恢复），说明“开关开着全死”不是 QUIC 阻断独有的——线路退化也能做出同一形态。阻断仍是 0.1.5 的已定罪元凶，不等于它是唯一能做出该形态的元凶。
+
+### 改动：只删 HY2 出站两行
+
+- `lib/core/singbox_config.dart`：HY2 出站删 `'up_mbps': 100`、`'down_mbps': 100` 两行（回 BBR，即 0.1.6 状态）。其余一行不动：不加回 QUIC 阻断、不动 sniff/DNS/MTU/栈、不加 fake-ip/hijack-dns、不动其它出站。
+- 回滚办法：重装 0.1.7（两行加回即是）。
+- 调低到 50/20 是 0.1.9 的事，不在本版（须先删行定罪 Brutal，见下）。
+
+### 定罪逻辑（本版是实验，不是终点）
+
+- 在美国01-hy2-443-A 上验证：恢复到 0.1.6 水平（有网但慢）→ **Brutal 定罪**（数值超过该线路容量，或 Brutal 本身不适合该线路），进 0.1.9 重调数值（先 50/50）；仍死 → **节点定罪**（美国01本身或其线路），Brutal 出局，查节点侧。
+- 先做第 0 步（不发版）：切回测试机-hy2-443-A，全局模式观察 5 分钟——回到 ~300ms、视频能播 → 美国01线路特有；测试机也死 → 不是节点问题，先开关重开一次。
+
+### 版本
+
+- 0.1.8+9（versionCode 9，versionName 0.1.8；`pubspec.yaml` 与 `lib/brand/remote_config.dart` 的 `appVersion` 同步）。注：草稿曾写 versionCode 2009 是错的——`versionCode = flutter.versionCode`，即 pubspec 的 build 号 9；CI 出包的 aapt2 实测 `versionCode='9'`。
+
+### 测试
+
+- `flutter analyze`：零问题。
+- `flutter test` 全量：582/582 通过（与 0.1.7 同数；两处 HY2 断言改成断言“无 up/down 字段”——链接列表 HY2 出站与无 alpn 的 HY2 出站各一处；设置页版本断言 0.1.7→0.1.8；未放宽任何断言）。
+- 真 sing-box `check`：0.1.8 生成配置（规则/全局，上游 1.14.4 与补丁版各跑一遍）4 项全 rc=0（`~/workspace/018-invest/check-018.sh`，日志 `runs/check-018-*.log`，配置 `cfg/builder-018-{rule,global}.json`；断言首条 sniff、私网旁路、无 QUIC 阻断、HY2 无 up/down）。
+- REALITY 握手对照重跑（试点美国01 23.129.180.189，reality-443，最小配置 final 直指 ss-node、无 direct 回落，`~/workspace/018-invest/reality-018.sh`）：补丁版两次 curl 200，未补丁版两次 curl 失败（http=000，rc=35）且日志 `reality verification failed`——补丁未退化。日志 `runs/reality-018-{patched,upstream}.log`。
+- 临时导出测试 `test/dump_config_018_test.dart`（只用来打 builder 配置到 `~/workspace/018-invest/cfg/builder-018-{rule,global}.json`）跑完即删，不进套件。
+
+### 新 APK（CI 出的 debug 包，不是正式包）
+
+- 产物：`~/workspace/018-invest/ci-artifacts-018/android-0.1.8/app-debug.apk`（GitHub Actions run 45897210221 的 `android-0.1.8` artifact，id 15153668889），旁有同名 `.sha256` 文件。**这是 debug 包**：4 个 Android Secrets 未填，workflow 走 debug 分支（`flutter build apk --debug`，fat 包、三架构）。正式包（release 签名、分架构 `app-arm64-v8a-release.apk`）须等 Secrets 填好后重触发才有；`~/workspace/your_files/zhexuexi-client-release-arm64.apk` 仍指 0.1.7，未动。
+- SHA-256：`de51b6969a4c647394f229a1d826dffb8f71c058d991e87ab227ddd12ff609e7`，276,477,283 字节——与 `.sha256` 文件内容一致（文件里是大写，值相同）。276MB 是 fat debug 包（arm64-v8a＋armeabi-v7a＋x86_64 三架构＋调试信息），不是正式 arm64 包的 ~109MB。
+- `apksigner verify`：exit 0（1 个签名者）；证书是 **Android Debug**，SHA-256 `264bf5b6196370e9f0fa3efeb06d52cb15810af24926f8e2079ddf9d05073d17`，**不是** release 证书 `2e10202c…`——符合预期（debug 分支用 debug 签名）。正式签名核对只能在 Secrets 填好、出了 release 包之后做。
+- `aapt2 dump badging`：`package: name='com.zhexuexi.client' versionCode='9' versionName='0.1.8'`，label `哲学系`（品牌注入生效）。
+- APK 内 libbox 核对：`lib/arm64-v8a/libbox.so` 80,954,824 字节，与 0.1.7 **逐字节相同**（SHA-256 `828d40d540243f6a804bd716b13c5fe15e4a74d54acbbfc16453c1bd705df917`）；`.so` 内 `1.14.4-patched` 字面量 1 处、`MLKEM768` 14 处——确为补丁版核心，未退化。注：与仓内 AAR 文件里的 `.so`（80,954,832 字节）差 891 字节，是 AGP 打包进 APK 时的固定处理（0.1.7 本地编的包也是 80,954,824 字节、同一 SHA）；x86_64 / armeabi-v7a 切片里无 libbox.so（仓内 AAR 是 arm64 单架构版，见下）。
+- 构建：CI run 45897210221，Android job 21:18:29→21:26:17 UTC（7 分 48 秒），全 run 约 9 分 30 秒；构建命令 `flutter build apk --debug`。补丁版 libbox 未重编，复用仓内 `io.nekohasekai:libbox:1.14.4-patched`（arm64 单架构 AAR，28MB——56MB fat 包 Git Data API 拒收 422，见推仓记录）。
+
+### 推仓与 CI 历程（2026-11-27 04:37–05:28 CST，即 11-26 20:37–21:28 UTC）
+
+- 推仓脚本 `~/workspace/push-018.py`（Git Data API 全树同步，绝不跑 git fetch/pull；56MB fat AAR 改推 28MB arm64 单架构版，本机 kit 仍用 fat 包）。main：`a5486900` → `1b2aff30`（0.1.8 代码＋新版 workflow）→ `8390db6d`（build.gradle.kts 签名守卫）→ `fca85a87`（kotlin.incremental=false，已撤）→ `b27fccf7`（PUB_CACHE 同盘）。每次推完都经 gh-api 复核 main SHA 与树。
+- run 45892420613（04:37 CST）：failure。Android 在配置期崩：`build.gradle.kts:48` `keystoreProperties["keyAlias"] as String`，key.properties 不存在时读到 null——Secrets 未填走 debug 分支，但 release 签名配置是无条件建的。修法：`8390db6d`——key.properties 不存在时不建 release 签名配置（本机有文件时行为不变）。
+- run 45893507092（04:46 CST）及重跑：failure。配置期已过，`assembleDebug` 跑 5 分 14 秒后死在 `:device_info_plus:compileDebugKotlin` 与 `:package_info_plus:compileDebugKotlin`，`Could not close incremental caches … class-fq-name-to-source.tab, source-to-classes.tab, internal-name-to-source.tab`。重跑一次，同错复现——非偶发。
+- run 45895860812（05:07 CST）：failure，同错。中间试过 `ORG_GRADLE_PROJECT_kotlin.incremental=false`（`fca85a87`），**无效**——Kotlin 2.4 的 BuildToolsApi 路径在非增量模式下仍开关增量缓存；已从 workflow 撤掉。
+- **根因（查实）：跨盘。** runner 上工程在 `D:\a`、Pub Cache 默认在 `C:\Users\runneradmin\AppData\Local\Pub\Cache`；Kotlin 增量编译用 `File.relativeTo()` 存插件源码相对路径，跨盘即抛 `this and base files have different roots`，被包成“Could not close incremental caches”。证据：CI 日志 env 栏印出 `PUB_CACHE: C:\Users\runneradmin\...`；死掉的正是 Pub Cache 里的两个插件模块；同错在 Lyokone/flutterlocation#965 与 native_android_path 的文档里是已知的 Windows 跨盘问题。
+- **修法（`b27fccf7`，治本）：** Android job 级 env `PUB_CACHE: 'D:\a\pub-cache'`，插件源码与工程同盘，`relativeTo()` 正常。job 级 env 覆盖全部步骤（含 flutter-action 的 `flutter pub get`）。
+- run 45897210221（05:18 CST）：**success**。Windows 与 Android 双 job 全绿；Android「编 Android APK」「算哈希并上传产物」「上传 Android 产物」全过。Windows 产物 `windows-0.1.8`（artifact id 15155015384）也在。
+- 未推上游 PR（仍暂停）；未动面板与服务端；未动模拟器；未在本地构建。
+
+### 发布
+
+- **Release v0.1.8 未建。** CI 只出了 debug 包，debug 包不能发 Release（不是 release 签名、不能覆盖安装、应用内更新器要的是 `app-arm64-v8a-release.apk`）。下一步：用户在仓 Settings → Secrets and variables → Actions 填 4 个 Android Secrets（ANDROID_KEYSTORE_BASE64、ANDROID_KEYSTORE_PASSWORD、ANDROID_KEY_PASSWORD、ANDROID_KEY_ALIAS=zhexuexi；keystore 文件与密码用户自己有，绝不问用户要），填好后重触发 workflow_dispatch（version 0.1.8），出 release 分包后再建 Release v0.1.8、验签、上传、改软链。Windows 签名 2 个 Secrets 可选。
+
+### 待真机验证
+
+- **先验核心三行（每次必做的前置）**：开开关等 30 秒后、**不要关开关**，立刻导出诊断包——核心状态“已连接”、核心版本 `1.14.4-patched`、启动探活带真实时间；三行不对先查核心。
+- **第 0 步（不发版，先做）**：切回测试机-hy2-443-A，全局模式观察 5 分钟——回到 ~300ms、视频能播 → 美国01线路特有；测试机也死 → 不是节点问题，先开关重开一次。
+- **再验速度**：在美国01-hy2-443-A 上，YouTube 首屏/首帧/播放持续、微信、百度，规则与全局各测 3 次取中位，与 0.1.6 的“有网但慢”对照；关开关基线也要测一次。
+- **定罪判定**：美国01上恢复到 0.1.6 水平 → Brutal 定罪，进 0.1.9 重调数值；仍死 → 节点定罪，查美国01侧。切回测试机节点是否恢复，是对照实验的关键一问。
+- 0.1.2/0.1.3/0.1.4 的待真机验证项仍有效（规则模式 YouTube、夜晚模式、公告栏、开关新图案、登录页域名栏隐藏、远程配置）。
