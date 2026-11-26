@@ -268,7 +268,12 @@ jobs:
         # keystore 与 key.properties 都由 Secrets 生成（见文件头注释）；
         # 没填 keystore Secrets 时只编 debug 包供测试，不出正式包。
         # release 用 --split-per-abi 出分架构包（arm64/armv7/x86_64）。
+        # 0.1.8：CI 冷机上 Kotlin 增量编译两次同错（compileDebugKotlin
+        # "Could not close incremental caches"，.tab 缓存关不掉）；
+        # 冷机本就没有可复用的增量缓存，关掉只影响 CI，
+        # 本机 gradle.properties 与本地构建行为不动。
         env:
+          ORG_GRADLE_PROJECT_kotlin.incremental: 'false'
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
