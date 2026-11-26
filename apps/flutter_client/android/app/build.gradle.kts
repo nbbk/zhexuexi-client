@@ -43,19 +43,26 @@ android {
         versionName = flutter.versionName
     }
 
+    // 0.1.8：key.properties 不存在时（CI 未填 Secrets）不建 release 签名，
+    // 否则配置期 `as String` 读到 null 即崩（CI 首次运行即死于此）；
+    // 本机 key.properties 存在时行为与原来完全一致。
     signingConfigs {
-        create("release") {
-            keyAlias = keystoreProperties["keyAlias"] as String
-            keyPassword = keystoreProperties["keyPassword"] as String
-            storeFile = file(keystoreProperties["storeFile"] as String)
-            storePassword = keystoreProperties["storePassword"] as String
+        if (keystorePropertiesFile.exists()) {
+            create("release") {
+                keyAlias = keystoreProperties["keyAlias"] as String
+                keyPassword = keystoreProperties["keyPassword"] as String
+                storeFile = file(keystoreProperties["storeFile"] as String)
+                storePassword = keystoreProperties["storePassword"] as String
+            }
         }
     }
 
     buildTypes {
         release {
             // Release signing with our own keystore (key.properties, not in repo).
-            signingConfig = signingConfigs.getByName("release")
+            if (keystorePropertiesFile.exists()) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 }
