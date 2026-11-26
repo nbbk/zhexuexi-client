@@ -195,6 +195,15 @@ jobs:
   build-android:
     name: Android
     runs-on: windows-latest
+    # 0.1.8：PUB_CACHE 必须与工程同盘。GitHub Windows runner 上工程在 D:\a、
+    # Pub Cache 默认在 C:\Users\runneradmin\...，Kotlin 增量编译用
+    # File.relativeTo() 存插件源码相对路径，跨盘即抛 "different roots"，
+    # 表现为 compileDebugKotlin "Could not close incremental caches"
+    #（device_info_plus / package_info_plus，三次同错）。PUB_CACHE 放
+    # D:\a\pub-cache 是治本：插件源码与工程同盘，relativeTo() 正常。
+    # 注意：flutter-action 的 cache: true 会按 PUB_CACHE 缓存，首跑重下。
+    env:
+      PUB_CACHE: 'D:\a\pub-cache'
     defaults:
       run:
         shell: pwsh
@@ -268,12 +277,10 @@ jobs:
         # keystore 与 key.properties 都由 Secrets 生成（见文件头注释）；
         # 没填 keystore Secrets 时只编 debug 包供测试，不出正式包。
         # release 用 --split-per-abi 出分架构包（arm64/armv7/x86_64）。
-        # 0.1.8：CI 冷机上 Kotlin 增量编译两次同错（compileDebugKotlin
-        # "Could not close incremental caches"，.tab 缓存关不掉）；
-        # 冷机本就没有可复用的增量缓存，关掉只影响 CI，
-        # 本机 gradle.properties 与本地构建行为不动。
+        # 0.1.8：kotlin.incremental=false 已在 run 45895860812 试过、无效
+        #（Kotlin 2.4 的 BuildToolsApi 路径在非增量模式下仍开关增量缓存），
+        # 已改走 PUB_CACHE 同盘（job 级 env），这里不再留无效开关。
         env:
-          ORG_GRADLE_PROJECT_kotlin.incremental: 'false'
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
