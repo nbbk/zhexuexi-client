@@ -67,10 +67,13 @@ class PowerButtonIcon extends StatelessWidget {
   }
 }
 
-/// 信号弧＋哲人侧脸线条版（终稿，按 Logo v1 重画）：
-///
-/// - 侧脸朝右：额头—眉—鼻—唇—大胡子—颈，细线描边、没有填充；
-/// - 头顶一枝月桂（茎＋三片叶）；
+/// 信号弧＋哲人侧脸实心版（终稿，按 Logo v1 重画，2026-11-26 0.1.2）：
+/// v1 定稿是金色实心哲人脸（assets/logo/logo.png），“留白脸”是
+/// v2 备选；这里按 v1 做——
+/// - 侧脸朝右：实心填充剪影（额头—鼻—唇—下颌—颈），眉眼用
+///   evenOdd 镂空进同一条脸路径；
+/// - 下巴三股填充胡须（两股长须＋一滴小须）；
+/// - 头顶一枝月桂（茎＋7 片填充椭圆叶）；
 /// - 脸右侧三道信号弧向外扩散；
 /// - 开时信号弧由内向外逐圈亮起（[progress] 是 0–1 的呼吸周期，
 ///   每道弧错开 1/3 周期）；关时只剩淡轮廓。
@@ -99,67 +102,112 @@ class SignalPhilosopherPainter extends CustomPainter {
     final h = size.height;
     // 线宽按图标尺寸档走（md 24px 网格对应 2px 线，见 AppIconSize）。
     final stroke = AppIconSize.md.stroke * (w / 24);
-    final paint = Paint()
-      ..color = color
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = stroke
-      ..strokeCap = StrokeCap.round
-      ..strokeJoin = StrokeJoin.round;
     final fillPaint = Paint()
       ..color = color
       ..style = PaintingStyle.fill;
 
     // 脸与月桂：开时全亮、关时淡轮廓。
     final faceAlpha = isOn ? 1.0 : 0.35;
-    paint.color = color.withValues(alpha: faceAlpha);
     fillPaint.color = color.withValues(alpha: faceAlpha);
 
-    // 侧脸轮廓（朝右）：头顶—额头—眉—鼻尖—唇—下巴—大胡子尖。
-    // 脸整体左移、鼻子与信号弧之间留出空位，侧脸才有横向舒展；
-    // 头顶与后脑不要同一点起笔，留开口、别闭合成环。
+    // 侧脸剪影（朝右，金色实心填充，按 Logo v1 锚点）：
+    // 顶左 → 额顶右 → 右缘 → 鼻梁 → 鼻尖 → 鼻底回折 → 唇折线 →
+    // 下颌 → 左缘内凹腰 → 颈底 → 闭合（后脑左缘略内凹）。
+    // 眉眼用 PathFillType.evenOdd 镂空进同一条脸路径。
     final face = Path()
-      ..moveTo(w * 0.30, h * 0.24)
-      ..cubicTo(w * 0.40, h * 0.235, w * 0.47, h * 0.27, w * 0.50, h * 0.325)
-      ..cubicTo(w * 0.51, h * 0.35, w * 0.51, h * 0.365, w * 0.505, h * 0.38)
-      ..cubicTo(w * 0.56, h * 0.39, w * 0.625, h * 0.415, w * 0.64, h * 0.445)
-      ..cubicTo(w * 0.635, h * 0.47, w * 0.595, h * 0.485, w * 0.565, h * 0.495)
-      ..cubicTo(w * 0.59, h * 0.51, w * 0.595, h * 0.53, w * 0.57, h * 0.545)
-      ..cubicTo(w * 0.545, h * 0.56, w * 0.525, h * 0.57, w * 0.51, h * 0.585)
-      ..cubicTo(w * 0.46, h * 0.65, w * 0.385, h * 0.72, w * 0.375, h * 0.79)
-      ..cubicTo(w * 0.375, h * 0.835, w * 0.41, h * 0.86, w * 0.455, h * 0.85);
-    canvas.drawPath(face, paint);
-
-    // 后脑—颈（与脸线分开起笔，底部留开口）。
-    final back = Path()
-      ..moveTo(w * 0.22, h * 0.28)
-      ..cubicTo(w * 0.175, h * 0.33, w * 0.16, h * 0.42, w * 0.175, h * 0.50)
-      ..cubicTo(w * 0.19, h * 0.58, w * 0.215, h * 0.65, w * 0.24, h * 0.72);
-    canvas.drawPath(back, paint);
-
-    // 眉＋眼睛（实心圆点）。
-    canvas.drawLine(
-      Offset(w * 0.42, h * 0.39),
-      Offset(w * 0.52, h * 0.38),
-      paint,
-    );
-    canvas.drawCircle(Offset(w * 0.47, h * 0.43), w * 0.022, fillPaint);
-
-    // 月桂枝：茎＋三片叶脉线（短线、圆头、沿茎分开斜向上，
-    // 实心椭圆叶在小尺寸下会糊成横条，改用叶脉线）。
-    final laurel = Path()
-      ..moveTo(w * 0.19, h * 0.235)
-      ..quadraticBezierTo(w * 0.30, h * 0.14, w * 0.45, h * 0.115);
-    canvas.drawPath(laurel, paint);
-    for (final leaf in [
-      (0.26, 0.19, 0.205, 0.14),
-      (0.335, 0.155, 0.315, 0.085),
-      (0.41, 0.13, 0.405, 0.065),
-    ]) {
-      canvas.drawLine(
-        Offset(w * leaf.$1, h * leaf.$2),
-        Offset(w * leaf.$3, h * leaf.$4),
-        paint,
+      ..moveTo(w * 0.06, h * 0.33)
+      ..lineTo(w * 0.56, h * 0.23)
+      ..lineTo(w * 0.59, h * 0.32)
+      ..lineTo(w * 0.62, h * 0.38)
+      ..lineTo(w * 0.65, h * 0.43)
+      ..lineTo(w * 0.59, h * 0.44)
+      ..lineTo(w * 0.55, h * 0.45)
+      ..lineTo(w * 0.53, h * 0.47)
+      ..lineTo(w * 0.49, h * 0.51)
+      ..quadraticBezierTo(w * 0.10, h * 0.52, w * 0.12, h * 0.55)
+      ..lineTo(w * 0.26, h * 0.67)
+      ..quadraticBezierTo(w * 0.08, h * 0.50, w * 0.06, h * 0.33)
+      ..close()
+      // 眉（圆角矩形）与眼（圆）镂空。
+      // 2026-11-26 golden 肉眼验收：眉底与眼顶原先重叠（0.33/0.313），
+      // 镂空连成一个团；眉收窄到 0.315、眼下移到 0.36，
+      // 两者分开才像 Logo（眉是斜杠、眼是圆点）。
+      ..addRRect(
+        RRect.fromRectAndRadius(
+          Rect.fromLTRB(w * 0.40, h * 0.28, w * 0.55, h * 0.315),
+          Radius.circular(w * 0.015),
+        ),
+      )
+      ..addOval(
+        Rect.fromCircle(
+          center: Offset(w * 0.49, h * 0.36),
+          radius: w * 0.027,
+        ),
       );
+    face.fillType = PathFillType.evenOdd;
+    canvas.drawPath(face, fillPaint);
+
+    // 胡子：3 股填充须片（按 Logo v1：两股长须向下扫＋一滴小须）。
+    // 左长须：根部 x 0.28–0.42、y 0.51，扫至尖 (0.45, 0.87)。
+    final beardLeft = Path()
+      ..moveTo(w * 0.28, h * 0.51)
+      ..quadraticBezierTo(w * 0.26, h * 0.70, w * 0.45, h * 0.87)
+      ..quadraticBezierTo(w * 0.44, h * 0.68, w * 0.42, h * 0.51)
+      ..close();
+    canvas.drawPath(beardLeft, fillPaint);
+    // 右长须：根部 x 0.48–0.56、y 0.50，扫至尖 (0.61, 0.87)。
+    final beardRight = Path()
+      ..moveTo(w * 0.48, h * 0.50)
+      ..quadraticBezierTo(w * 0.50, h * 0.68, w * 0.61, h * 0.87)
+      ..quadraticBezierTo(w * 0.58, h * 0.66, w * 0.56, h * 0.50)
+      ..close();
+    canvas.drawPath(beardRight, fillPaint);
+    // 泪滴小须：中心 (0.53, 0.62)，尺寸 0.07×0.15。
+    final beardDrop = Path()
+      ..moveTo(w * 0.53, h * 0.545)
+      ..quadraticBezierTo(w * 0.565, h * 0.60, w * 0.53, h * 0.695)
+      ..quadraticBezierTo(w * 0.495, h * 0.60, w * 0.53, h * 0.545)
+      ..close();
+    canvas.drawPath(beardDrop, fillPaint);
+
+    // 月桂枝：茎＋7 片填充椭圆叶（按 Logo v1；小尺寸下叶糊成一团
+    // 时退路是减为 5 片，见 PATCH_NOTES 0.1.2）。
+    final stemPaint = Paint()
+      ..color = color.withValues(alpha: faceAlpha)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = stroke * 0.5
+      ..strokeCap = StrokeCap.round;
+    canvas.drawLine(
+      Offset(w * 0.09, h * 0.19),
+      Offset(w * 0.53, h * 0.14),
+      stemPaint,
+    );
+    void drawLeaf(double cx, double cy, double tilt) {
+      canvas.save();
+      canvas.translate(w * cx, h * cy);
+      canvas.rotate(tilt);
+      canvas.drawOval(
+        Rect.fromCenter(
+          center: Offset.zero,
+          width: w * 0.075,
+          height: w * 0.035,
+        ),
+        fillPaint,
+      );
+      canvas.restore();
+    }
+
+    // 上排三片（-35°）、下排三片（+35°）、顶叶一片。
+    for (final leaf in const [
+      (0.18, 0.15, -0.61),
+      (0.29, 0.12, -0.61),
+      (0.42, 0.09, -0.61),
+      (0.21, 0.21, 0.61),
+      (0.32, 0.18, 0.61),
+      (0.46, 0.15, 0.61),
+      (0.52, 0.14, -0.61),
+    ]) {
+      drawLeaf(leaf.$1, leaf.$2, leaf.$3);
     }
 
     // 三道信号弧：弧心在脸右侧（口鼻高度），向右张开。
@@ -168,11 +216,11 @@ class SignalPhilosopherPainter extends CustomPainter {
     // 弧比脸线细一档、间距拉开，开态满透明度也不会糊成一片扇形。
     final arcPaint = Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = stroke * 0.65
+      ..strokeWidth = stroke * 0.55
       ..strokeCap = StrokeCap.round;
-    final arcCenter = Offset(w * 0.72, h * 0.47);
+    final arcCenter = Offset(w * 0.59, h * 0.48);
     for (var i = 0; i < 3; i++) {
-      final radius = w * (0.11 + 0.07 * i);
+      final radius = w * const [0.13, 0.24, 0.34][i];
       final double alpha;
       if (!isOn) {
         alpha = 0.25;
@@ -184,8 +232,8 @@ class SignalPhilosopherPainter extends CustomPainter {
       }
       canvas.drawArc(
         Rect.fromCircle(center: arcCenter, radius: radius),
-        -0.9,
-        1.8,
+        -1.22,
+        2.44,
         false,
         arcPaint..color = color.withValues(alpha: alpha),
       );

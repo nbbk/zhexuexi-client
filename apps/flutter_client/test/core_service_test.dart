@@ -8,6 +8,7 @@ import 'dart:io';
 
 import 'package:flutter_sing_box/flutter_sing_box.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:zhexuexi_client/core/clash_api_client.dart';
 import 'package:zhexuexi_client/core/config_validator.dart';
 import 'package:zhexuexi_client/core/node_model.dart';
 import 'package:zhexuexi_client/core/singbox_core.dart';
@@ -59,6 +60,41 @@ class _FakeValidator implements ConfigValidator {
   Future<List<String>> validate(Map<String, dynamic> config) async => errors;
 }
 
+/// Clash API fake：trafficSample 按开关成功或抛错，不碰真网络；
+/// proxyDelayDetailed 默认测通（123ms），按需改成失败；
+/// [delayQueue] 非空时按顺序出队（模拟“首次超时、重试后通过”），
+/// 空了回落到 [delayResult]（模拟“两次都失败”时重试也失败）。
+class _FakeClashApi extends ClashApiClient {
+  Object? error;
+  ProxyDelayResult delayResult = const ProxyDelayResult(delay: 123);
+  final List<ProxyDelayResult> delayQueue = [];
+  int delayCalls = 0;
+  final List<String> delayTags = [];
+  Duration? lastDelayTimeout;
+
+  @override
+  Future<TrafficSample> trafficSample({
+    Duration timeout = const Duration(seconds: 5),
+  }) async {
+    if (error != null) throw error!;
+    return const TrafficSample(up: 0, down: 0);
+  }
+
+  @override
+  Future<ProxyDelayResult> proxyDelayDetailed(
+    String proxyName, {
+    Duration timeout = const Duration(seconds: 5),
+  }) async {
+    delayCalls++;
+    delayTags.add(proxyName);
+    lastDelayTimeout = timeout;
+    if (delayQueue.isNotEmpty) return delayQueue.removeAt(0);
+    return delayResult;
+  }
+
+  String? get lastDelayTag => delayTags.isEmpty ? null : delayTags.last;
+}
+
 Node _node(String name, {NodeSource source = NodeSource.direct}) => Node(
   name: name,
   protocol: NodeProtocol.vless,
@@ -81,6 +117,7 @@ void main() {
   late String configPath;
   late _FakePlugin plugin;
   late _FakeValidator validator;
+  late _FakeClashApi fakeApi;
   late List<String> ensureProfileCalls;
 
   setUp(() async {
@@ -88,6 +125,7 @@ void main() {
     configPath = '${tmpDir.path}/using_config.json';
     plugin = _FakePlugin();
     validator = _FakeValidator();
+    fakeApi = _FakeClashApi();
     ensureProfileCalls = [];
   });
 
@@ -96,13 +134,25 @@ void main() {
     if (await tmpDir.exists()) await tmpDir.delete(recursive: true);
   });
 
-  CoreService makeService() => CoreService(
+  // 探活的预热/重试等待默认传 0，让拨测类测试不用等真 2 秒；
+  // 验预热本身的那一项单独传真值。真实流量复核默认注入“通”（测试
+  // 环境没有真 mixed 入站，不注入就恒失败）；验复核本身的那一项
+  // 单独传返回 false 的 fake。
+  CoreService makeService({
+    Duration probeWarmup = Duration.zero,
+    Duration probeRetryDelay = Duration.zero,
+    Future<bool> Function()? realTrafficProbe,
+  }) => CoreService(
     plugin: plugin,
     validator: validator,
     usingConfigPath: () async => configPath,
     ensureSelectedProfile: (path) async {
       ensureProfileCalls.add(path);
     },
+    clashApiClient: fakeApi,
+    probeWarmup: probeWarmup,
+    probeRetryDelay: probeRetryDelay,
+    realTrafficProbe: realTrafficProbe ?? () async => true,
   );
 
   group('applyNodes', () {
@@ -289,6 +339,293 @@ void main() {
       final before = await File(configPath).readAsString();
       expect(await service.updateSelectorDefault('不存在的节点'), isFalse);
       expect(await File(configPath).readAsString(), before);
+      service.dispose();
+    });
+  });
+
+  group('启动后 Clash API 校验（问题 6）', () {
+    test('Started 后 /traffic 取到帧：保持 started，探活位不失败', () async {
+      final service = makeService();
+      await service.init();
+      plugin.emit(const ProxyStarted());
+      await _pumpEvents();
+      // 校验是 fire-and-forget 的异步探活，等它跑完再断言。
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(service.status, CoreStatus.started);
+      expect(service.lastError, isNull);
+      expect(service.probeFailed, isFalse);
+      service.dispose();
+    });
+
+    test('Started 后 /traffic 探不到：记探活失败，不翻 error', () async {
+      fakeApi.error = TimeoutException('Clash API /traffic 超时无帧');
+      final service = makeService();
+      await service.init();
+      plugin.emit(const ProxyStarted());
+      await _pumpEvents();
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      // 2026-11-26 二轮修复（方案 A）：核心在跑，控制接口无响应只记
+      // 探活位，首页保持“运行中”＋拨测失败提示，不翻 error 闩锁。
+      expect(service.status, CoreStatus.started);
+      expect(service.probeFailed, isTrue);
+      expect(service.lastProbeError, '核心已启动但控制接口无响应');
+      expect(service.lastProbeAt, isNotNull);
+      expect(service.lastError, isNull);
+      service.dispose();
+    });
+
+    test('校验期间用户已停止：不记探活失败', () async {
+      fakeApi.error = TimeoutException('Clash API /traffic 超时无帧');
+      final service = makeService();
+      await service.init();
+      plugin.emit(const ProxyStarted());
+      plugin.emit(const ProxyStopped());
+      await _pumpEvents();
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(service.status, CoreStatus.stopped);
+      expect(service.probeFailed, isFalse);
+      service.dispose();
+    });
+
+    test('Started 后 /traffic 取到帧且拨测通：保持 started', () async {
+      final service = makeService();
+      await service.init();
+      await service.applyNodes([_node('甲-直连')]);
+      plugin.emit(const ProxyStarted());
+      await _pumpEvents();
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(service.status, CoreStatus.started);
+      expect(service.lastError, isNull);
+      expect(fakeApi.lastDelayTag, '甲-直连');
+      service.dispose();
+    });
+
+    test('Started 后 /traffic 取到帧但拨测失败：两次都失败才记探活失败', () async {
+      // 2026-11-26 根因：DNS 全死时 /traffic 照常推 0/0 帧，首页
+      // 显示“运行中”，实际没网络；拨测失败必须记下来。
+      // 但一次失败不立刻记：先重试一次，仍失败才是真不通。
+      // 二轮修复：记探活位、不翻 error（核心在跑，首页保持“运行中”）。
+      fakeApi.delayResult = const ProxyDelayResult(
+        failure: ProxyDelayFailure.failed,
+      );
+      final service = makeService();
+      await service.init();
+      await service.applyNodes([_node('甲-直连')]);
+      plugin.emit(const ProxyStarted());
+      await _pumpEvents();
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(service.status, CoreStatus.started);
+      expect(service.probeFailed, isTrue);
+      expect(fakeApi.delayCalls, 2);
+      expect(service.lastProbeError, contains('代理出站拨测失败'));
+      expect(service.lastProbeError, contains('DNS 或节点不通'));
+      expect(service.lastError, isNull);
+      service.dispose();
+    });
+
+    test('拨测目标是默认出站；成组节点直接拨组 tag', () async {
+      final service = makeService();
+      await service.init();
+      await service.applyNodes([
+        _node('测试-reality-443'),
+        _node('测试-hy2-443'),
+      ]);
+      plugin.emit(const ProxyStarted());
+      await _pumpEvents();
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(service.status, CoreStatus.started);
+      // 默认是组 tag `测试`：真 sing-box 1.14.4 实测 delay 组 tag
+      // 返回组内当前选用入站的延迟，不再解到 members.first
+      //（`测试-reality-443` 不一定是组实际选用的入站）。
+      expect(fakeApi.lastDelayTag, '测试');
+      expect(fakeApi.delayCalls, 1);
+      service.dispose();
+    });
+
+    test('拨测预算是 10 秒', () async {
+      final service = makeService();
+      await service.init();
+      await service.applyNodes([_node('甲-直连')]);
+      plugin.emit(const ProxyStarted());
+      await _pumpEvents();
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(fakeApi.lastDelayTimeout, const Duration(seconds: 10));
+      service.dispose();
+    });
+
+    test('首次拨测超时、重试后通过：保持 started，不翻 error', () async {
+      fakeApi.delayQueue.addAll([
+        const ProxyDelayResult(failure: ProxyDelayFailure.timeout),
+        const ProxyDelayResult(delay: 456),
+      ]);
+      final service = makeService();
+      await service.init();
+      await service.applyNodes([_node('甲-直连')]);
+      plugin.emit(const ProxyStarted());
+      await _pumpEvents();
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(service.status, CoreStatus.started);
+      expect(service.lastError, isNull);
+      expect(fakeApi.delayCalls, 2);
+      service.dispose();
+    });
+
+    test('拨测超时两次都失败才记探活失败，原因写明已重试与下一步', () async {
+      fakeApi.delayResult = const ProxyDelayResult(
+        failure: ProxyDelayFailure.timeout,
+      );
+      final service = makeService();
+      await service.init();
+      await service.applyNodes([_node('甲-直连')]);
+      plugin.emit(const ProxyStarted());
+      await _pumpEvents();
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(service.status, CoreStatus.started);
+      expect(service.probeFailed, isTrue);
+      expect(fakeApi.delayCalls, 2);
+      expect(service.lastProbeError, contains('拨测超时'));
+      expect(service.lastProbeError, contains('10 秒无响应，已重试一次'));
+      expect(service.lastProbeError, contains('点「重新拨测」再试一次'));
+      service.dispose();
+    });
+
+    test('重试期间保持 started，不闪 error', () async {
+      fakeApi.delayResult = const ProxyDelayResult(
+        failure: ProxyDelayFailure.failed,
+      );
+      final service = makeService(
+        probeRetryDelay: const Duration(milliseconds: 500),
+      );
+      await service.init();
+      await service.applyNodes([_node('甲-直连')]);
+      plugin.emit(const ProxyStarted());
+      await _pumpEvents();
+      // 第一次拨测已失败、重试还没跑：仍是 started，不是 error。
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(fakeApi.delayCalls, 1);
+      expect(service.status, CoreStatus.started);
+      expect(service.probeFailed, isFalse);
+      // 重试跑完仍失败：这时才记探活失败，状态仍是 started。
+      await Future<void>.delayed(const Duration(milliseconds: 600));
+      expect(fakeApi.delayCalls, 2);
+      expect(service.status, CoreStatus.started);
+      expect(service.probeFailed, isTrue);
+      service.dispose();
+    });
+
+    test('预热：取到 /traffic 帧后 2 秒内不拨测', () async {
+      final service = makeService(
+        probeWarmup: const Duration(seconds: 2),
+      );
+      await service.init();
+      await service.applyNodes([_node('甲-直连')]);
+      plugin.emit(const ProxyStarted());
+      await _pumpEvents();
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(fakeApi.delayCalls, 0);
+      expect(service.status, CoreStatus.started);
+      await Future<void>.delayed(const Duration(seconds: 2));
+      expect(fakeApi.delayCalls, 1);
+      expect(service.status, CoreStatus.started);
+      service.dispose();
+    });
+
+    test('探活失败后 retryProbe 成功：清掉 probeFailed，状态不动', () async {
+      fakeApi.delayResult = const ProxyDelayResult(
+        failure: ProxyDelayFailure.failed,
+      );
+      final service = makeService();
+      await service.init();
+      await service.applyNodes([_node('甲-直连')]);
+      plugin.emit(const ProxyStarted());
+      await _pumpEvents();
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(service.status, CoreStatus.started);
+      expect(service.probeFailed, isTrue);
+
+      // 节点恢复后点“重新拨测”：只重跑探活，不停核心、不重建配置。
+      fakeApi.delayResult = const ProxyDelayResult(delay: 200);
+      await service.retryProbe();
+      expect(service.status, CoreStatus.started);
+      expect(service.probeFailed, isFalse);
+      expect(service.lastProbeError, isNull);
+      service.dispose();
+    });
+
+    test('retryProbe：核心没在跑时不拨测', () async {
+      final service = makeService();
+      await service.init();
+      await service.applyNodes([_node('甲-直连')]);
+      await service.retryProbe();
+      expect(fakeApi.delayCalls, 0);
+      expect(service.probeFailed, isFalse);
+      service.dispose();
+    });
+
+    test('新一轮 Started：清掉上一轮的 _lastError 与探活失败', () async {
+      fakeApi.delayResult = const ProxyDelayResult(
+        failure: ProxyDelayFailure.failed,
+      );
+      final service = makeService();
+      await service.init();
+      await service.applyNodes([_node('甲-直连')]);
+      plugin.emit(const ProxyStarted());
+      await _pumpEvents();
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(service.probeFailed, isTrue);
+      // 上一轮异常停止：记 error。
+      plugin.emit(const ProxyStopped(errMessage: '核心崩溃'));
+      await _pumpEvents();
+      expect(service.status, CoreStatus.error);
+      expect(service.lastError, '核心崩溃');
+      // 新一轮启动：上一轮的原因与探活失败都清掉（拨测已恢复，
+      // 新一轮校验通过，不再把旧失败带回来）。
+      fakeApi.delayResult = const ProxyDelayResult(delay: 200);
+      plugin.emit(const ProxyStarted());
+      await _pumpEvents();
+      expect(service.status, CoreStatus.started);
+      expect(service.lastError, isNull);
+      expect(service.probeFailed, isFalse);
+      service.dispose();
+    });
+
+    test('probeStream：探活失败与恢复都推事件', () async {
+      fakeApi.delayResult = const ProxyDelayResult(
+        failure: ProxyDelayFailure.failed,
+      );
+      final service = makeService();
+      await service.init();
+      final seen = <ProbeState>[];
+      final sub = service.probeStream.listen(seen.add);
+      await service.applyNodes([_node('甲-直连')]);
+      plugin.emit(const ProxyStarted());
+      await _pumpEvents();
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(seen.last.failed, isTrue);
+      expect(seen.last.error, contains('代理出站拨测失败'));
+      fakeApi.delayResult = const ProxyDelayResult(delay: 200);
+      await service.retryProbe();
+      // 广播流事件是异步投递：等一个微任务再读，不然 seen 里还是旧事件。
+      await _pumpEvents();
+      expect(seen.last.failed, isFalse);
+      await sub.cancel();
+      service.dispose();
+    });
+
+    test('0.1.3：delay 通但真实流量不通：只记探活失败，不翻 error', () async {
+      // D 路修复 2 的核心场景：0.1.2 的 delay 拨测直拨出站，DNS
+      // 全死时它照常通；经 mixed 入站的真实流量复核才抓得到。
+      fakeApi.delayResult = const ProxyDelayResult(delay: 200);
+      final service = makeService(realTrafficProbe: () async => false);
+      await service.init();
+      await service.applyNodes([_node('甲-直连')]);
+      plugin.emit(const ProxyStarted());
+      await _pumpEvents();
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(service.status, CoreStatus.started);
+      expect(service.probeFailed, isTrue);
+      expect(service.lastProbeError, contains('真实流量不通'));
+      expect(service.lastProbeError, contains('DNS 或路由可能有问题'));
       service.dispose();
     });
   });

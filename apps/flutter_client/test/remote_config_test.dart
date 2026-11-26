@@ -6,6 +6,7 @@
 // 唯一用真密钥的用例是 test/fixtures/remote_config_v1.json，
 // 它是用 tools/remote-config/sign.py + 真私钥签的（私钥只在 /tmp），
 // 验签走编译进客户端的公钥，证明 openssl 签名与 Dart 验签能对上。
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -13,10 +14,14 @@ import 'package:cryptography/cryptography.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:flutter_sing_box/flutter_sing_box.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:zhexuexi_client/brand/brand_config.dart';
 import 'package:zhexuexi_client/brand/remote_config.dart';
+import 'package:zhexuexi_client/core/clash_api_client.dart';
+import 'package:zhexuexi_client/core/core_provider.dart';
+import 'package:zhexuexi_client/core/singbox_core.dart';
 import 'package:zhexuexi_client/services/announcement_service.dart';
 import 'package:zhexuexi_client/services/nodes_notifier.dart';
 import 'package:zhexuexi_client/services/remote_config_notifier.dart';
@@ -118,6 +123,58 @@ Dio _configDio(Map<String, ({int status, String body})> byUrl) {
     ),
   );
   return dio;
+}
+
+/// 插件 fake（0.1.4：核心起来后重拉测试用）：只记调用、不碰平台通道，
+/// 状态由测试手动推。
+class _FakeCorePlugin extends FlutterSingBox {
+  final _stateController = StreamController<ProxyState>.broadcast();
+
+  @override
+  Stream<ProxyState> get proxyStateStream => _stateController.stream;
+
+  @override
+  Future<void> init() async {}
+
+  @override
+  Future<void> startVpn() async {
+    _stateController.add(const ProxyStarted());
+  }
+
+  @override
+  Future<void> stopVpn() async {
+    _stateController.add(const ProxyStopped());
+  }
+
+  @override
+  Future<void> serviceReload() async {
+    _stateController.add(const ProxyStarted());
+  }
+
+  @override
+  Future<String> getSingBoxVersion() async => '1.14.4';
+
+  void emit(ProxyState state) => _stateController.add(state);
+
+  Future<void> close() => _stateController.close();
+}
+
+/// Clash API fake（0.1.4：核心起来后重拉测试用）：拨测恒通，不碰真网络。
+class _FakeCoreClashApi extends ClashApiClient {
+  @override
+  Future<TrafficSample> trafficSample({
+    Duration timeout = const Duration(seconds: 5),
+  }) async {
+    return const TrafficSample(up: 0, down: 0);
+  }
+
+  @override
+  Future<ProxyDelayResult> proxyDelayDetailed(
+    String proxyName, {
+    Duration timeout = const Duration(seconds: 5),
+  }) async {
+    return const ProxyDelayResult(delay: 123);
+  }
 }
 
 class _FakeSecureStorage extends FlutterSecureStorage {
@@ -474,6 +531,88 @@ void main() {
       final result = await service.refresh();
       expect(result.status, RemoteConfigRefreshStatus.notPublished);
       expect(result.config.configVersion, 0);
+      // failures 逐条：两个地址都是 404。
+      expect(result.failures.length, 2);
+      expect(
+        result.failures.map((f) => f.kind),
+        everyElement(RemoteConfigFailureKind.notFound),
+      );
+      expect(result.failureMessage, contains(configUrlA));
+      expect(result.failureMessage, contains(configUrlB));
+    });
+
+    test('Worker 404＋Raw 超时→failed 且 failures 逐条列原因', () async {
+      final keys = _TempKeys();
+      await keys.init();
+      final prefs = await SharedPreferences.getInstance();
+      // configUrlA 404；configUrlB 不在假 Dio 的表里：按约定算断网。
+      final service = RemoteConfigService(
+        dio: _configDio({configUrlA: (status: 404, body: '')}),
+        configUrls: [configUrlA, configUrlB],
+        prefs: prefs,
+        publicKeyBase64: keys.publicKeyBase64,
+      );
+      final result = await service.refresh();
+      expect(result.status, RemoteConfigRefreshStatus.failed);
+      expect(result.failures.length, 2);
+      expect(result.failures[0].url, configUrlA);
+      expect(result.failures[0].kind, RemoteConfigFailureKind.notFound);
+      expect(result.failures[1].url, configUrlB);
+      expect(
+        result.failures[1].kind,
+        RemoteConfigFailureKind.connectionError,
+      );
+      expect(result.failureMessage, contains('404 未找到'));
+      expect(result.failureMessage, contains('连不上'));
+    });
+
+    test('200 验签失败＋另一地址 404→failed，失败种类分得清', () async {
+      final keys = _TempKeys();
+      await keys.init();
+      final prefs = await SharedPreferences.getInstance();
+      final service = RemoteConfigService(
+        dio: _configDio({
+          configUrlA: (status: 200, body: '{"config_version": 9}'),
+          configUrlB: (status: 404, body: ''),
+        }),
+        configUrls: [configUrlA, configUrlB],
+        prefs: prefs,
+        publicKeyBase64: keys.publicKeyBase64,
+      );
+      final result = await service.refresh();
+      expect(result.status, RemoteConfigRefreshStatus.failed);
+      expect(result.failures.length, 2);
+      expect(
+        result.failures[0].kind,
+        RemoteConfigFailureKind.invalidEnvelope,
+      );
+      expect(result.failures[1].kind, RemoteConfigFailureKind.notFound);
+    });
+
+    test('非 DioException 不丢计数：attempted 照样算', () async {
+      final keys = _TempKeys();
+      await keys.init();
+      final prefs = await SharedPreferences.getInstance();
+      final dio = Dio();
+      dio.interceptors.add(
+        InterceptorsWrapper(
+          onRequest: (options, handler) {
+            throw StateError('boom');
+          },
+        ),
+      );
+      final service = RemoteConfigService(
+        dio: dio,
+        configUrls: [configUrlA],
+        prefs: prefs,
+        publicKeyBase64: keys.publicKeyBase64,
+      );
+      final result = await service.refresh();
+      // 只试了一个地址且不是 404：failed 不是 notPublished，
+      // failures 里有一条（计数没丢）。
+      expect(result.status, RemoteConfigRefreshStatus.failed);
+      expect(result.failures.length, 1);
+      expect(result.failures[0].url, configUrlA);
     });
 
     test('404 与断网混着：不是全 404，仍是 failed', () async {
@@ -490,6 +629,275 @@ void main() {
       final result = await service.refresh();
       expect(result.status, RemoteConfigRefreshStatus.failed);
       expect(result.config.configVersion, 0);
+    });
+
+    test('0.1.3：面板 URL 从 panel_api_base（:11111）派生，三源顺序不变', () async {
+      final keys = _TempKeys();
+      await keys.init();
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(RemoteConfigService.cacheKey);
+      // 缓存一份带 panel_api_base 的配置（面板域名 ccpanel.jiankong.cf）。
+      final payload = _payload(version: 5);
+      final panel = payload['panel'] as Map<String, dynamic>;
+      panel['panel_domain'] = 'ccpanel.jiankong.cf';
+      panel['panel_api_base'] = 'https://ccpanel.jiankong.cf:11111';
+      final envelope = await keys.signEnvelope(payload);
+      await prefs.setString(RemoteConfigService.cacheKey, envelope);
+      final service = RemoteConfigService(
+        prefs: prefs,
+        publicKeyBase64: keys.publicKeyBase64,
+      );
+      final urls = await service.defaultConfigUrls();
+      // 第一位是面板 :11111（不是拼 https://$panelDomain/ 打 443），
+      // 其后 Worker、Raw 顺序不变。
+      expect(urls[0], 'https://ccpanel.jiankong.cf:11111/client-config.json');
+      expect(urls[1], RemoteConfigService.workerConfigUrl);
+      expect(urls[2], RemoteConfigService.rawConfigUrl);
+      await prefs.remove(RemoteConfigService.cacheKey);
+    });
+
+    test('0.1.3：panel_api_base 为空时回落到 https://<域名>', () async {
+      final keys = _TempKeys();
+      await keys.init();
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(RemoteConfigService.cacheKey);
+      final payload = _payload(version: 5);
+      final panel = payload['panel'] as Map<String, dynamic>;
+      panel['panel_domain'] = 'ccpanel.jiankong.cf';
+      // panel_api_base 不写：fromJson 默认为 ''。
+      final envelope = await keys.signEnvelope(payload);
+      await prefs.setString(RemoteConfigService.cacheKey, envelope);
+      final service = RemoteConfigService(
+        prefs: prefs,
+        publicKeyBase64: keys.publicKeyBase64,
+      );
+      final urls = await service.defaultConfigUrls();
+      expect(urls[0], 'https://ccpanel.jiankong.cf/client-config.json');
+      await prefs.remove(RemoteConfigService.cacheKey);
+    });
+
+    test('0.1.3：网络层失败每地址重试一次；404 不重试', () async {
+      final keys = _TempKeys();
+      await keys.init();
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(RemoteConfigService.cacheKey);
+      final envelope = await keys.signEnvelope(_payload(version: 6));
+      // configUrlA：第一次断网、第二次 200；configUrlB：404。
+      final calls = <String, int>{};
+      Dio countingDio() {
+        final dio = Dio();
+        dio.interceptors.add(
+          InterceptorsWrapper(
+            onRequest: (options, handler) {
+              final url = options.uri.toString();
+              calls[url] = (calls[url] ?? 0) + 1;
+              if (url == configUrlA && calls[url] == 1) {
+                handler.reject(
+                  DioException(
+                    requestOptions: options,
+                    type: DioExceptionType.connectionError,
+                  ),
+                );
+                return;
+              }
+              if (url == configUrlA) {
+                handler.resolve(
+                  Response<String>(
+                    requestOptions: options,
+                    statusCode: 200,
+                    data: envelope,
+                  ),
+                );
+                return;
+              }
+              handler.reject(
+                DioException(
+                  requestOptions: options,
+                  response: Response<String>(
+                    requestOptions: options,
+                    statusCode: 404,
+                    data: '',
+                  ),
+                  type: DioExceptionType.badResponse,
+                ),
+              );
+            },
+          ),
+        );
+        return dio;
+      }
+
+      final service = RemoteConfigService(
+        dio: countingDio(),
+        configUrls: [configUrlB, configUrlA],
+        prefs: prefs,
+        publicKeyBase64: keys.publicKeyBase64,
+      );
+      final result = await service.refresh();
+      // B 先 404（只试一次），A 重试一次后拿到新版。
+      expect(result.status, RemoteConfigRefreshStatus.updated);
+      expect(result.config.configVersion, 6);
+      expect(calls[configUrlB], 1);
+      expect(calls[configUrlA], 2);
+      await prefs.remove(RemoteConfigService.cacheKey);
+    });
+
+    test('0.1.3：开关已开时直连全败后经代理再试一轮', () async {
+      final keys = _TempKeys();
+      await keys.init();
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(RemoteConfigService.cacheKey);
+      final envelope = await keys.signEnvelope(_payload(version: 7));
+      var proxyCalls = 0;
+      final proxyDio = Dio();
+      proxyDio.interceptors.add(
+        InterceptorsWrapper(
+          onRequest: (options, handler) {
+            proxyCalls++;
+            handler.resolve(
+              Response<String>(
+                requestOptions: options,
+                statusCode: 200,
+                data: envelope,
+              ),
+            );
+          },
+        ),
+      );
+      final service = RemoteConfigService(
+        // 直连 Dio：表是空的，全部按断网算。
+        dio: _configDio({}),
+        proxyDio: proxyDio,
+        configUrls: [configUrlA, configUrlB],
+        prefs: prefs,
+        publicKeyBase64: keys.publicKeyBase64,
+        coreStarted: () => true,
+      );
+      final result = await service.refresh();
+      expect(result.status, RemoteConfigRefreshStatus.updated);
+      expect(result.config.configVersion, 7);
+      // 代理轮只试了第一个地址就拿到了新版。
+      expect(proxyCalls, 1);
+      // 直连轮的两条失败照常记录，且都标直连（不是经代理）。
+      expect(result.failures.length, 2);
+      expect(result.failures.every((f) => !f.viaProxy), isTrue);
+      await prefs.remove(RemoteConfigService.cacheKey);
+    });
+
+    test('0.1.3：开关没开时不跑代理轮；两轮都败时失败标“经代理”', () async {
+      final keys = _TempKeys();
+      await keys.init();
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(RemoteConfigService.cacheKey);
+      var proxyCalls = 0;
+      final proxyDio = Dio();
+      proxyDio.interceptors.add(
+        InterceptorsWrapper(
+          onRequest: (options, handler) {
+            proxyCalls++;
+            handler.reject(
+              DioException(
+                requestOptions: options,
+                type: DioExceptionType.connectionError,
+              ),
+            );
+          },
+        ),
+      );
+      // 开关没开：代理 Dio 一次也不该被调；但 0.1.4 起跳过要留痕，
+      // failures 里多一条 proxySkipped（不是地址尝试，不参与
+      // notPublished 判定）。
+      final offService = RemoteConfigService(
+        dio: _configDio({}),
+        proxyDio: proxyDio,
+        configUrls: [configUrlA, configUrlB],
+        prefs: prefs,
+        publicKeyBase64: keys.publicKeyBase64,
+        coreStarted: () => false,
+      );
+      final offResult = await offService.refresh();
+      expect(offResult.status, RemoteConfigRefreshStatus.failed);
+      expect(proxyCalls, 0);
+      expect(offResult.failures.length, 3);
+      expect(offResult.failures[2].kind, RemoteConfigFailureKind.proxySkipped);
+      expect(offResult.failureMessage, contains('代理轮未跑'));
+
+      // 开关开着、代理也败：两轮各两条失败，代理轮的标 viaProxy。
+      final onService = RemoteConfigService(
+        dio: _configDio({}),
+        proxyDio: proxyDio,
+        configUrls: [configUrlA, configUrlB],
+        prefs: prefs,
+        publicKeyBase64: keys.publicKeyBase64,
+        coreStarted: () => true,
+      );
+      final onResult = await onService.refresh();
+      expect(onResult.status, RemoteConfigRefreshStatus.failed);
+      expect(onResult.failures.length, 4);
+      expect(onResult.failures[0].viaProxy, isFalse);
+      expect(onResult.failures[1].viaProxy, isFalse);
+      expect(onResult.failures[2].viaProxy, isTrue);
+      expect(onResult.failures[3].viaProxy, isTrue);
+      expect(onResult.failureMessage, contains('（经代理）'));
+      // 代理轮每地址各试两次（首次断网＋重试一次），共 4 次调用。
+      expect(proxyCalls, 4);
+    });
+
+    test('0.1.4：无缓存时面板地址也进链（品牌 fallback :11111）', () async {
+      // C 路 P0-1 的鸡生蛋：0.1.3 里无缓存 → panel_domain 是占位
+      // 域名 → 面板地址整段跳过，派生修复只在有缓存后生效。
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(RemoteConfigService.cacheKey);
+      final service = RemoteConfigService(prefs: prefs);
+      final urls = await service.defaultConfigUrls();
+      expect(
+        urls[0],
+        'https://ccpanel.jiankong.cf:11111/client-config.json',
+      );
+      expect(urls[1], RemoteConfigService.workerConfigUrl);
+      expect(urls[2], RemoteConfigService.rawConfigUrl);
+    });
+
+    test('0.1.4：代理轮跳过直连已 404 的地址', () async {
+      final keys = _TempKeys();
+      await keys.init();
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(RemoteConfigService.cacheKey);
+      // 直连轮：A 404、B 断网；代理轮只该再试 B（A 再试也是 404）。
+      final proxyUrls = <String>[];
+      final proxyDio = Dio();
+      proxyDio.interceptors.add(
+        InterceptorsWrapper(
+          onRequest: (options, handler) {
+            proxyUrls.add(options.uri.toString());
+            handler.reject(
+              DioException(
+                requestOptions: options,
+                type: DioExceptionType.connectionError,
+              ),
+            );
+          },
+        ),
+      );
+      final service = RemoteConfigService(
+        dio: _configDio({configUrlA: (status: 404, body: '')}),
+        proxyDio: proxyDio,
+        configUrls: [configUrlA, configUrlB],
+        prefs: prefs,
+        publicKeyBase64: keys.publicKeyBase64,
+        coreStarted: () => true,
+      );
+      final result = await service.refresh();
+      expect(result.status, RemoteConfigRefreshStatus.failed);
+      // B 一次＋重试一次，共 2 次代理调用；A 一次也没经代理试过。
+      expect(proxyUrls, [configUrlB, configUrlB]);
+      // 失败：直连 A 404、直连 B 断网、代理 B 断网，共 3 条。
+      expect(result.failures.length, 3);
+      expect(
+        result.failures.where((f) => f.viaProxy).map((f) => f.url),
+        [configUrlB],
+      );
+      await prefs.remove(RemoteConfigService.cacheKey);
     });
 
     test('缓存被改坏就当作没有缓存', () async {
@@ -549,6 +957,134 @@ void main() {
       expect(state.source, RemoteConfigSource.cached);
       expect(state.config.configVersion, 2);
       expect(state.offline, isTrue);
+    });
+
+    test('0.1.4：refresh 进行中再调，等同一轮结果，不合成 upToDate', () async {
+      // C 路 P0-3 的旧 bug：启动拉取没跑完时点检查更新，直接回
+      // 合成的 upToDate 配空 failures，全新安装显示“已是最新配置
+      // （v0）”。现在第二次调用等正在跑的那轮，两次都拿到真结果。
+      final keys = _TempKeys();
+      await keys.init();
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(RemoteConfigService.cacheKey);
+      final envelope = await keys.signEnvelope(_payload(version: 8));
+      final dio = Dio();
+      dio.interceptors.add(
+        InterceptorsWrapper(
+          onRequest: (options, handler) async {
+            await Future<void>.delayed(const Duration(milliseconds: 200));
+            handler.resolve(
+              Response<String>(
+                requestOptions: options,
+                statusCode: 200,
+                data: envelope,
+              ),
+            );
+          },
+        ),
+      );
+      final service = RemoteConfigService(
+        dio: dio,
+        configUrls: [configUrl],
+        prefs: prefs,
+        publicKeyBase64: keys.publicKeyBase64,
+      );
+      final container = ProviderContainer(
+        overrides: [remoteConfigServiceProvider.overrideWithValue(service)],
+      );
+      addTearDown(container.dispose);
+      final notifier = container.read(remoteConfigProvider.notifier);
+      final first = notifier.refresh();
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      final second = notifier.refresh();
+      final results = await Future.wait([first, second]);
+      expect(results[0].status, RemoteConfigRefreshStatus.updated);
+      expect(results[1].status, RemoteConfigRefreshStatus.updated);
+      expect(results[0].config.configVersion, 8);
+      expect(results[1].config.configVersion, 8);
+      expect(container.read(remoteConfigProvider).source,
+          RemoteConfigSource.fresh);
+      await prefs.remove(RemoteConfigService.cacheKey);
+    });
+
+    test('0.1.4：启动拉取失败后核心起来了，再触发一次 refresh', () async {
+      // C 路 P0-2：启动时后台拉取发生在核心启动前，代理轮恒跳过；
+      // 核心 stopped → started 跃迁后，失败过的拉取要再试一次。
+      final keys = _TempKeys();
+      await keys.init();
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(RemoteConfigService.cacheKey);
+      final envelope = await keys.signEnvelope(_payload(version: 2));
+      var calls = 0;
+      final dio = Dio();
+      dio.interceptors.add(
+        InterceptorsWrapper(
+          onRequest: (options, handler) {
+            calls++;
+            // 前两次调用（首轮直连＋重试一次）断网，之后通。
+            if (calls <= 2) {
+              handler.reject(
+                DioException(
+                  requestOptions: options,
+                  type: DioExceptionType.connectionError,
+                ),
+              );
+              return;
+            }
+            handler.resolve(
+              Response<String>(
+                requestOptions: options,
+                statusCode: 200,
+                data: envelope,
+              ),
+            );
+          },
+        ),
+      );
+      final service = RemoteConfigService(
+        dio: dio,
+        configUrls: [configUrl],
+        prefs: prefs,
+        publicKeyBase64: keys.publicKeyBase64,
+      );
+      final plugin = _FakeCorePlugin();
+      final core = CoreService(
+        plugin: plugin,
+        clashApiClient: _FakeCoreClashApi(),
+        usingConfigPath: () async => '/tmp/014-test-no-such-config.json',
+        realTrafficProbe: () async => true,
+        probeWarmup: Duration.zero,
+        probeRetryDelay: Duration.zero,
+      );
+      await core.init();
+      final container = ProviderContainer(
+        overrides: [
+          remoteConfigServiceProvider.overrideWithValue(service),
+          coreServiceProvider.overrideWithValue(core),
+        ],
+      );
+      addTearDown(() async {
+        container.dispose();
+        await plugin.close();
+        core.dispose();
+      });
+      final notifier = container.read(remoteConfigProvider.notifier);
+      await notifier.init();
+      // 启动拉取失败：无缓存 → bundled v0。
+      expect(container.read(remoteConfigProvider).source,
+          RemoteConfigSource.bundled);
+      // 核心起来 → 监听触发重拉，等它变成 fresh。
+      plugin.emit(const ProxyStarted());
+      var fresh = false;
+      for (var i = 0; i < 50 && !fresh; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        fresh =
+            container.read(remoteConfigProvider).source ==
+                RemoteConfigSource.fresh;
+      }
+      expect(fresh, isTrue);
+      expect(container.read(remoteConfigProvider).config.configVersion, 2);
+      await prefs.remove(RemoteConfigService.cacheKey);
     });
   });
 
@@ -698,7 +1234,7 @@ void main() {
       await container.read(nodesProvider.notifier).refresh();
       final state = container.read(nodesProvider);
       expect(state.status, NodesStatus.error);
-      expect(state.errorMessage, '订阅已失效，请重新绑定');
+      expect(state.errorMessage, '订阅链接不对或令牌不对，请检查链接或重新获取');
       final url = await subService.readSubscriptionUrl();
       expect(url, startsWith(oldBase));
     });
@@ -846,7 +1382,7 @@ void main() {
     }
 
     test('force_update 且当前版本低于最低版本才强制', () {
-      // 当前客户端版本是 0.1.0（见 lib/brand/remote_config.dart）。
+      // 当前客户端版本是 0.1.6（见 lib/brand/remote_config.dart）。
       expect(config(force: true, min: '0.2.0').forceUpdateRequired, isTrue);
       expect(config(force: true, min: '0.1.0').forceUpdateRequired, isFalse);
       expect(config(force: true, min: '0.0.9').forceUpdateRequired, isFalse);

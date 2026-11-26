@@ -1,0 +1,44 @@
+START 2026-11-26 17:14:45
+   Woah! You appear to be trying to run flutter as root.
+   We strongly recommend running the flutter tool without superuser privileges.
+  /
+📎
+Flutter 3.50.1 • channel stable • https://github.com/flutter/flutter.git
+Framework • revision ae9b586f34 (8 days ago) • 2026-11-18 17:01:07 -0800
+Engine • hash 51379e6df48ea8ee7205623b90fe66491cad8df3 (revision 4d35714800) (8 days ago) • 2026-11-18 01:50:07.000Z
+   Woah! You appear to be trying to run flutter as root.
+   We strongly recommend running the flutter tool without superuser privileges.
+  /
+📎
+Running Gradle task 'assembleDebug'...                          
+e: Failed connecting to the daemon in 4 retries
+   Woah! You appear to be trying to run flutter as root.
+   We strongly recommend running the flutter tool without superuser privileges.
+  /
+????
+e: Failed connecting to the daemon in 4 retries
+e: Failed connecting to the daemon in 4 retries
+e: Failed connecting to the daemon in 4 retries
+e: Failed connecting to the daemon in 4 retries
+Note: /home/hatch/workspace/zhexuexi-client-kit/apps/flutter_client/packages/flutter_sing_box/android/src/main/kotlin/io/nekohasekai/sfa/bg/ParceledListSlice.java uses or overrides a deprecated API.
+Note: Recompile with -Xlint:deprecation for details.
+e: Failed connecting to the daemon in 4 retries
+[=========                              ] 25%                                   
+Running Gradle task 'assembleDebug'...                           1624.5s
+✓ Built build/app/outputs/flutter-apk/app-debug.apk
+END 2026-11-26 17:41:57
+total 719520
+drwxrws--- 1 root nogroup       522 Nov 26 17:41 .
+drwxrws--- 1 root nogroup       122 Nov 25 10:55 ..
+-rw-rw---- 1 root nogroup 109454485 Nov 26 16:22 app-arm64-v8a-release.apk
+-rw-rw---- 1 root nogroup        40 Nov 26 16:22 app-arm64-v8a-release.apk.sha1
+-rw-rw---- 1 root nogroup        92 Nov 26 15:46 app-arm64-v8a-release.apk.sha256
+-rw-rw---- 1 root nogroup  23469692 Nov 26 16:22 app-armeabi-v7a-release.apk
+-rw-rw---- 1 root nogroup        40 Nov 26 16:22 app-armeabi-v7a-release.apk.sha1
+-rw-rw---- 1 root nogroup 275629373 Nov 26 17:41 app-debug.apk
+-rw-rw---- 1 root nogroup        40 Nov 26 17:41 app-debug.apk.sha1
+-rw-rw---- 1 root nogroup 297452895 Nov 25 10:55 app-release.apk
+-rw-rw---- 1 root nogroup        40 Nov 25 10:56 app-release.apk.sha1
+-rw-rw---- 1 root nogroup  30745672 Nov 26 16:22 app-x86_64-release.apk
+-rw-rw---- 1 root nogroup        40 Nov 26 16:22 app-x86_64-release.apk.sha1
+sha256sum: build/app/outputs/flutter-apk/app-x86_64-debug.apk: No such file or directory

@@ -1,15 +1,51 @@
 # 哲学系客户端 — GitHub 免费 CI
 #
-# 阶段 0 已接线（2026-11-22）：working-directory 已改成 apps/flutter_client，
-# Flutter 钉死 3.50.1，品牌注入写 apps/flutter_client/assets/brand.json，
-# Windows 签名的 $pfx 未定义 bug 已修，产物路径已改成工程内相对路径。
-# CI 真跑留到阶段 1 前再验——本机沙箱的 MITM 代理与 Java TLS 不兼容，
-# Gradle 在本机下不到依赖（见 docs/versions.md），不要声称 CI 跑过。
+# 手动打包入口（不用等 tag，不用本地编）：
+#   仓库 → Actions → build → Run workflow，填下面四个输入，点运行。
+#   产物在那次运行页面的底部 Artifacts 里下载，保留 90 天。
+#
+# 四个输入（workflow_dispatch）：
+#   brand_name：应用名（默认“哲学系”），只改包内 brand.json 的 app_name。
+#   version：版本号 x.y.z（留空时产物名用分支/tag 名）。
+#   logo_url：Logo 图片地址（PNG，选填）。空着用仓里自带的 Logo；
+#     填了会在构建前下载，替换包内 Logo（assets/logo/logo.png，
+#     应用内顶栏与启动器图标源图都用它），并重编 Android 启动器图标。
+#     启动器图标做法：Logo 等比缩放、居中贴在 1600×1600 墨蓝底
+#     （#082E63）上，再缩到各密度；Logo 本身不改色，只加底
+#     （见 apps/flutter_client/tool/regen_launcher_icons.py）。
+#     不是 PNG 时构建直接报错，不出包。
+#   remote_config_domain：远程配置域名（选填，如 cc.jiankong.cf）。
+#     空着用仓里默认值；填了只换远程配置默认地址
+#     （lib/services/remote_config_service.dart 的 workerConfigUrl）
+#     里的域名，其他代码不动。填完整 URL 也行，只取 host。
+#
+# 自动触发：push tag v* 时也跑（version 取 tag 名，四个输入取默认值）。
+#
+# Secrets（仓库 Settings → Secrets and variables → Actions 里填，
+# 绝不写进代码、不打日志；fork 不会带走 Secrets，新仓须重填）：
+#   Android 正式版（release 签名，4 个，缺一不可；只填 keystore
+#   不填密码时构建直接报错，不静默出未签名包）：
+#     ANDROID_KEYSTORE_BASE64：release keystore 文件的 base64
+#       （本地跑 base64 -w0 <keystore 文件> 得到，别贴到聊天里）。
+#     ANDROID_KEYSTORE_PASSWORD：keystore 的 storePassword。
+#     ANDROID_KEY_PASSWORD：key 的 keyPassword。
+#     ANDROID_KEY_ALIAS：keyAlias（如 zhexuexi）。
+#     没填 keystore 时只编 debug 包供测试（不能升级、不是正式版）。
+#   Windows 签名（2 个）：
+#     WINDOWS_CERT_BASE64：OV 证书 pfx 的 base64。
+#     WINDOWS_CERT_PASSWORD：证书密码。
+#     没填时只出未签名包供测试。
+#
+# 产物：
+#   Android：分架构三个 APK（arm64-v8a / armeabi-v7a / x86_64，
+#     各带 .sha256），小米手机用 arm64-v8a。
+#   Windows：未签名或已签名的 .exe。
+#
+# 注意：本流程此前一次都没跑通过，第一次跑就是测试；跑不通时
+# 先看 Actions 日志，不要声称 CI 跑过。
 #
 # 免费说明（§12.0）：本仓是公开仓，GitHub Actions 不计分钟数、免费。
 # 私有仓才有免费额度上限；fork 到别的公开仓，CI 照样免费跑。
-# 密钥说明：签名用的 6 个 Secrets 在仓库 Settings → Secrets and variables
-# → Actions 里填，绝不写进代码、不打日志。fork 不会带走 Secrets，新仓须重填。
 
 name: build
 
@@ -23,6 +59,16 @@ on:
         type: string
       version:
         description: "版本号 x.y.z（留空自动用最新 tag +1，见 §11.5）"
+        required: false
+        default: ""
+        type: string
+      logo_url:
+        description: "Logo 图片地址（PNG，选填；空着用仓里自带的 Logo）"
+        required: false
+        default: ""
+        type: string
+      remote_config_domain:
+        description: "远程配置域名（选填，如 cc.jiankong.cf；空着用仓里默认值）"
         required: false
         default: ""
         type: string
@@ -72,6 +118,41 @@ jobs:
             Write-Host "品牌注入完成：应用名=$brandName"
           } else {
             Write-Host "品牌注入跳过：用包内默认 brand.json"
+          }
+
+      - name: Logo 与远程配置域名注入
+        # logo_url 为空 → 用仓里自带的 Logo；remote_config_domain 为空 →
+        # 用仓里默认值。Logo 填了：下载 PNG → 替换 assets/logo/logo.png
+        # （应用内顶栏用它；Android 启动器图标在 Android job 里另行重编）。
+        # 远程配置域名填了：只换 remote_config_service.dart 里
+        # workerConfigUrl 的域名，其他代码不动。
+        run: |
+          $logoUrl = "${{ inputs.logo_url }}"
+          if ($logoUrl -ne '') {
+            $logoFile = "assets/logo/logo.png"
+            Invoke-WebRequest -Uri $logoUrl -OutFile $logoFile
+            $bytes = [IO.File]::ReadAllBytes($logoFile)
+            if ($bytes.Length -lt 8 -or $bytes[0] -ne 0x89 -or $bytes[1] -ne 0x50 -or $bytes[2] -ne 0x4E -or $bytes[3] -ne 0x47) {
+              throw "logo_url 下载到的不是 PNG，请检查地址：$logoUrl"
+            }
+            Write-Host "Logo 已替换：$logoFile"
+          } else {
+            Write-Host "Logo 跳过：用仓里自带的 Logo"
+          }
+          $domain = "${{ inputs.remote_config_domain }}"
+          if ($domain -ne '') {
+            $domain = $domain.Trim() -replace '^https?://', '' -replace '/.*$', '' -replace '\s', ''
+            if ($domain -notmatch '^[A-Za-z0-9.-]+(:[0-9]+)?$') {
+              throw "remote_config_domain 不合法（只要域名，如 cc.jiankong.cf）"
+            }
+            $configFile = "lib/services/remote_config_service.dart"
+            $content = Get-Content $configFile -Raw
+            $new = $content -replace "(workerConfigUrl =\s*')https://cc\.jiankong\.cf(/client-config\.json')", "`$1https://$domain`$2"
+            if ($new -eq $content) { throw "远程配置默认地址替换失败（没找到 workerConfigUrl）" }
+            [IO.File]::WriteAllText((Resolve-Path $configFile).Path, $new, [Text.UTF8Encoding]::new($false))
+            Write-Host "远程配置默认地址已换成：https://$domain/client-config.json"
+          } else {
+            Write-Host "远程配置域名跳过：用仓里默认值"
           }
 
       - name: 编 Windows
@@ -148,15 +229,64 @@ jobs:
             Write-Host "品牌注入跳过：用包内默认 brand.json"
           }
 
+      - name: Logo 与远程配置域名注入
+        # 与 Windows job 相同，另加一步：给了 logo_url 时重编 5 档
+        # Android 启动器图标（tool/regen_launcher_icons.py；Logo 等比
+        # 缩放、居中贴在墨蓝底上，Logo 本身不改色）。
+        run: |
+          $logoUrl = "${{ inputs.logo_url }}"
+          if ($logoUrl -ne '') {
+            $logoFile = "assets/logo/logo.png"
+            Invoke-WebRequest -Uri $logoUrl -OutFile $logoFile
+            $bytes = [IO.File]::ReadAllBytes($logoFile)
+            if ($bytes.Length -lt 8 -or $bytes[0] -ne 0x89 -or $bytes[1] -ne 0x50 -or $bytes[2] -ne 0x4E -or $bytes[3] -ne 0x47) {
+              throw "logo_url 下载到的不是 PNG，请检查地址：$logoUrl"
+            }
+            Write-Host "Logo 已替换：$logoFile"
+            python -m pip install --quiet pillow
+            python tool/regen_launcher_icons.py $logoFile
+          } else {
+            Write-Host "Logo 跳过：用仓里自带的 Logo"
+          }
+          $domain = "${{ inputs.remote_config_domain }}"
+          if ($domain -ne '') {
+            $domain = $domain.Trim() -replace '^https?://', '' -replace '/.*$', '' -replace '\s', ''
+            if ($domain -notmatch '^[A-Za-z0-9.-]+(:[0-9]+)?$') {
+              throw "remote_config_domain 不合法（只要域名，如 cc.jiankong.cf）"
+            }
+            $configFile = "lib/services/remote_config_service.dart"
+            $content = Get-Content $configFile -Raw
+            $new = $content -replace "(workerConfigUrl =\s*')https://cc\.jiankong\.cf(/client-config\.json')", "`$1https://$domain`$2"
+            if ($new -eq $content) { throw "远程配置默认地址替换失败（没找到 workerConfigUrl）" }
+            [IO.File]::WriteAllText((Resolve-Path $configFile).Path, $new, [Text.UTF8Encoding]::new($false))
+            Write-Host "远程配置默认地址已换成：https://$domain/client-config.json"
+          } else {
+            Write-Host "远程配置域名跳过：用仓里默认值"
+          }
+
       - name: 编 Android APK
-        # keystore 由 Secrets 还原到本地，构建命令用 --release 签名；
+        # keystore 与 key.properties 都由 Secrets 生成（见文件头注释）；
         # 没填 keystore Secrets 时只编 debug 包供测试，不出正式包。
+        # release 用 --split-per-abi 出分架构包（arm64/armv7/x86_64）。
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: |
           if ($env:ANDROID_KEYSTORE_BASE64 -ne '') {
             [IO.File]::WriteAllBytes("android\app\release.keystore", [Convert]::FromBase64String($env:ANDROID_KEYSTORE_BASE64))
-            flutter build apk --release
+            if ($env:ANDROID_KEYSTORE_PASSWORD -eq '' -or $env:ANDROID_KEY_PASSWORD -eq '' -or $env:ANDROID_KEY_ALIAS -eq '') {
+              throw "已填 keystore，但缺密码 Secrets：ANDROID_KEYSTORE_PASSWORD / ANDROID_KEY_PASSWORD / ANDROID_KEY_ALIAS 都要填。"
+            }
+            $keyProps = @(
+              "storePassword=$env:ANDROID_KEYSTORE_PASSWORD",
+              "keyPassword=$env:ANDROID_KEY_PASSWORD",
+              "keyAlias=$env:ANDROID_KEY_ALIAS",
+              "storeFile=release.keystore"
+            ) -join "`n"
+            [IO.File]::WriteAllText("$PWD\android\key.properties", $keyProps, [Text.UTF8Encoding]::new($false))
+            flutter build apk --release --split-per-abi
           } else {
             Write-Host "提示：没填 Android keystore Secrets，先编 debug 包测试，正式发布前补填。"
             flutter build apk --debug

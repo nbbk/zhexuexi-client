@@ -9,6 +9,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_sing_box/flutter_sing_box.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:zhexuexi_client/core/clash_api_client.dart';
 import 'package:zhexuexi_client/core/config_validator.dart';
 import 'package:zhexuexi_client/core/core_provider.dart';
 import 'package:zhexuexi_client/core/node_model.dart';
@@ -56,6 +57,25 @@ class _FakePlugin extends FlutterSingBox {
   void emit(ProxyState state) => _stateController.add(state);
 
   Future<void> close() => _stateController.close();
+}
+
+/// Clash API fake：启动后校验（`CoreService._verifyControlApi`）取一帧
+/// 就回，不碰真网络。widget 测试里 HttpClient 一律回 400，不注入
+/// 这个 fake 时校验会把状态翻成 error（问题 6 的探活副作用）。
+class _FakeClashApi extends ClashApiClient {
+  @override
+  Future<TrafficSample> trafficSample({
+    Duration timeout = const Duration(seconds: 5),
+  }) async => const TrafficSample(up: 0, down: 0);
+
+  /// 启动后校验的拨测桩：默认测通；不桩它时真实现会去连
+  /// 127.0.0.1:9090，widget 测试里 HttpClient 一律回 400，
+  /// 校验把状态翻成 error（与 home_page_test 同款回归）。
+  @override
+  Future<ProxyDelayResult> proxyDelayDetailed(
+    String proxyName, {
+    Duration timeout = const Duration(seconds: 5),
+  }) async => const ProxyDelayResult(delay: 100);
 }
 
 /// 校验器 fake：按开关返回通过或固定错误。
@@ -116,6 +136,7 @@ void main() {
       validator: validator,
       usingConfigPath: () async => configPath,
       ensureSelectedProfile: (_) async {},
+      clashApiClient: _FakeClashApi(),
     );
     await service.init();
   });
@@ -176,7 +197,14 @@ void main() {
     expect(container.read(routingModeProvider).mode, RoutingMode.direct);
     final decoded = jsonDecode(await readConfig()) as Map<String, dynamic>;
     expect((decoded['route'] as Map)['final'], 'direct');
-    expect(((decoded['route'] as Map)['rules'] as List), isEmpty);
+    // 直连模式 route 只有前两条基础规则（都不引用 Proxy），切换后仍含
+    // sniff（劫持 DNS 已随 0.1.3 D 路第 1 步去掉，QUIC 阻断已随
+    // 0.1.4 D 路第 2 步去掉、0.1.5 加回、0.1.6 回滚删掉）。
+    final rules = ((decoded['route'] as Map)['rules'] as List)
+        .cast<Map<String, dynamic>>();
+    expect(rules.length, 2);
+    expect(rules[0], {'action': 'sniff', 'timeout': '300ms'});
+    expect(rules[1], {'ip_is_private': true, 'outbound': 'direct'});
   });
 
   test('切到同一模式是空操作，不重载、不写盘', () async {
@@ -208,7 +236,12 @@ void main() {
         .setMode(RoutingMode.global);
     expect(ok, isFalse);
     expect(container.read(routingModeProvider).mode, RoutingMode.rule);
-    expect(container.read(routingModeProvider).errorMessage, isNotNull);
+    // 失败原因要进 errorMessage（2026-11-26：以前只剩固定句，
+    // 首页弹的也是固定句）；界面直接显示这条。
+    expect(
+      container.read(routingModeProvider).errorMessage,
+      contains('route 缺少 default_domain_resolver'),
+    );
     expect(await readConfig(), oldContent);
     expect(plugin.reloadCalls, 0);
     // 校验失败不持久化：下次启动仍是规则模式。

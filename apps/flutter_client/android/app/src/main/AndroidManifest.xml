@@ -1,6 +1,11 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <!-- 扫码添加订阅/节点（mobile_scanner）：相机权限，运行时由扫码页申请。 -->
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- 应用内更新：调系统安装确认要这个权限（Android 8+）；
+         open_filex 插件自带 FileProvider（覆盖应用专属目录），
+         这里不用再声明 provider。侧载安装仍须用户在系统界面点确认，
+         做不到静默安装。 -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <application
         android:label="哲学系"
         android:name="${applicationName}"
@@ -11,7 +16,7 @@
             android:launchMode="singleTop"
             android:taskAffinity=""
             android:theme="@style/LaunchTheme"
-            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode|colorMode|mcc|mnc"
             android:hardwareAccelerated="true"
             android:windowSoftInputMode="adjustResize">
             <!-- Specifies an Android theme to apply to this Activity as soon as

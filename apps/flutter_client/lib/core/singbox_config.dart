@@ -25,10 +25,15 @@ class SingboxConfigResult {
 /// - 只认统一节点模型 [Node]，不读面板下发的任何配置段：面板的 `dns` /
 ///   `route` / `inbounds` / 策略组一律不透传，DNS 与路由由客户端自己生成；
 /// - DNS 自生成新格式（sing-box 1.14 已移除 legacy `address` 写法）：
-///   DoH 双路（1.1.1.1 直连解析、dns.google 走代理）＋ DoT 8.8.8.8:853 兜底，
-///   只解析 IPv4（`strategy: ipv4_only`），不回落明文 UDP 53；
+///   DoH 双路（223.5.5.5 直连解析、8.8.8.8 经代理出站），只解析 IPv4
+///   （`strategy: ipv4_only`），不回落明文 UDP 53；
+///   两台服务器都必须写 IP、不能写域名：域名要先经
+///   `default_domain_resolver` 解析才能建连，直连解析一死、代理
+///   DNS 跟着死（2026-11-26 根因：`dns.google` 的引导解析依赖
+///   直连 1.1.1.1，国内直连境外解析被拦，代理 DNS 从未成功过）；
+///   直连解析不用 1.1.1.1（国内直连被拦），用阿里云 223.5.5.5；
 /// - 路由规则与面板 §6.1.2 的域名清单对齐：TikTok / 社交 / 流媒体 /
-///   测 IP 走 Proxy，`.cn` 直连，其余直连（规则模式）；全局与直连
+///   测 IP / Google 基础域走 Proxy，`.cn` 直连，其余直连（规则模式）；全局与直连
 ///   模式见 [build] 的 `mode` 参数；
 /// - 节点为空时仍是合法空配置（不断核心、不引用不存在的 Proxy 组）。
 class SingboxConfigBuilder {
@@ -128,15 +133,42 @@ class SingboxConfigBuilder {
     'ip-api.com',
   ];
 
+  /// Google 基础域后缀组（20 个，2026-11-26 0.1.2 根因 R2 补齐：
+  /// 清单里缺 Google 基础域，测速地址 www.gstatic.com 与
+  /// Google 服务域名在规则模式下落到 final=direct 直连被墙；
+  /// route 与 DNS 规则里与现有 4 组并列各加一条）。
+  static const List<String> googleInfraSuffixes = [
+    'google.com',
+    'googleapis.com',
+    'gstatic.com',
+    'ggpht.com',
+    'googleusercontent.com',
+    'gvt1.com',
+    'gvt2.com',
+    'gvt3.com',
+    'play.google.com',
+    'accounts.google.com',
+    'android.clients.google.com',
+    'android.apis.google.com',
+    'dl.google.com',
+    'dl-ssl.google.com',
+    'm.google.com',
+    'android.com',
+    'googleplay.com',
+    'google-analytics.com',
+    'xn--ngstr-lra8j.com',
+    'youtube-nocookie.com',
+  ];
+
   /// DNS 配置摘要（设置页“DNS 配置查看”直接渲染这份，不另写一份
   /// 文案：两处写同一份 DNS 说明迟早会写岔）。
   ///
   /// 防泄漏是固定行为不是开关：DNS 只走 DoH / DoT，不回落明文
   /// UDP 53；摘要最后一行写明“不可关闭”，设置页不给关掉它的入口。
   static const List<({String label, String value})> dnsSummary = [
-    (label: '直连解析', value: 'DoH https://1.1.1.1/dns-query'),
-    (label: '代理 DNS', value: 'DoH https://dns.google/dns-query（经代理出站）'),
-    (label: '兜底', value: 'DoT 8.8.8.8:853'),
+    (label: '直连解析', value: 'DoH https://223.5.5.5/dns-query'),
+    (label: '代理 DNS', value: 'DoH https://8.8.8.8/dns-query（经代理出站）'),
+    (label: '默认解析', value: '规则模式默认走代理 DNS；.cn 始终直连解析'),
     (label: '解析策略', value: '仅 IPv4（ipv4_only）'),
     (label: '明文 UDP 53', value: '不回落（无 UDP 服务器）'),
     (label: '防泄漏', value: '已开启，不可关闭'),
@@ -145,15 +177,26 @@ class SingboxConfigBuilder {
 /// 从节点列表生成完整 sing-box 配置。
 ///
 /// [mode] 只改 route 段与 DNS 规则的解析路径，不改节点出站：
-/// - 规则模式：TikTok / 社交 / 流媒体 / 测 IP → Proxy，`.cn` → direct，
-///   其余直连（route.final = direct）；DNS 规则：`.cn` 直连解析，
-///   TikTok 与测 IP 走代理 DNS；
+/// - 规则模式：TikTok / 社交 / 流媒体 / 测 IP / Google 基础域 → Proxy，
+///   `.cn` → direct，其余直连（route.final = direct）；DNS 规则：
+///   `.cn` 直连解析，TikTok 与测 IP / 社交 / 流媒体 / Google 基础域
+///   走代理 DNS；
 /// - 全局模式：route 无规则，final = 有节点时 `Proxy`、无节点时 `direct`
 ///   （无节点时没有 Proxy 组，final 不能指不存在的出站）；DNS 规则
 ///   全部走代理 DNS（有节点时经 detour Proxy，无节点时 dns-proxy 无
-///   detour、服务器用 IP 8.8.8.8，与空配置规则一致）；
+///   detour、服务器是 IP 8.8.8.8，与空配置规则一致），final 同样走
+///   代理 DNS（有节点时）；
 /// - 直连模式：route 无规则，final = direct；DNS 规则全部走直连解析，
-///   不让任何 DNS 查询经代理出站（否则“全部直连”名不副实）。
+///   不让任何 DNS 查询经代理出站（否则“全部直连”名不副实），final
+///   同样走直连解析。
+///
+/// DNS final 的口径（2026-11-26 根因修复）：规则都不命中时走的解析
+/// 路径。有节点且不是直连模式时走 `dns-proxy`——未列入规则的境外
+/// 域名也经代理解析，避开国内对境外解析的拦截与污染；流量本身仍按
+/// route 走直连还是代理，DNS 走代理不改变分流。之前 final 是
+/// `dns-dot`（DoT 8.8.8.8:853 直连），国内直连 8.8.8.8 被拦，所有
+/// 未列入规则的域名（包括测速地址 www.gstatic.com）都解析失败——
+/// 开关开着没网络、测速全红点的根因就在这里，不是节点不通。
 ///
 /// [selectedNodeName]（切片 4）：selector `Proxy` 的默认出站。
 /// 给了且该节点在配置里时用它；没给、名字不在列表里、或该节点
@@ -170,7 +213,7 @@ class SingboxConfigBuilder {
 /// 不进配置（没有 `Proxy` 组可指），直连的照常进。
 ///
 /// [tunEnabled]（切片 6）：为 true 时加一条 `tun` 入站（系统级
-/// TUN 接管流量，gvisor 栈 + 自动路由）；为 false 时不写 tun 入站。
+/// TUN 接管流量，默认栈 + 自动路由）；为 false 时不写 tun 入站。
 /// TUN 只改入站，不改出站与规则。
 ///
 /// 同节点多入站 fallback 组（切片 10）：备注名 `<节点名>-<入站 tag>`
@@ -274,8 +317,81 @@ static SingboxConfigResult build(
 
     // route 规则与 final 按模式走（见 build 的文档注释）。
     final routeRules = <Map<String, dynamic>>[];
-    // 自定义规则插在最前面（先命中先走，用户规则优先于内置规则）；
-    // 走代理的规则没有节点时不进（没有 Proxy 组可指），直连的照常进。
+    // 最前面的两条（2026-11-26 0.1.2 根因 R1，顺序即语义，
+    // 三种模式都加）：
+    // ① sniff：TUN 下流量只有目标 IP，没有域名就没有任何
+    //    domain_suffix 规则能命中，全部落到 final=direct 直连
+    //    被墙；先嗅探出域名，后面的规则才有东西可匹配；
+    // ② 私网旁路：局域网地址直连，不走代理。
+    // QUIC 阻断（UDP 443 全部 block）曾经是第 ① 条：0.1.2 有、
+    // 0.1.4 删、0.1.5 加回、0.1.6 回滚删掉（见下文 0.1.6 段）。
+    //
+    // 0.1.3（D 路第 1 步，须真机验证的定罪步骤）：原来第 ③ 条
+    // DNS 劫持（{'protocol': 'dns', 'action': 'hijack-dns'}）与
+    // TUN 入站的 'dns_mode': 'hijack' 一起删掉——两者是同一机制
+    // 的两端，必须一起开关，只去其一更差。D 路沙箱复现不出手机
+    // 故障（TUN/UDP 测不到），劫持对是 0.1.2 里唯一同时满足三点
+    // 的改动：全模式生效、能杀死一切域名解析、0.1.1 没有它；
+    // 真机验证恢复即定罪情况 B，仍断则按 PATCH_NOTES 的预案
+    // 第 2 步删 QUIC 阻断、第 3 步删 sniff（不要一次全做完）。
+    //
+    // 0.1.4（D 路第 2 步，须真机验证的定罪步骤）：删掉原来第 ① 条
+    // QUIC 阻断（{'network': 'udp', 'port': 443, 'outbound':
+    // 'block'}）——规则与全局两份配置一起删。B 路已核 sing-box
+    // 源码：路由规则只对入站连接求值，不可能误伤 HY2 出站自身的
+    // UDP 443；沙箱 48 次 curl 也复现不出断网，删与不删在 SOCKS
+    // 路径上无差别，只能由真机 A/B 定罪。sniff 是第 3 步，这次
+    // 不删（删了规则模式的域规则全部失效，退回 0.1.2 之前的状态），
+    // 留待真机验证第 2 步后再定。
+    //
+    // 0.1.5（把 QUIC 阻断加回来，规则与全局两份配置一起加）：
+    // 0.1.4 真机验证（用户 2026-11-26 22:32/22:37）：“有点网络了，
+    // 但卡得几乎不能用，YouTube 页面加载不全”，几个节点都一样慢；
+    // 0.1.4 诊断包（开关开着）核心 1.14.4-patched、已连接、探活带
+    // 真实时间通过、无错误——核心与节点侧已排除，慢在客户端共有
+    // 通路。分析员（~/workspace/015-invest/slowness-analysis.md）
+    // 定性：0.1.2 的黑断与 0.1.4 的慢是两个故障，黑断元凶是劫持对
+    // （微信是 TCP，QUIC 阻断拦不到它），QUIC 阻断在黑断上无辜、
+    // 只在“慢”上有嫌疑；P0-1 是 QUIC 走隧道（REALITY/TCP 节点上
+    // UDP QUIC 装进 TCP 流＝双重丢包恢复＋队头阻塞；HY2 上 QUIC
+    // 套 QUIC＝双重拥塞控制），P0-2 是 sniff 失败→落 final=direct；
+    // 加回 QUIC 阻断是唯一同时掐断这两条 YouTube 慢路径的单变量
+    // 改动，QUIC 被拦后回落 TCP，而 TCP 出站已被探活验证健康。
+    // 实测员（~/workspace/015-invest/sandbox-measurements.md）：
+    // 沙箱里隧道不慢（经 reality-443 吞吐中位 9.27 vs 直连 8.81
+    // MB/s，比值 1.05）、两路 DoH 都快、sniff 开关无可测代价、
+    // QUIC 阻断开/关对 TCP 无影响——节点、REALITY、DNS、sniff
+    // 全部洗脱，慢在沙箱测不到的手机侧。弱信号备查：75 次代理
+    // curl 里 2 次单次 TLS stall（5.48s、6.02s），直连 15 次里
+    // 0 次超 1.03s，样本太少不定罪。
+    // 回滚条件：真机验证 0.1.5 后 YouTube 仍卡、微信/百度无改善
+    // → 回滚这条规则，进 P1（sniff 诊断，0.1.6 再做），不要叠加
+    // 其它改动。其余一切不动：sniff 300ms、私网旁路、两路 DoH、
+    // MTU 1500、reverse_mapping、final 全不动；不加回 hijack-dns、
+    // 不动 DNS、不动栈、不加 fake-ip。
+    //
+    // 0.1.6（执行 0.1.5 的回滚条件，规则与全局两份配置一起回滚）：
+    // 0.1.5 真机验证结论是 V1 无效而且更差：0.1.4 是“有点网络但
+    // 极慢”，0.1.5 是手机全没有网络，关开关即恢复正常。0.1.4→
+    // 0.1.5 唯一的变量就是 QUIC 阻断加回——“QUIC 阻断拦不到 TCP
+    // 所以黑断上无辜”的判断被推翻（见 ~/workspace/016-invest/
+    // mechanism-blackout.md）。0.1.5 诊断包（开关开着，23:24）：
+    // 核心 1.14.4-patched、已连接、启动探活通过（23:23:34）、
+    // 最近错误无、当前节点测试机-hy2-443-A 延迟 524ms、路由首条
+    // QUIC 阻断已在 live 配置里——核心自认完全正常，数据面却
+    // 全断且静默无错误，与 0.1.2 的翻版（核心已连接、延迟 604ms、
+    // 订阅能更新，仍全断）一致：探活与延迟测的是控制面，数据面
+    // 死了核心也不报错。回滚即把本条从前缀拿掉，恢复 0.1.4 的
+    // 两条前缀（sniff、私网旁路）；sniff 不动（P1 诊断见
+    // ~/workspace/016-invest/p1-sniff.md，0.1.6 不叠加 sniff
+    // 改动）；不加回 hijack-dns、不动 DNS、不动栈、不加 fake-ip。
+    routeRules.addAll([
+      {'action': 'sniff', 'timeout': '300ms'},
+      {'ip_is_private': true, 'outbound': 'direct'},
+    ]);
+    // 自定义规则插在两条之后、内置规则之前（先命中先走，
+    // 用户规则优先于内置规则）；走代理的规则没有节点时不进
+    // （没有 Proxy 组可指），直连的照常进。
     for (final rule in customRules) {
       if (!rule.enabled) continue;
       if (rule.action == CustomRuleAction.proxy &&
@@ -309,6 +425,10 @@ static SingboxConfigResult build(
             'domain_suffix': ipCheckSuffixes,
             'outbound': 'Proxy',
           });
+          routeRules.add({
+            'domain_suffix': googleInfraSuffixes,
+            'outbound': 'Proxy',
+          });
         }
         routeRules.add({
           'domain_suffix': ['.cn'],
@@ -324,11 +444,13 @@ static SingboxConfigResult build(
         routeFinal = 'direct';
     }
 
-    // DNS 规则的解析路径按模式走：规则模式 `.cn` 直连解析、TikTok 与
-    // 测 IP 走代理 DNS；全局模式全部走代理 DNS；直连模式全部走直连解析。
-    final String cnDnsServer = mode == RoutingMode.global
-        ? 'dns-proxy'
-        : 'dns-direct';
+    // DNS 规则的解析路径按模式走：规则模式 `.cn` 直连解析、TikTok /
+    // 社交 / 流媒体 / 测 IP / Google 基础域走代理 DNS；全局模式
+    // 全部走代理 DNS；直连模式全部走直连解析。
+    // `.cn` 恒走直连解析（2026-11-26 0.1.2 全局慢 P1-1：全局
+    // 模式 `.cn` 也走直连解析；route final 仍为 Proxy，
+    // `dns.final` 仍为 dns-proxy，变的只是 `.cn` 的解析路径）。
+    final String cnDnsServer = 'dns-direct';
     final String proxyDnsServer = mode == RoutingMode.direct
         ? 'dns-direct'
         : 'dns-proxy';
@@ -337,8 +459,8 @@ static SingboxConfigResult build(
     // 用户明确说走代理的域名就走代理 DNS、说直连的就走直连 DNS，
     // 哪怕当前是全局或直连模式——那正是自定义规则存在的意义）。
     // 走代理的自定义规则没有节点时同样不进（dns-proxy 的 detour
-    // 指不到 Proxy 组；无节点时 dns-proxy 的 server 是 IP 8.8.8.8，
-    // 规则写进去也不会炸，但解析路径会与 route 不一致，故跳过）。
+    // 指不到 Proxy 组；规则写进去也不会炸，但解析路径会与 route
+    // 不一致，故跳过）。
     final dnsRules = <Map<String, dynamic>>[];
     for (final rule in customRules) {
       if (!rule.enabled) continue;
@@ -366,6 +488,22 @@ static SingboxConfigResult build(
         'domain_suffix': ipCheckSuffixes,
         'server': proxyDnsServer,
       },
+      // 社交与流媒体的 DNS 必须与 route 同路（都走代理）：
+      // 之前 DNS 规则里没有这两组，它们落到 final 上走直连解析，
+      // route 却把流量指给 Proxy——DNS 死在直连上，代理的流量
+      // 拿不到地址，YouTube / Facebook 这类站开着开关也打不开。
+      {
+        'domain_suffix': socialSuffixes,
+        'server': proxyDnsServer,
+      },
+      {
+        'domain_suffix': streamSuffixes,
+        'server': proxyDnsServer,
+      },
+      {
+        'domain_suffix': googleInfraSuffixes,
+        'server': proxyDnsServer,
+      },
     ]);
 
     return SingboxConfigResult(
@@ -377,7 +515,10 @@ static SingboxConfigResult build(
             {
               'tag': 'dns-direct',
               'type': 'https',
-              'server': '1.1.1.1',
+              // 直连解析走阿里云 DoH（223.5.5.5，IP 直连、无需先解析
+              // 服务器域名）：之前是 1.1.1.1，国内直连境外解析被拦，
+              // .cn 解析与 dns.google 的引导解析都死在这里。
+              'server': '223.5.5.5',
               'server_port': 443,
               'path': '/dns-query',
               // 直连解析不写 detour：detour 指到 direct 出站时 1.14.4
@@ -387,11 +528,11 @@ static SingboxConfigResult build(
             {
               'tag': 'dns-proxy',
               'type': 'https',
-              // 有节点时走域名 dns.google（经 detour Proxy 解析）；节点
-              // 为空时没有 detour，域名地址在启动时无人解析（1.14.4 报
-              // "missing domain resolver for domain server address"），
-              // 改用 IP 8.8.8.8。
-              'server': nodeTags.isNotEmpty ? 'dns.google' : '8.8.8.8',
+              // 服务器必须写 IP 不能写域名：之前是 dns.google，解析它
+              // 本身要走 default_domain_resolver（dns-direct）；直连
+              // 解析一死，代理 DNS 跟着死，TikTok / 测 IP 的 DNS 全灭。
+              // 8.8.8.8 经 detour Proxy 出站建连，不需要本地先解析。
+              'server': '8.8.8.8',
               'server_port': 443,
               'path': '/dns-query',
               // 代理 DNS 走 selector 出站。注意 detour 填的是出站 tag，
@@ -401,20 +542,23 @@ static SingboxConfigResult build(
               // Proxy 组，detour 也不写。
               if (nodeTags.isNotEmpty) 'detour': 'Proxy',
             },
-            {
-              'tag': 'dns-dot',
-              'type': 'tls',
-              'server': '8.8.8.8',
-              'server_port': 853,
-              // DoT 兜底走直连，同样不写 detour。
-            },
           ],
           'rules': dnsRules,
-          // sing-box 没有 DNS 服务器间的自动故障转移；DoT 服务器挂在 final
-          // 上当兜底：规则都不命中时走 DoT 直连解析。
-          'final': 'dns-dot',
+          // sing-box 没有 DNS 服务器间的自动故障转移；final 是规则都
+          // 不命中时的解析路径：有节点且不是直连模式时走代理 DNS，
+          // 否则走直连解析（见 build 的文档注释）。
+          // 之前 final 是 DoT 8.8.8.8:853 直连——国内直连 8.8.8.8
+          // 被拦，未列入规则的域名（包括测速地址 www.gstatic.com）
+          // 全部解析失败：开关开着没网络、测速全红点的根因。
+          'final': mode != RoutingMode.direct && nodeTags.isNotEmpty
+              ? 'dns-proxy'
+              : 'dns-direct',
           // 只解析 IPv4，不回落明文 UDP 53（无 udp 服务器）。
           'strategy': 'ipv4_only',
+          // 反向映射（2026-11-26 0.1.2 根因 R1）：TUN 下只有目标
+          // IP 时，靠反向映射把解析过的域名找回来，route 的
+          // domain_suffix 规则才能命中。
+          'reverse_mapping': true,
         },
         'inbounds': [
           {
@@ -424,22 +568,59 @@ static SingboxConfigResult build(
             'listen_port': mixedPort,
           },
           // TUN 入站（切片 6，tunEnabled 时才写）：系统级 TUN 接管
-          // 流量，gvisor 栈 + 自动路由；不写时就是原来的 mixed 入站。
+          // 流量，自动路由；不写时就是原来的 mixed 入站。
           // 注意 run 冒烟只跑 tun 关闭的配置：tun 入站启动时要建
           // TUN 设备，没权限的机器上会失败，真机再验。
+          //
+          // 这里不写 `stack`（2026-11-26 根因修复）：真 sing-box
+          // 1.14.4 `check` 接受 `"stack": "gvisor"`，但插件内置的
+          // 官方 schema 里 tun 分支没有 `stack` 这个属性、且
+          // `additionalProperties: false`，Dart 校验每次都以
+          // "Additional property stack is not allowed" 拒绝整份配置
+          // ——TUN 默认开（0367f0df）之后每次点开关、切模式都卡在
+          // applyNodes 的校验上。不写 stack 时 sing-box 用默认栈
+          // （带 gvisor 编译时是 mixed，否则 system，官方默认/推荐），
+          // 与插件自带 SingBoxTunOptions 的默认一致。
+          // `address` 裸字符串不用改：schema 的 address 是 Listable，
+          // 单串与数组都认（消融实测：只去 stack 就 0 报错）。
           if (tunEnabled)
             {
               'type': 'tun',
               'tag': 'tun-in',
               'interface_name': 'tun0',
-              'mtu': 9000,
+              // MTU 1500（2026-11-26 二轮修复：之前是 9000，远高于
+              // 手机物理 MTU 约 1500，大包分片/黑洞风险；拨测不走
+              // TUN 所以它不是拨测全灭的主因，只是叠加因素，顺手修）。
+              'mtu': 1500,
               'address': '172.19.0.1/30',
               'auto_route': true,
               'strict_route': true,
-              'stack': 'gvisor',
+              // 0.1.3（D 路第 1 步）：原来这里写 'dns_mode': 'hijack'
+              //（2026-11-26 0.1.2 根因 R1，TUN 接管的 DNS 查询劫持
+              // 进本地 DNS，与 route 的 hijack-dns 规则配套），与
+              // 路由那条 hijack-dns 一起删掉——劫持对是同一机制的两
+              // 端，必须一起开关。不写即默认，恢复 0.1.1 行为：
+              // App DNS 恢复成普通 UDP 53 流量走路由规则。
             },
         ],
         'outbounds': outbounds,
+        // route：注意这里故意不写 `auto_detect_interface` /
+        // `default_interface` / 出站 `bind_interface`（2026-11-26
+        // 二轮修复，上游 sing-box 1.14.4 源码核实）：
+        // - `NewNetworkManager`（route/network.go）里这三项只要写了
+        //   就会在 Android 上直接报错（"only supported on Linux,
+        //   Windows and macOS"），核心起不来——文档 `auto_route`
+        //   一节的三选一在 Android 上全是死路；
+        // - 同一处源码还说明：出站拨号挂 `ProtectFunc()`（调
+        //   `autoDetectInterfaceControl` 即 `protect(fd)`）只在
+        //   `AutoDetectInterface()` 为真时才发生，Android 上恒为
+        //   假——所以插件里 `protect(fd)` 那行代码在 Android 上
+        //   根本不会被核心拨号走，之前“代码里有 protect 就安全”
+        //   的判断不成立；
+        // - Android 上真正的硬隔离在插件层
+        //   `VPNService.openTun`：`addDisallowedApplication(自家包名)`
+        //   让核心（与 App 同 UID 的 :remote 进程）发出的 socket
+        //   直接绕过 TUN，不依赖 protect() 是否被调、是否成功。
         'route': {
           'rules': routeRules,
           'final': routeFinal,
@@ -497,7 +678,7 @@ static SingboxConfigResult build(
     return first?.name;
   }
 
-  /// 节点在配置里的出站 tag（测速与切换认这个 tag，不是节点名）；
+  /// 节点在配置里的出站 tag（测速认这个 tag，不是节点名）；
   /// 该节点生成时会被跳过（未知协议、缺 UUID、grpc 等）时返回 null，
   /// 测速方把它当“测速失败”标灰，不要拿名字去调 delay 接口
   /// （核心里根本没有这个出站，调了也只是 404）。
@@ -509,15 +690,74 @@ static SingboxConfigResult build(
   /// 注意：返回的是节点自己的出站 tag，不是它所属的 fallback 组 tag
   /// （成组节点在 selector 里占组 tag 一位，见 [build]）；测速调
   /// delay 接口必须用节点自己的 tag，组 tag 没有 delay 数据。
+  /// 切换节点不要用这个：见 [selectorTagForNode]。
   static String? tagForNode(List<Node> nodes, Node target) {
+    for (final entry in _nodeTagEntries(nodes)) {
+      if (identical(entry.node, target)) return entry.ownTag;
+    }
+    return null;
+  }
+
+  /// 节点在 selector `Proxy` 里占的那一位 tag（切换节点与落盘默认
+  /// 选择认这个，不是 [tagForNode] 的出站 tag）；该节点生成时会被
+  /// 跳过时返回 null。
+  ///
+  /// 成组节点（同名多入站，如 `测试机-reality-443-A` /
+  /// `测试机-hy2-443-A`）在 selector 里只占组 tag 一位（见 [build]），
+  /// 拿自身 tag 去 PUT `/proxies/Proxy` 时 Clash API 回 400
+  /// "Selector update error: not found"（真 sing-box 1.14.4 实测），
+  /// 这就是开着开关切节点报“核心没有响应”的根因——不是核心没响应，
+  /// 是名字不在组里。未成组节点返回自己的出站 tag。
+  static String? selectorTagForNode(List<Node> nodes, Node target) {
+    for (final entry in _nodeTagEntries(nodes)) {
+      if (identical(entry.node, target)) return entry.memberTag;
+    }
+    return null;
+  }
+
+  /// （节点，出站 tag，selector 成员 tag）三元组：与 [build] 同一套
+  /// 去重与成组规则（重名加 ` (2)`、同节点多入站成 urltest 组、
+  /// selector 里成组节点只占组 tag 一位），[tagForNode] 与
+  /// [selectorTagForNode] 都从这里取，算出来的 tag 不会与配置脱节。
+  /// 跳过的节点不在其中；[Node] 按 identity 认。
+  static List<({Node node, String ownTag, String memberTag})>
+  _nodeTagEntries(List<Node> nodes) {
     final usedTags = <String>{};
+    final keptNodes = <Node>[];
+    final nodeTags = <String>[];
     for (final node in nodes) {
       final tag = _uniqueTag(node.name, usedTags);
       if (_nodeOutbound(node, tag) == null) continue;
       usedTags.add(tag);
-      if (identical(node, target)) return tag;
+      keptNodes.add(node);
+      nodeTags.add(tag);
     }
-    return null;
+    final groupMembers = <String, List<int>>{};
+    for (var i = 0; i < keptNodes.length; i++) {
+      final group = _groupName(keptNodes[i].name);
+      if (group == null) continue;
+      groupMembers.putIfAbsent(group, () => []).add(i);
+    }
+    groupMembers.removeWhere((_, members) => members.length < 2);
+    final memberTagByIndex = List<String>.generate(
+      keptNodes.length,
+      (i) => nodeTags[i],
+    );
+    for (final entry in groupMembers.entries) {
+      final groupTag = _uniqueTag(entry.key, usedTags);
+      usedTags.add(groupTag);
+      for (final i in entry.value) {
+        memberTagByIndex[i] = groupTag;
+      }
+    }
+    return List.generate(
+      keptNodes.length,
+      (i) => (
+        node: keptNodes[i],
+        ownTag: nodeTags[i],
+        memberTag: memberTagByIndex[i],
+      ),
+    );
   }
 
   /// 单个节点转出站；转不了返回 null（原因见 [_skipReason]）。
@@ -581,6 +821,17 @@ static SingboxConfigResult build(
         'password': credential,
         // HY2 强制 TLS，节点模型里 tls 恒为 true；这里不依赖 node.tls。
         'tls': _tlsObject(node),
+        // 0.1.8：删掉 0.1.7 加的两行（回 BBR，单变量）。美国01那条线
+        // 366ms → 804ms → 全死，3 分钟内单调爬升——Brutal 固定速率
+        // pacer 按 100Mbps 硬发、链路真实容量不足时丢包爆炸的预测形态
+        // （sing-quic BrutalSender：拥塞事件空实现不降速，pacer 速率 =
+        // bps/ackRate 且 ackRate 下限钳 0.8，丢包反而发得更快最高 1.25
+        // 倍；窗口 = bps×RTT×2/ackRate，RTT 一涨窗口跟着涨；三条正反馈
+        // 串起来正是爬升曲线）。100 是按测试机那条路取的测试值（节点侧
+        // 512Mbps），美国01真实容量未知、现存唯一容量信号是 015 沙箱经
+        // REALITY 的 TCP 约 74Mbps < 100。删行即回 0.1.6 状态（有网但
+        // 慢）；在美国01上恢复即定罪 Brutal，仍死即定罪节点。调低到 50
+        // 是 0.1.9 的事，不在本版。
       },
       NodeProtocol.tuic => _tuicOutbound(node, tag, credential),
       // AnyTLS（切片 10，契约形状）：password 就是用户 UUID，TLS 只开
@@ -641,9 +892,21 @@ static SingboxConfigResult build(
     return node.tls ? _tlsObject(node) : null;
   }
 
-  /// REALITY tls 块（切片 10，实施方案 §8.2 一字不差）：
-  /// server_name 是 SNI 目标，utls 指纹缺省 `chrome`，reality 块带
+  /// REALITY tls 块（切片 10，实施方案 §8.2）：
+  /// server_name 是 SNI 目标，utls 指纹强制 `chrome`，reality 块带
   /// 公钥与 short id。
+  ///
+  /// 指纹强制 chrome（2026-11-26 0.1.2 根因 A）：Xray ≥26.9.8 的
+  /// REALITY 服务端要求 ClientHello 带 X25519MLKEM768 份额，
+  /// sing-box 1.14.4 客户端发包前无条件删掉该份额且无配置项可改；
+  /// firefox/safari 预设本身不带 MLKEM768 份额，chrome 是唯一
+  /// 可能带该份额的预设（见 sing-box#4520），所以不要
+  /// `node.fingerprint ?? 'chrome'`——节点自带 firefox/safari
+  /// 指纹时也强制改成 chrome。注意：这只是提高握手成功率的
+  /// 兜底，不是根治（1.14.4 的 chrome 预设同样可能被删份额，
+  /// 见 PATCH_NOTES 0.1.2 的 REALITY 路线说明）。
+  /// 不要往 reality 块加 `support_x25519mlkem768`：1.14.4 的
+  /// schema 没有这个字段，会拒整份配置。
   static Map<String, dynamic> _realityTlsObject(Node node) {
     final tls = <String, dynamic>{'enabled': true};
     if (node.sni != null && node.sni!.isNotEmpty) {
@@ -651,7 +914,7 @@ static SingboxConfigResult build(
     }
     tls['utls'] = {
       'enabled': true,
-      'fingerprint': node.fingerprint ?? 'chrome',
+      'fingerprint': 'chrome',
     };
     tls['reality'] = {
       'enabled': true,

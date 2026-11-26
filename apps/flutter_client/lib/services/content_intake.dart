@@ -1,3 +1,5 @@
+import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'nodes_notifier.dart';
@@ -31,6 +33,18 @@ enum ScannedContentKind {
 
   /// 无法识别。
   unknown,
+}
+
+/// 从剪贴板读一段文本，去首尾空白后填进 [controller]（光标移到末尾）。
+/// 调用方填完再走 [handleContent] 分流，与直接粘贴进框再点提交同一条路。
+/// 剪贴板为空或只有空白时返回 false，不动输入框。
+Future<bool> pasteClipboardInto(TextEditingController controller) async {
+  final data = await Clipboard.getData(Clipboard.kTextPlain);
+  final text = data?.text?.trim() ?? '';
+  if (text.isEmpty) return false;
+  controller.text = text;
+  controller.selection = TextSelection.collapsed(offset: text.length);
+  return true;
 }
 
 /// 给一段粘贴/扫码内容分类（纯函数，不碰存储、不拉网络）。

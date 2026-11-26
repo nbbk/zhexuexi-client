@@ -1,6 +1,8 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:dio/dio.dart';
+import 'package:dio/io.dart';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -16,9 +18,16 @@ import '../brand/remote_config_keys.dart';
 /// 本地缓存 → 本地也没有缓存（全新安装首次就失败）用包内默认值。
 ///
 /// 地址链（三个不同域名，一个被封试下一个）：
-/// 1. 面板 `https://<panel_domain>/client-config.json`（方案 A，须面板
-///    新增公开只读接口，待拍板 D10；面板域名取自本地缓存的最后一份
-///    好配置，没有时用包内默认值，example.com 占位地址跳过）；
+/// 1. 面板 `https://<panel_api_base>/client-config.json`（方案 A，
+///    须面板新增公开只读接口，待拍板 D10；面板接口地址取自本地缓存
+///    的最后一份好配置的 panel_api_base，没有时用包内默认值，
+///    example.com 占位地址跳过。0.1.3 D 路修复 3：必须从
+///    panel_api_base（:11111）派生，不要拼 `https://$panelDomain/`——
+///    panel_domain 无端口会打到 443，面板 443 根本不通，即使 1.4.29
+///    加了路由也打不到。0.1.4 C 路 P0-1：无缓存时也进链——用包内
+///    品牌 fallback [bundledPanelApiBase]（与已发布配置的
+///    panel_api_base 同值），不再等 Raw/Worker 先成功一次才出现；
+///    登录页占位符仍用 panel.example.com，不在这里暴露给用户输入）；
 /// 2. Worker 直出 `https://cc.jiankong.cf/client-config.json`（方案 B，
 ///    须 Worker 加一条路由反代/直出配置）；
 /// 3. GitHub Raw（方案 C，配置 JSON 放客户端仓根目录的 client-config.json）。
@@ -34,15 +43,49 @@ import '../brand/remote_config_keys.dart';
 class RemoteConfigService {
   RemoteConfigService({
     Dio? dio,
+    Dio? proxyDio,
     List<String>? configUrls,
     SharedPreferences? prefs,
     String? publicKeyBase64,
+    bool Function()? coreStarted,
   })  : _dio = dio ?? Dio(),
+        // ignore: prefer_initializing_formals
+        _proxyDio = proxyDio,
         _configUrlsOverride = configUrls,
         _prefsOverride = prefs,
-        _publicKeyBase64 = publicKeyBase64 ?? remoteConfigPublicKeyBase64;
+        _publicKeyBase64 = publicKeyBase64 ?? remoteConfigPublicKeyBase64,
+        // ignore: prefer_initializing_formals
+        _coreStarted = coreStarted;
 
   final Dio _dio;
+
+  /// 经本地 mixed 入站（127.0.0.1:2080）的 Dio（0.1.3 D 路修复 3：
+  /// 开关已开时再试一轮；为 null 时不跑代理轮。生产用
+  /// [createProxyDio] 造，测试可注入 mock Dio）。
+  /// 构造器参数名 proxyDio 是 provider 与测试用的公开 API，
+  /// 私有字段名不能跨库作 initializing formal，赋值处见 ignore。
+  final Dio? _proxyDio;
+
+  /// 核心是否已启动（开关是否开着）：生产由 provider 注入
+  /// `() => ref.read(coreServiceProvider).status == CoreStatus.started`；
+  /// 为 null 时认为没启动、不跑代理轮。
+  final bool Function()? _coreStarted;
+
+  /// 造一个经本地 mixed 入站的 Dio：HTTP(S) 请求走
+  /// `PROXY 127.0.0.1:2080`，即走核心的代理出站。开关开着时手机
+  /// 直连可能被墙、代理出站却是通的（订阅能拉就是旁证），远程
+  /// 配置直连失败后经代理再试一轮。
+  static Dio createProxyDio() {
+    final dio = Dio();
+    final adapter = IOHttpClientAdapter();
+    adapter.createHttpClient = () {
+      final client = HttpClient();
+      client.findProxy = (_) => 'PROXY 127.0.0.1:2080';
+      return client;
+    };
+    dio.httpClientAdapter = adapter;
+    return dio;
+  }
 
   /// 测试注入的地址链（为 null 时走默认三地址链）。
   final List<String>? _configUrlsOverride;
@@ -67,6 +110,14 @@ class RemoteConfigService {
   /// GitHub Raw 备用地址（方案 C；文件须由运营方签名后推到仓根目录）。
   static const String rawConfigUrl =
       'https://raw.githubusercontent.com/nbbk/zhexuexi-client/main/client-config.json';
+
+  /// 包内品牌 fallback 的面板接口地址（0.1.4 C 路 P0-1：修鸡生蛋——
+  /// 无缓存时面板地址也要进地址链，不再等 Raw/Worker 先成功一次
+  /// 把 panel_api_base 写进缓存才出现。值与已发布 client-config.json
+  /// 的 panel_api_base 一致；只用在地址链内部取值，登录页占位符
+  /// 仍是 panel.example.com，不向用户暴露真实域名）。
+  static const String bundledPanelApiBase =
+      'https://ccpanel.jiankong.cf:11111';
 
   /// 占位域名（包内默认值的 panel_domain）：这种地址不拉，跳过。
   static bool isPlaceholderDomain(String host) {
@@ -97,14 +148,28 @@ class RemoteConfigService {
   Future<SharedPreferences> get _prefsInstance async =>
       _prefsOverride ?? await SharedPreferences.getInstance();
 
-  /// 默认三地址链（面板地址由当前缓存/包内默认的 panel_domain 派生）。
+  /// 默认三地址链（面板地址由当前缓存/包内默认的 panel_api_base 派生）。
   Future<List<String>> defaultConfigUrls() async {
     final urls = <String>[];
     final cached = await loadCached();
-    final panelDomain =
-        cached?.panelDomain ?? BrandConfig.defaults().panelDomain;
-    if (!isPlaceholderDomain(panelDomain)) {
-      urls.add('https://$panelDomain/client-config.json');
+    if (cached != null && !isPlaceholderDomain(cached.panelDomain)) {
+      // 0.1.3 D 路修复 3：面板地址从 panel_api_base（:11111）派生，
+      // 不要拼 https://$panelDomain/——panel_domain 无端口会打到
+      // 443，面板 443 根本不通，即使 1.4.29 加了 /client-config.json
+      // 路由也打不到。panel_api_base 为空时 panelApiBaseOrDerived
+      // 回落到 https://$panelDomain（老行为）。
+      final apiBase = cached.panelApiBaseOrDerived;
+      final base = apiBase.endsWith('/')
+          ? apiBase.substring(0, apiBase.length - 1)
+          : apiBase;
+      urls.add('$base/client-config.json');
+    } else if (cached == null) {
+      // 0.1.4 C 路 P0-1：无缓存时面板地址也要进链——用包内品牌
+      // fallback 的真实 panel_api_base。旧逻辑在这里整段跳过面板
+      // 地址（占位域名 panel.example.com），派生修复只在第二份
+      // 及以后的拉取生效，首跑是死代码，用户从未成功缓存过就永远
+      // 拉不到面板，这是 0.1.3 仍拉不到的鸡生蛋根因。
+      urls.add('$bundledPanelApiBase/client-config.json');
     }
     urls.add(workerConfigUrl);
     urls.add(rawConfigUrl);
@@ -127,6 +192,42 @@ class RemoteConfigService {
     await prefs.setString(extraUrlsKey, jsonEncode(urls));
   }
 
+  /// 一次 GET（0.1.3 D 路修复 3：显式设 connectTimeout——以前只
+  /// 设了 send/receive，连接阶段卡住时超时口径不明确；全部状态码
+  /// 都走 Response 分支，404 在调用方数，不靠 DioException）。
+  Future<Response<String>> _getOnce(String url, {required Dio dio}) {
+    return dio.get<String>(
+      url,
+      options: Options(
+        responseType: ResponseType.plain,
+        connectTimeout: fetchTimeout,
+        sendTimeout: fetchTimeout,
+        receiveTimeout: fetchTimeout,
+        // 404 单路径收：Dio 默认 validateStatus 下 404 会以
+        // DioException 抛出来，调用方的 404 分支走不到；这里让全部
+        // 状态码都走 Response 分支，404 只在调用方数。
+        validateStatus: (_) => true,
+      ),
+    );
+  }
+
+  /// GET 一次，网络层失败（超时/断连，没收到任何 HTTP 响应）时再
+  /// 试一次（0.1.3 D 路修复 3：每地址重试一次；404 与其他 HTTP
+  /// 状态码是服务器明确回答，不重试；拦截器 reject 的 404 带
+  /// response，同样不重试）。重试也失败就把第二次的异常抛出来。
+  Future<Response<String>> _getWithRetry(
+    String url, {
+    required Dio dio,
+  }) async {
+    try {
+      return await _getOnce(url, dio: dio);
+    } on DioException catch (e) {
+      if (e.response != null) rethrow;
+      debugPrint('远程配置拉取重试一次（$url）');
+      return await _getOnce(url, dio: dio);
+    }
+  }
+
   /// 拉一次远程配置：按地址链顺序试，第一个验签通过的就返回；
   /// 全部失败或验签都不过返回 null，调用方用本地缓存/包内默认值。
   /// 不做版本比较（版本规则在 [refresh] 里，调用方只想要最新验签
@@ -139,14 +240,7 @@ class RemoteConfigService {
         continue;
       }
       try {
-        final response = await _dio.get<String>(
-          url,
-          options: Options(
-            responseType: ResponseType.plain,
-            sendTimeout: fetchTimeout,
-            receiveTimeout: fetchTimeout,
-          ),
-        );
+        final response = await _getWithRetry(url, dio: _dio);
         if (response.statusCode != 200 || response.data == null) continue;
         final config = await _parseEnvelope(response.data!);
         if (config != null) return config;
@@ -252,50 +346,193 @@ class RemoteConfigService {
   ///   （配置根本还没发布，不是网络问题；2026-11-25 实测
   ///   https://cc.jiankong.cf/client-config.json 与 GitHub Raw 都 404）。
   ///   只认 404：500、超时、断网仍算普通 failed。
+  /// - 每次尝试的结局都记进 [RemoteConfigRefreshResult.failures]
+  ///  （URL＋kind＋message），设置页“检查更新”失败时逐条列出来，
+  ///   不只报一句“请检查网络”。
   Future<RemoteConfigRefreshResult> refresh() async {
     final cached = await loadCached();
     final urls = _configUrlsOverride ?? await defaultConfigUrls();
     var sawValid = false;
     var attempted = 0;
-    var notFound = 0;
-    for (final url in urls) {
-      if (!isFetchableUrl(url)) continue;
+    // 每个地址至少有一轮明确回 404 的地址集合（0.1.3 D 路修复 3：
+    // 两轮都跑时 notPublished 按“每个地址都 404”算，不按尝试次数算）。
+    final notFoundUrls = <String>{};
+    final failures = <RemoteConfigAttemptFailure>[];
+
+    /// 对一个地址做一次尝试（直连或经代理，由 [dio]/[viaProxy] 决定）。
+    /// 拉到比缓存新的版本就存缓存并返回它（调用方直接回 updated）；
+    /// 否则返回 null，继续试下一个地址。404 计数与失败记录都在这
+    /// 里做，每次尝试只数一次（重试是 [_getWithRetry] 内部的事，
+    /// 不另计数；重试成功时这里只看到一次成功的 Response）。
+    Future<RemoteConfig?> tryUrl(
+      String url,
+      Dio dio, {
+      required bool viaProxy,
+    }) async {
+      if (!isFetchableUrl(url)) return null;
+      // attempted 只在直连轮计：代理轮重访同一批地址，不重复计
+      //（notPublished 判定 `notFound == attempted` 靠它）。
+      if (!viaProxy) attempted++;
       try {
-        final response = await _dio.get<String>(
-          url,
-          options: Options(
-            responseType: ResponseType.plain,
-            sendTimeout: fetchTimeout,
-            receiveTimeout: fetchTimeout,
-          ),
-        );
-        attempted++;
-        if (response.statusCode == 404) notFound++;
-        if (response.statusCode != 200 || response.data == null) continue;
+        final response = await _getWithRetry(url, dio: dio);
+        if (response.statusCode == 404) {
+          notFoundUrls.add(url);
+          failures.add(
+            RemoteConfigAttemptFailure(
+              url: url,
+              kind: RemoteConfigFailureKind.notFound,
+              message: '404 未找到（配置还没发布到这个地址）',
+              viaProxy: viaProxy,
+            ),
+          );
+          debugPrint('远程配置拉取 404（$url）${viaProxy ? '（经代理）' : ''}');
+          return null;
+        }
+        if (response.statusCode != 200 || response.data == null) {
+          final isEmpty200 =
+              response.statusCode == 200 && response.data == null;
+          failures.add(
+            RemoteConfigAttemptFailure(
+              url: url,
+              kind: isEmpty200
+                  ? RemoteConfigFailureKind.invalidEnvelope
+                  : RemoteConfigFailureKind.httpStatus,
+              message: isEmpty200 ? '空响应' : 'HTTP ${response.statusCode}',
+              viaProxy: viaProxy,
+            ),
+          );
+          debugPrint(
+            '远程配置拉取失败（$url）：HTTP ${response.statusCode}',
+          );
+          return null;
+        }
         final config = await _parseEnvelope(response.data!);
-        if (config == null) continue;
+        if (config == null) {
+          failures.add(
+            RemoteConfigAttemptFailure(
+              url: url,
+              kind: RemoteConfigFailureKind.invalidEnvelope,
+              message: '验签失败或格式不对',
+              viaProxy: viaProxy,
+            ),
+          );
+          debugPrint('远程配置拉取失败（$url）：验签失败或格式不对');
+          return null;
+        }
         sawValid = true;
+        debugPrint('远程配置拉取成功（$url）：v${config.configVersion}');
         // 只接受比缓存新的版本，不回退；同版/旧版继续试下一个地址
         // （另一个地址可能有更新的版本）。
         if (cached != null && config.configVersion <= cached.configVersion) {
-          continue;
+          return null;
         }
         await saveCache(response.data!);
+        return config;
+      } on DioException catch (e) {
+        // 404 在这里也数（与上面 Response 分支二选一、每次尝试只
+        // 数一次）：生产 Dio 开了 validateStatus 后 404 走 Response
+        // 分支，但拦截器 reject 的 404（测试 mock 与个别 Dio 版本）
+        // 仍以 DioException（带 response）抛出来；只留一路，
+        // 另一路的 404 就数不到，notPublished 判定会错成 failed。
+        if (e.response?.statusCode == 404) {
+          notFoundUrls.add(url);
+          failures.add(
+            RemoteConfigAttemptFailure(
+              url: url,
+              kind: RemoteConfigFailureKind.notFound,
+              message: '404 未找到（配置还没发布到这个地址）',
+              viaProxy: viaProxy,
+            ),
+          );
+          debugPrint('远程配置拉取 404（$url）');
+          return null;
+        }
+        // validateStatus 全收之后这里只剩网络层异常（超时/断连）。
+        final kind = switch (e.type) {
+          DioExceptionType.connectionTimeout ||
+          DioExceptionType.sendTimeout ||
+          DioExceptionType.receiveTimeout => RemoteConfigFailureKind.timeout,
+          DioExceptionType.connectionError =>
+            RemoteConfigFailureKind.connectionError,
+          _ => e.response != null
+              ? RemoteConfigFailureKind.httpStatus
+              : RemoteConfigFailureKind.connectionError,
+        };
+        final message = switch (kind) {
+          RemoteConfigFailureKind.timeout => '连接超时（10 秒无响应）',
+          RemoteConfigFailureKind.connectionError => '连不上（网络不通或域名解析失败）',
+          RemoteConfigFailureKind.httpStatus =>
+            'HTTP ${e.response?.statusCode ?? '未知'}',
+          _ => e.message ?? e.toString(),
+        };
+        failures.add(
+          RemoteConfigAttemptFailure(
+            url: url,
+            kind: kind,
+            message: message,
+            viaProxy: viaProxy,
+          ),
+        );
+        debugPrint('远程配置拉取失败（$url）：$e');
+        return null;
+      } catch (e) {
+        failures.add(
+          RemoteConfigAttemptFailure(
+            url: url,
+            kind: RemoteConfigFailureKind.connectionError,
+            message: e.toString(),
+            viaProxy: viaProxy,
+          ),
+        );
+        debugPrint('远程配置拉取失败（$url）：$e');
+        return null;
+      }
+    }
+
+    // 第一轮：直连。
+    for (final url in urls) {
+      final updated = await tryUrl(url, _dio, viaProxy: false);
+      if (updated != null) {
         return RemoteConfigRefreshResult(
           status: RemoteConfigRefreshStatus.updated,
-          config: config,
+          config: updated,
+          failures: failures,
         );
-      } on DioException catch (e) {
-        // Dio 默认 validateStatus 下 404 不走上头的 Response 分支，
-        // 而是在这里以 DioException（带 response）抛出来。
-        attempted++;
-        if (e.response?.statusCode == 404) notFound++;
-        debugPrint('远程配置拉取失败（$url）：$e');
-        continue;
-      } catch (e) {
-        debugPrint('远程配置拉取失败（$url）：$e');
-        continue;
       }
+    }
+    // 第二轮（0.1.3 D 路修复 3）：开关已开时经本地 mixed 入站再试
+    // 一轮——手机直连可能被墙、代理出站却是通的。只在第一轮没拿到
+    // 新版时跑；开关没开（或没注入代理 Dio）时不跑。
+    // 0.1.4 C 路 P0-2：
+    // - 代理轮跳过已知 404 的地址：直连轮已回 404 的 URL，代理轮
+    //   再试一次也只会是 404（服务端状态与走不走代理无关），跳过
+    //   它们把等待时间省下来给 Raw；
+    // - 代理轮跳过要留痕：0.1.3 里核心未启动时代理轮整段跳过且
+    //   failures 里不留任何痕迹，用户与协调员分不清“没跑”与
+    //   “跑了也失败”。注入了代理 Dio 但核心未启动时，记一条
+    //   proxySkipped（不参与 notPublished 判定：attempted 只计
+    //   直连轮，notFoundUrls 不动）。
+    if (_coreStarted?.call() == true && _proxyDio != null) {
+      for (final url in urls) {
+        if (notFoundUrls.contains(url)) continue;
+        final updated = await tryUrl(url, _proxyDio, viaProxy: true);
+        if (updated != null) {
+          return RemoteConfigRefreshResult(
+            status: RemoteConfigRefreshStatus.updated,
+            config: updated,
+            failures: failures,
+          );
+        }
+      }
+    } else if (_proxyDio != null) {
+      failures.add(
+        const RemoteConfigAttemptFailure(
+          url: '代理轮',
+          kind: RemoteConfigFailureKind.proxySkipped,
+          message: '核心未启动，开关没开或核心未连接',
+          viaProxy: true,
+        ),
+      );
     }
     if (cached != null) {
       return RemoteConfigRefreshResult(
@@ -303,17 +540,20 @@ class RemoteConfigService {
             ? RemoteConfigRefreshStatus.upToDate
             : RemoteConfigRefreshStatus.offlineCached,
         config: cached,
+        failures: failures,
       );
     }
-    if (attempted > 0 && notFound == attempted) {
+    if (attempted > 0 && notFoundUrls.length == attempted) {
       return RemoteConfigRefreshResult(
         status: RemoteConfigRefreshStatus.notPublished,
         config: RemoteConfig.defaults(),
+        failures: failures,
       );
     }
     return RemoteConfigRefreshResult(
       status: RemoteConfigRefreshStatus.failed,
       config: RemoteConfig.defaults(),
+      failures: failures,
     );
   }
 }
@@ -323,6 +563,7 @@ class RemoteConfigRefreshResult {
   const RemoteConfigRefreshResult({
     required this.status,
     required this.config,
+    this.failures = const [],
   });
 
   /// 刷新结果（见 [RemoteConfigRefreshStatus]）。
@@ -331,6 +572,65 @@ class RemoteConfigRefreshResult {
   /// 刷新后生效的配置（updated/upToDate/offlineCached 时是缓存或新配置，
   /// failed/notPublished 时是包内默认值）。
   final RemoteConfig config;
+
+  /// 每次尝试的结局（按地址链顺序；成功拿到新版时只含它之前的失败）。
+  /// 失败时给用户看的合并原因（给用户看，一行一条）。
+  final List<RemoteConfigAttemptFailure> failures;
+
+  /// 全部尝试失败时的合并原因（给用户看，一行一条）。
+  /// proxySkipped 那条不拼 URL（它不是一次地址尝试），单独成行，
+  /// 让用户一眼分清“代理轮没跑”与“代理轮跑了也失败”。
+  String get failureMessage => failures
+      .map(
+        (f) => f.kind == RemoteConfigFailureKind.proxySkipped
+            ? '· 代理轮未跑：${f.message}'
+            : '· ${f.url}：${f.message}${f.viaProxy ? '（经代理）' : ''}',
+      )
+      .join('\n');
+}
+
+/// 一次远程配置拉取尝试的结局。
+class RemoteConfigAttemptFailure {
+  const RemoteConfigAttemptFailure({
+    required this.url,
+    required this.kind,
+    required this.message,
+    this.viaProxy = false,
+  });
+
+  /// 试过的地址。
+  final String url;
+
+  /// 失败种类。
+  final RemoteConfigFailureKind kind;
+
+  /// 给用户看的原因。
+  final String message;
+
+  /// 这次尝试是否经本地 mixed 入站（开关已开时的第二轮）。
+  final bool viaProxy;
+}
+
+/// 一次远程配置拉取失败的种类。
+enum RemoteConfigFailureKind {
+  /// 404：配置还没发布到这个地址。
+  notFound,
+
+  /// 超时（10 秒无响应）。
+  timeout,
+
+  /// 连不上（网络不通或域名解析失败）。
+  connectionError,
+
+  /// 其他 HTTP 状态码。
+  httpStatus,
+
+  /// 200 但验签失败或格式不对。
+  invalidEnvelope,
+
+  /// 代理轮因核心未启动而跳过（不是一次地址尝试，不参与
+  /// notPublished 判定；只进 failures，让设置页逐条展示时可见）。
+  proxySkipped,
 }
 
 /// 远程配置刷新的五种结果。

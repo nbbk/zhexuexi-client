@@ -50,6 +50,37 @@ void main() {
       expect(AppThemes.night.tokens.gold, const Color(0xFFEEC362));
     });
 
+    test('夜晚 scaffold 底色 #070F1C（非纯黑），渐变三色齐全', () {
+      final night = AppThemes.night;
+      expect(night.themeData.scaffoldBackgroundColor, const Color(0xFF070F1C));
+      expect(
+        night.tokens.backgroundGradient,
+        [
+          const Color(0xFF070F1C),
+          const Color(0xFF082E63),
+          const Color(0xFF0B3D84),
+        ],
+      );
+      // 白天渐变回归象牙白。
+      expect(
+        AppThemes.day.tokens.backgroundGradient,
+        [const Color(0xFFFAF7F0), Colors.white],
+      );
+    });
+
+    test('cardTheme/dialogTheme 兜底：原生 Card/对话框不露 M3 默认深色面', () {
+      final night = AppThemes.night.themeData;
+      expect(night.cardTheme.color, Colors.white.withValues(alpha: 0.08));
+      expect(night.cardTheme.surfaceTintColor, Colors.transparent);
+      expect(night.dialogTheme.backgroundColor, const Color(0xFF082E63));
+      final day = AppThemes.day.themeData;
+      expect(
+        day.cardTheme.color,
+        const Color(0xFFFAF7F0).withValues(alpha: 0.6),
+      );
+      expect(day.dialogTheme.backgroundColor, const Color(0xFFFAF7F0));
+    });
+
     test('主题定义能编出 ThemeData：底色、扩展 token 都在', () {
       final data = AppThemes.day.themeData;
       expect(data.brightness, Brightness.light);

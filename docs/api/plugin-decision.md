@@ -77,3 +77,26 @@
   2. `detour` 填的是出站 **tag**，逐字匹配——写小写 `proxy` 而 selector 叫 `Proxy` 时报 `outbound detour not found: proxy`；
   3. 域名形式的 DNS 服务器地址（如 `dns.google`）在没有 detour 时启动时无人解析（`missing domain resolver for domain server address`）——有 detour 时经 detour 解析，没有 detour 时服务器地址须用 IP。
   客户端生成器已按这三条写（见 `lib/core/singbox_config.dart` 注释）。
+
+## 本地补丁版 flutter_sing_box（NO_ACTIVITY，2026-11-25）
+
+- **现象**：小米真机上 App 能打开、首页/节点/流量都显示，点大开关启动时
+  报 `PlatformException(NO_ACTIVITY, 无法获取Activity实例, null, null)`，
+  代理起不来。旧版里这个错被 MMKV 错盖住了（`start()` 先调
+  `_usingConfigPath()` 抛 `StateError("forget initialize MMKV first?")`，
+  还没走到 `startVpn()`）。
+- **根因**：插件原生侧 `init` / `startVpn` 硬要求
+  `activityBinding?.activity` 非空；真机上 ActivityAware 回调链没把
+  Activity 交过来（MIUI 首次启动做配置调整、Activity 走了一次 detach）。
+  已反编译本地 Flutter 3.50.1 的 `flutter.jar` 核实不是启动竞态：
+  `onAttach` 里先 `attachToActivity`、再注册插件，Dart 入口在 `onStart`
+  才跑，正常流程下 `init` 时 Activity 一定已挂好。
+- **处理**：`apps/flutter_client/packages/flutter_sing_box/` 是上游 3.1.0
+  的本地 fork（`pubspec.yaml` 里 `dependency_overrides` 指过去），只改
+  Android 侧取 Activity 的方式：`init` 改走 Application Context；
+  `startVpn` 有 Activity 走原流程、无 Activity 时已授权直接起服务、
+  未授权挂起等 Activity 挂上再弹授权框（20 秒超时收尾）；
+  `MainActivity` 在 `configureFlutterEngine` 里把当前 Activity 直接推
+  给插件当兜底；`AndroidManifest` 的 `configChanges` 补上
+  `colorMode|mcc|mnc` 减少重建。详情见该目录下的 `PATCH_NOTES.md`。
+  上游修了以后再评估切回官方版。

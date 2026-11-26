@@ -1,10 +1,15 @@
-// 切片 1：节点页 widget 测试（分组、搜索、明文角标、解析失败提示、绑定入口）。
+// 切片 1：节点页 widget 测试（分组、搜索、解析失败提示、绑定入口）。
+//
+// 节点行新布局（2026-11-26）：卡片里只有协议圆圈＋名称单行＋延迟芯片
+// ＋铅笔详情按钮，不再显示地址行、“使用中”角标、“明文”角标；
+// 选中态只看边框＋背景。
 //
 // 不碰真面板：nodesProvider 用桩 notifier 覆盖，状态直接给定。
-import 'package:flutter_lucide/flutter_lucide.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
+import 'package:zhexuexi_client/core/app_theme.dart';
 import 'package:zhexuexi_client/core/node_model.dart';
 import 'package:zhexuexi_client/features/nodes/nodes_page.dart';
 import 'package:zhexuexi_client/services/nodes_notifier.dart';
@@ -24,7 +29,9 @@ class _StubNodesNotifier extends NodesNotifier {
   }
 
   @override
-  Future<void> bindAndRefresh(String link) async {}
+  Future<void> bindAndRefresh(String link) async {
+    calls.add('bind:$link');
+  }
 
   @override
   Future<bool> testAllSpeeds() async {
@@ -55,6 +62,8 @@ Node _node(
   bool plain = false,
   String address = '203.0.113.10',
   NodeProtocol protocol = NodeProtocol.vless,
+  String? subscriptionId,
+  String? subscriptionName,
 }) {
   return Node(
     name: name,
@@ -65,68 +74,232 @@ Node _node(
     uuidOrPassword: '11111111-2222-3333-4444-555555555555',
     tls: !plain,
     isPlainText: plain,
+    subscriptionId: subscriptionId,
+    subscriptionName: subscriptionName,
   );
+}
+
+/// 展开页面上指定标题的订阅分组（默认全部折叠，节点行要先展开才可见）。
+Future<void> _expandGroup(WidgetTester tester, String header) async {
+  await tester.tap(find.text(header));
+  await tester.pumpAndSettle();
 }
 
 Future<_StubNodesNotifier> _pumpPage(
   WidgetTester tester,
-  NodesState state,
-) async {
+  NodesState state, {
+  ThemeData? theme,
+}) async {
   final stub = _StubNodesNotifier(state);
   await tester.pumpWidget(
     ProviderScope(
       overrides: [nodesProvider.overrideWith(() => stub)],
-      child: const MaterialApp(home: Scaffold(body: NodesPage())),
+      child: MaterialApp(
+        theme: theme,
+        home: const Scaffold(body: NodesPage()),
+      ),
     ),
   );
   await tester.pumpAndSettle();
   return stub;
 }
 
+/// 伪造剪贴板内容：mock 住平台通道的 Clipboard.getData，
+/// 让“粘贴”按钮读到给定文本。真实 Clipboard.setData 在测试环境里
+/// 不返回（会一直挂起），所以不直接用它。
+void _mockClipboard(String text) {
+  TestWidgetsFlutterBinding.instance.defaultBinaryMessenger
+      .setMockMethodCallHandler(SystemChannels.platform, (call) async {
+        if (call.method == 'Clipboard.getData') {
+          return {'text': text};
+        }
+        return null;
+      });
+}
+
+void _unmockClipboard() {
+  TestWidgetsFlutterBinding.instance.defaultBinaryMessenger
+      .setMockMethodCallHandler(SystemChannels.platform, null);
+}
+
 void main() {
-  testWidgets('节点列表：按 A 组/B 组分组，明文节点标“明文”', (tester) async {
+  testWidgets('节点列表：按订阅分组，不同订阅的节点不混在一起', (tester) async {
     await _pumpPage(
       tester,
       NodesState(
         nodes: [
-          _node('香港-中转', NodeSource.relay),
-          _node('智利-直连', NodeSource.direct),
-          _node('日本-直连', NodeSource.direct, plain: true),
+          _node(
+            '香港-中转',
+            NodeSource.relay,
+            address: '203.0.113.11',
+            subscriptionId: 'sub-a',
+            subscriptionName: '订阅A',
+          ),
+          _node(
+            '智利-直连',
+            NodeSource.direct,
+            address: '203.0.113.12',
+            subscriptionId: 'sub-b',
+            subscriptionName: '订阅B',
+          ),
+          _node(
+            '日本-直连',
+            NodeSource.direct,
+            plain: true,
+            address: '203.0.113.13',
+            subscriptionId: 'sub-a',
+            subscriptionName: '订阅A',
+          ),
         ],
         status: NodesStatus.loaded,
       ),
     );
-    // 分组标题不直接写“中转”“直连”，用 A、B 后缀区分（A=直连，B=中转）。
-    expect(find.text('B 组（1）'), findsOneWidget);
-    expect(find.text('A 组（2）'), findsOneWidget);
+    // 组头显示订阅名，不再按 A 组/B 组（直连/中转）分。
+    expect(find.text('订阅A（2）'), findsOneWidget);
+    expect(find.text('订阅B（1）'), findsOneWidget);
+    expect(find.text('A 组（2）'), findsNothing);
+    expect(find.text('B 组（1）'), findsNothing);
     expect(find.text('中转节点'), findsNothing);
     expect(find.text('直连节点'), findsNothing);
+    // 默认全部折叠：组头可见，节点行还没渲染出来。
+    expect(find.text('香港-中转'), findsNothing);
+    expect(find.text('智利-直连'), findsNothing);
+    expect(find.text('共 3 个节点'), findsOneWidget);
+    // 展开订阅A：只看到 A 的两个节点，B 的节点仍藏着。
+    await _expandGroup(tester, '订阅A（2）');
     expect(find.text('香港-中转'), findsOneWidget);
     expect(find.text('日本-直连'), findsOneWidget);
-    expect(find.text('明文'), findsOneWidget);
+    expect(find.text('智利-直连'), findsNothing);
+    // 再展开订阅B：三个节点都可见。
+    await _expandGroup(tester, '订阅B（1）');
+    expect(find.text('智利-直连'), findsOneWidget);
     expect(find.text('未测速'), findsNWidgets(3));
-    expect(find.text('共 3 个节点'), findsOneWidget);
+    // 明文只在详情页里写，行上不再标角标。
+    expect(find.text('明文'), findsNothing);
   });
 
-  testWidgets('twin 四节点：A 组 2 个、B 组 2 个，数量对得上', (tester) async {
+  testWidgets('twin 四节点：同一订阅一组 4 个，不再分 A/B 组', (tester) async {
     await _pumpPage(
       tester,
       NodesState(
         nodes: [
-          _node('测试机-reality-443-A', NodeSource.direct),
-          _node('测试机-reality-443-B', NodeSource.relay),
-          _node('测试机-hy2-443-A', NodeSource.direct),
-          _node('测试机-hy2-443-B', NodeSource.relay),
+          _node(
+            '测试机-reality-443-A',
+            NodeSource.direct,
+            address: '203.0.113.21',
+            subscriptionId: 'sub-main',
+            subscriptionName: '主订阅',
+          ),
+          _node(
+            '测试机-reality-443-B',
+            NodeSource.relay,
+            address: '203.0.113.22',
+            subscriptionId: 'sub-main',
+            subscriptionName: '主订阅',
+          ),
+          _node(
+            '测试机-hy2-443-A',
+            NodeSource.direct,
+            address: '203.0.113.23',
+            subscriptionId: 'sub-main',
+            subscriptionName: '主订阅',
+          ),
+          _node(
+            '测试机-hy2-443-B',
+            NodeSource.relay,
+            address: '203.0.113.24',
+            subscriptionId: 'sub-main',
+            subscriptionName: '主订阅',
+          ),
         ],
         status: NodesStatus.loaded,
       ),
     );
-    expect(find.text('A 组（2）'), findsOneWidget);
-    expect(find.text('B 组（2）'), findsOneWidget);
+    expect(find.text('主订阅（4）'), findsOneWidget);
+    expect(find.text('A 组（2）'), findsNothing);
+    expect(find.text('B 组（2）'), findsNothing);
     expect(find.text('直连节点（4）'), findsNothing);
   });
 
-  testWidgets('节点行左侧圆圈放旗标：中转域名显示香港旗，IP 显示 globe', (
+  testWidgets('分组默认折叠：点组头展开，再点收起', (tester) async {
+    await _pumpPage(
+      tester,
+      NodesState(
+        nodes: [
+          _node(
+            '智利-直连',
+            NodeSource.direct,
+            address: '203.0.113.31',
+            subscriptionId: 'sub-a',
+            subscriptionName: '订阅A',
+          ),
+        ],
+        status: NodesStatus.loaded,
+      ),
+    );
+    expect(find.text('订阅A（1）'), findsOneWidget);
+    expect(find.text('智利-直连'), findsNothing);
+    await _expandGroup(tester, '订阅A（1）');
+    expect(find.text('智利-直连'), findsOneWidget);
+    // 再点一次组头收起：节点行不渲染，组头还在。
+    await _expandGroup(tester, '订阅A（1）');
+    expect(find.text('智利-直连'), findsNothing);
+    expect(find.text('订阅A（1）'), findsOneWidget);
+  });
+
+  testWidgets('手动添加的单节点自成一组，组头显示“手动添加”', (tester) async {
+    await _pumpPage(
+      tester,
+      NodesState(
+        nodes: [
+          _node(
+            '手动节点',
+            NodeSource.direct,
+            address: '203.0.113.41',
+            subscriptionId: 'single_nodes',
+            subscriptionName: '手动添加',
+          ),
+          _node(
+            '智利-直连',
+            NodeSource.direct,
+            address: '203.0.113.42',
+            subscriptionId: 'sub-a',
+            subscriptionName: '订阅A',
+          ),
+        ],
+        status: NodesStatus.loaded,
+      ),
+    );
+    expect(find.text('手动添加（1）'), findsOneWidget);
+    expect(find.text('订阅A（1）'), findsOneWidget);
+    await _expandGroup(tester, '手动添加（1）');
+    expect(find.text('手动节点'), findsOneWidget);
+    expect(find.text('智利-直连'), findsNothing);
+  });
+
+  testWidgets('订阅名缺失时组头回落订阅 id；两者都没有时显示“未分组”', (
+    tester,
+  ) async {
+    await _pumpPage(
+      tester,
+      NodesState(
+        nodes: [
+          _node(
+            '无名订阅节点',
+            NodeSource.direct,
+            address: '203.0.113.51',
+            subscriptionId: 'sub-no-name',
+          ),
+          _node('老数据节点', NodeSource.direct, address: '203.0.113.52'),
+        ],
+        status: NodesStatus.loaded,
+      ),
+    );
+    expect(find.text('sub-no-name（1）'), findsOneWidget);
+    expect(find.text('未分组（1）'), findsOneWidget);
+  });
+
+  testWidgets('节点行左侧圆圈放协议简称：VLESS 显示 VL，Hysteria2 显示 HY2', (
     tester,
   ) async {
     await _pumpPage(
@@ -138,16 +311,24 @@ void main() {
             NodeSource.relay,
             address: 'cp.jiankong.cf',
           ),
-          _node('测试机-reality-443-A', NodeSource.direct),
+          _node(
+            '测试机-hy2-443-A',
+            NodeSource.direct,
+            protocol: NodeProtocol.hysteria2,
+          ),
         ],
         status: NodesStatus.loaded,
       ),
     );
-    expect(find.text('🇭🇰'), findsOneWidget);
-    expect(find.byIcon(LucideIcons.globe), findsOneWidget);
+    // 默认折叠，先展开分组再看行。
+    await _expandGroup(tester, '未分组（2）');
+    expect(find.text('VL'), findsOneWidget);
+    expect(find.text('HY2'), findsOneWidget);
+    // 没有旗标也没有 globe 图标（国旗显示已去掉）。
+    expect(find.text('🇭🇰'), findsNothing);
   });
 
-  testWidgets('协议名不在圆圈里：挪到地址行，Hysteria2 不再溢出', (tester) async {
+  testWidgets('协议全名与地址行不在卡片上：简称在圆圈，全名只在详情页', (tester) async {
     await _pumpPage(
       tester,
       NodesState(
@@ -161,10 +342,13 @@ void main() {
         status: NodesStatus.loaded,
       ),
     );
-    // 圆圈里是旗标/globe，不再有单独的协议名文字。
+    // 默认折叠，先展开分组再看行。
+    await _expandGroup(tester, '未分组（1）');
+    // 圆圈里是简称 HY2，卡片上不再有协议全名与地址行。
+    expect(find.text('HY2'), findsOneWidget);
     expect(find.text('Hysteria2'), findsNothing);
-    // 协议名在地址行里还能看到。
-    expect(find.text('203.0.113.10:443 · Hysteria2'), findsOneWidget);
+    expect(find.text('203.0.113.10:443 · Hysteria2'), findsNothing);
+    expect(find.text('203.0.113.10:443'), findsNothing);
   });
 
   testWidgets('解析失败 N 个：显示提示横条，其余节点正常列出', (tester) async {
@@ -177,6 +361,8 @@ void main() {
       ),
     );
     expect(find.textContaining('解析失败 2 个节点'), findsOneWidget);
+    // 默认折叠，先展开分组再看行。
+    await _expandGroup(tester, '未分组（1）');
     expect(find.text('智利-直连'), findsOneWidget);
   });
 
@@ -193,6 +379,9 @@ void main() {
     );
     await tester.enterText(find.byType(TextField).first, '香港');
     await tester.pumpAndSettle();
+    // 搜索后组头只剩 1 个（默认折叠，先展开再看行）。
+    expect(find.text('未分组（1）'), findsOneWidget);
+    await _expandGroup(tester, '未分组（1）');
     expect(find.text('香港-中转'), findsOneWidget);
     expect(find.text('智利-直连'), findsNothing);
   });
@@ -210,10 +399,13 @@ void main() {
       tester,
       const NodesState(
         status: NodesStatus.error,
-        errorMessage: '订阅已失效，请重新绑定',
+        errorMessage: '订阅链接不对或令牌不对，请检查链接或重新获取',
       ),
     );
-    expect(find.text('订阅已失效，请重新绑定'), findsOneWidget);
+    expect(
+      find.text('订阅链接不对或令牌不对，请检查链接或重新获取'),
+      findsOneWidget,
+    );
     expect(find.text('重新拉取'), findsOneWidget);
   });
 
@@ -233,41 +425,153 @@ void main() {
     expect(stub.calls, contains('auto'));
   });
 
-  testWidgets('测速结果：测到的写延迟，失败的标灰写“测速失败”', (tester) async {
+  testWidgets('测速结果：测到的延迟数字本身是绿色，失败的只显示红色圆点', (
+    tester,
+  ) async {
     final fast = _node('智利-直连', NodeSource.direct)..latencyMs = 86;
     final bad = _node('坏节点-直连', NodeSource.direct)
-      ..latencyFailed = true;
+      ..latencyFailed = true
+      ..latencyFailureReason = '超时不可达';
     await _pumpPage(
       tester,
       NodesState(nodes: [fast, bad], status: NodesStatus.loaded),
     );
-    expect(find.text('86ms'), findsOneWidget);
-    expect(find.text('测速失败'), findsOneWidget);
+    // 默认折叠，先展开分组再看行。
+    await _expandGroup(tester, '未分组（2）');
+    // 通了：延迟数字本身用绿色（白天 #157347），不再是灰字。
+    final okText = tester.widget<Text>(find.text('86ms'));
+    expect(okText.style?.color, const Color(0xFF157347));
+    // 不通：不再写“测速失败”四个字，只显示一个红色圆点。
+    expect(find.text('测速失败'), findsNothing);
+    final errorColor = Theme.of(
+      tester.element(find.text('86ms')),
+    ).colorScheme.error;
+    final redDot = find.byWidgetPredicate(
+      (w) =>
+          w is Container &&
+          w.decoration is BoxDecoration &&
+          (w.decoration as BoxDecoration).shape == BoxShape.circle &&
+          (w.decoration as BoxDecoration).color == errorColor,
+    );
+    expect(redDot, findsOneWidget);
+    // 失败原因仍在 tooltip 与长按说明里。
+    expect(
+      find.byTooltip('测速失败：超时不可达，点一下重测'),
+      findsOneWidget,
+    );
     expect(find.text('未测速'), findsNothing);
   });
 
-  testWidgets('当前节点标“使用中”且在组内置顶', (tester) async {
+  testWidgets('测速结果（夜晚主题）：延迟数字用夜晚可读的浅绿', (tester) async {
+    final fast = _node('智利-直连', NodeSource.direct)..latencyMs = 86;
+    await _pumpPage(
+      tester,
+      NodesState(nodes: [fast], status: NodesStatus.loaded),
+      theme: AppThemes.night.themeData,
+    );
+    // 默认折叠，先展开分组再看行。
+    await _expandGroup(tester, '未分组（1）');
+    final okText = tester.widget<Text>(find.text('86ms'));
+    expect(okText.style?.color, const Color(0xFF4ADE80));
+  });
+
+  testWidgets('选中节点不挪位置：只变选中态，顺序保持原样，不再写“使用中”', (
+    tester,
+  ) async {
     await _pumpPage(
       tester,
       NodesState(
         nodes: [
-          _node('日本-直连', NodeSource.direct),
-          _node('智利-直连', NodeSource.direct),
+          _node('日本-直连', NodeSource.direct, address: '203.0.113.61'),
+          _node('智利-直连', NodeSource.direct, address: '203.0.113.62'),
         ],
         status: NodesStatus.loaded,
         selectedNodeName: '智利-直连',
       ),
     );
-    expect(find.text('使用中'), findsOneWidget);
-    // 列表里智利在日本前面（置顶），虽然原顺序是日本在前。
+    // 选中态只看边框＋背景，不再写“使用中”三个字。
+    expect(find.text('使用中'), findsNothing);
+    // 默认折叠，先展开分组再看顺序。
+    await _expandGroup(tester, '未分组（2）');
+    // 列表顺序保持原样：日本仍在智利前面，选中不置顶、不重排。
     final texts = tester
         .widgetList<Text>(find.byType(Text))
         .map((t) => t.data ?? '')
         .toList();
     expect(
-      texts.indexOf('智利-直连') < texts.indexOf('日本-直连'),
+      texts.indexOf('日本-直连') < texts.indexOf('智利-直连'),
       isTrue,
     );
+  });
+
+  testWidgets('节点行：只有名称一行，超长名单行省略，不折行', (tester) async {
+    const longName = '美国01-reality-443-这是一个很长很长的节点名字';
+    await _pumpPage(
+      tester,
+      NodesState(
+        nodes: [_node(longName, NodeSource.direct)],
+        status: NodesStatus.loaded,
+      ),
+    );
+    // 默认折叠，先展开分组再看行。
+    await _expandGroup(tester, '未分组（1）');
+    final nameText = tester.widget<Text>(find.text(longName));
+    expect(nameText.maxLines, 1);
+    expect(nameText.overflow, TextOverflow.ellipsis);
+    // 行里没有地址文本，也没有“使用中”。
+    expect(find.textContaining('203.0.113.10'), findsNothing);
+    expect(find.text('使用中'), findsNothing);
+    // 每行一个铅笔详情按钮。
+    expect(find.byTooltip('查看详情与编辑'), findsOneWidget);
+  });
+
+  testWidgets('选中行有边框与背景色，未选中行没有', (tester) async {
+    await _pumpPage(
+      tester,
+      NodesState(
+        nodes: [
+          _node('智利-直连', NodeSource.direct),
+          _node('日本-直连', NodeSource.direct),
+        ],
+        status: NodesStatus.loaded,
+        selectedNodeName: '智利-直连',
+      ),
+    );
+    // 默认折叠，先展开分组再看行。
+    await _expandGroup(tester, '未分组（2）');
+    final context = tester.element(find.text('智利-直连'));
+    final primary = Theme.of(context).colorScheme.primary;
+    bool hasSelectedBorder(Widget widget) {
+      if (widget is AnimatedContainer) {
+        final decoration = widget.decoration;
+        if (decoration is BoxDecoration) {
+          final border = decoration.border;
+          if (border is Border) {
+            return border.top.color == primary &&
+                decoration.color == primary.withValues(alpha: 0.08);
+          }
+        }
+      }
+      return false;
+    }
+
+    expect(find.byWidgetPredicate(hasSelectedBorder), findsOneWidget);
+  });
+
+  testWidgets('点铅笔进详情页，不选中节点', (tester) async {
+    final stub = await _pumpPage(
+      tester,
+      NodesState(
+        nodes: [_node('智利-直连', NodeSource.direct)],
+        status: NodesStatus.loaded,
+      ),
+    );
+    // 默认折叠，先展开分组再点铅笔。
+    await _expandGroup(tester, '未分组（1）');
+    await tester.tap(find.byTooltip('查看详情与编辑'));
+    await tester.pumpAndSettle();
+    expect(find.text('设为当前节点'), findsOneWidget);
+    expect(stub.calls, isNot(contains('select:智利-直连')));
   });
 
   testWidgets('测速中：按钮显示进度且禁用', (tester) async {
@@ -316,8 +620,100 @@ void main() {
         status: NodesStatus.loaded,
       ),
     );
+    // 默认折叠，先展开分组再点行。
+    await _expandGroup(tester, '未分组（2）');
     await tester.tap(find.text('日本-直连'));
     await tester.pumpAndSettle();
     expect(stub.calls, contains('select:日本-直连'));
+  });
+
+  group('粘贴按钮', () {
+    const primaryLink =
+        'https://example.com/x9f2/sub_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+
+    // 测试里伪造剪贴板：这台机器上的 flutter_tester 不响应真实剪贴板
+    // 通道（Clipboard.setData 会一直挂起），所以用 mock 通道返回值；
+    // 正式代码走的仍是 Clipboard.getData，不改。
+    setUp(() => addTearDown(_unmockClipboard));
+
+    testWidgets('未绑定：点“粘贴”把剪贴板内容（去首尾空白）填进输入框', (
+      tester,
+    ) async {
+      _mockClipboard('  $primaryLink\n');
+      await _pumpPage(tester, const NodesState(status: NodesStatus.initial));
+      expect(find.text('粘贴'), findsOneWidget);
+      await tester.tap(find.text('粘贴'));
+      await tester.pumpAndSettle();
+      final field = tester.widget<TextField>(
+        find.byType(TextField).at(1),
+      );
+      expect(field.controller?.text, primaryLink);
+      expect(field.keyboardType, TextInputType.url);
+    });
+
+    testWidgets('未绑定：粘贴后点“添加”走 handleContent（绑定主订阅）', (
+      tester,
+    ) async {
+      _mockClipboard(primaryLink);
+      final stub = await _pumpPage(
+        tester,
+        const NodesState(status: NodesStatus.initial),
+      );
+      await tester.tap(find.text('粘贴'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('添加'));
+      await tester.pumpAndSettle();
+      expect(stub.calls, contains('bind:$primaryLink'));
+      expect(find.text('已绑定订阅'), findsOneWidget);
+    });
+
+    testWidgets('失败态：粘贴框独立，点“粘贴”填入后点“添加”走失败态的框', (
+      tester,
+    ) async {
+      _mockClipboard(primaryLink);
+      final stub = await _pumpPage(
+        tester,
+        const NodesState(
+          status: NodesStatus.error,
+          errorMessage: '订阅链接不对或令牌不对，请检查链接或重新获取',
+        ),
+      );
+      await tester.tap(find.text('粘贴'));
+      await tester.pumpAndSettle();
+      final field = tester.widget<TextField>(
+        find.byType(TextField).at(1),
+      );
+      expect(field.controller?.text, primaryLink);
+      await tester.tap(find.text('添加'));
+      await tester.pumpAndSettle();
+      expect(stub.calls, contains('bind:$primaryLink'));
+    });
+
+    testWidgets('添加节点弹窗：点“粘贴”把剪贴板内容填进弹窗输入框', (
+      tester,
+    ) async {
+      const nodeLink =
+          'vless://11111111-2222-3333-4444-555555555555@203.0.113.1:443'
+          '?encryption=none&security=reality'
+          '&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+          '&sid=abcdef01&sni=www.microsoft.com&fp=chrome&type=tcp'
+          '&flow=xtls-rprx-vision#测试机-reality-443-A';
+      _mockClipboard(nodeLink);
+      await _pumpPage(
+        tester,
+        NodesState(
+          nodes: [_node('智利-直连', NodeSource.direct)],
+          status: NodesStatus.loaded,
+        ),
+      );
+      await tester.tap(find.text('添加节点'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('粘贴'));
+      await tester.pumpAndSettle();
+      final field = tester.widget<TextField>(
+        find.byType(TextField).last,
+      );
+      expect(field.controller?.text, nodeLink);
+    });
   });
 }

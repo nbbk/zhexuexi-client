@@ -597,6 +597,10 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
+      // 分组默认折叠：先点组头展开（组头标题是订阅名＋数量），行才渲染；
+      // 来源只出现在组头，不在节点行里。
+      await tester.tap(find.text('机场 A（1）'));
+      await tester.pumpAndSettle();
       expect(find.text('机场 B'), findsOneWidget);
       expect(find.text('机场 A'), findsNothing);
       expect(find.text('管理订阅'), findsWidgets);
@@ -610,6 +614,9 @@ void main() {
           child: const MaterialApp(home: Scaffold(body: NodesPage())),
         ),
       );
+      await tester.pumpAndSettle();
+      // 分组默认折叠：先点组头展开，行才渲染（无订阅信息的节点归“未分组”）。
+      await tester.tap(find.text('未分组（1）'));
       await tester.pumpAndSettle();
       expect(find.text('未测速'), findsOneWidget);
       await tester.tap(find.text('未测速'));
@@ -635,6 +642,8 @@ void main() {
         ),
       );
       // 转圈是无限动画，pumpAndSettle 永远等不到沉降，用手动 pump。
+      // 分组默认折叠：先点组头展开，行才渲染（无订阅信息的节点归“未分组”）。
+      await tester.tap(find.text('未分组（1）'));
       await tester.pump(const Duration(milliseconds: 100));
       expect(find.byType(CircularProgressIndicator), findsOneWidget);
     });

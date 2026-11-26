@@ -27,7 +27,12 @@ class DiagnosticsReportInput {
     required this.customRulesCount,
     required this.autoUpdateEnabled,
     this.coreLastError,
+    this.probeFailed = false,
+    this.probeError,
+    this.probeAt,
     this.nodesErrorMessage,
+    this.configSnapshot,
+    this.connectionChains,
   });
 
   /// 客户端版本（如 `0.1.0`）。
@@ -72,8 +77,28 @@ class DiagnosticsReportInput {
   /// 核心最近一次异常停止的原因（没有时为 null）。
   final String? coreLastError;
 
+  /// 启动探活状态：true=最后一次拨测失败（0.1.3 D 路修复 2：
+  /// 0.1.2 只拨 Clash API delay、绕过 TUN/路由/客户端 DNS，
+  /// 且失败只写探活位、不翻 CoreStatus.error——诊断包不写这一
+  /// 行就看不出“运行中但流量不通”）。
+  final bool probeFailed;
+
+  /// 探活失败原因（probeFailed 为 true 时才有内容）。
+  final String? probeError;
+
+  /// 探活最近一次结果的时间。
+  final DateTime? probeAt;
+
   /// 节点列表最近一次拉取失败的原因（没有时为 null）。
   final String? nodesErrorMessage;
+
+  /// 当前生成配置的 route/dns 段快照（JSON 文本，2026-11-26 0.1.2
+  /// P0-4 诊断可见性；拿不到时为 null，不在报告里占行）。
+  final String? configSnapshot;
+
+  /// 实时连接的 chain 列表（`GET /connections` 的 chain 拼串；
+  /// 核心没跑或拿不到时为空，不在报告里占行）。
+  final List<String>? connectionChains;
 }
 
 /// 生成诊断包文本（纯函数，可单测）。
@@ -108,7 +133,24 @@ String buildDiagnosticsReport(DiagnosticsReportInput input) {
     'DNS 防泄漏：已开启，不可关闭',
     for (final entry in SingboxConfigBuilder.dnsSummary)
       'DNS ${entry.label}：${entry.value}',
+    if (input.configSnapshot != null)
+      '当前配置 route/dns：${input.configSnapshot}',
+    if (input.connectionChains != null && input.connectionChains!.isNotEmpty)
+      '实时连接：${input.connectionChains!.join('；')}',
     '最近错误：${errors.isEmpty ? '无' : errors.join('；')}',
+    // 0.1.3 D 路修复 2：启动探活状态单列一行——探活失败不翻
+    // CoreStatus.error，状态仍显示“运行中”，不写这一行就看不
+    // 出“运行中但流量不通”。
+    // 0.1.4（A/B 路）：probeAt == null 说明探活一次也没跑过
+    // （核心没启动过，或启动后还没拨测），此时绝不能印“通过”——
+    // 0.1.3 诊断包的“启动探活：通过（最近结果：—）”就是默认值
+    // 谎言，核心停着时也印通过，误导过一次定罪。
+    if (input.probeAt == null)
+      '启动探活：未探活（核心未启动或尚未拨测）'
+    else if (input.probeFailed)
+      '启动探活：失败（${input.probeError ?? '未知原因'}；最近结果：${timeOrDash(input.probeAt)}）'
+    else
+      '启动探活：通过（最近结果：${timeOrDash(input.probeAt)}）',
   ];
   return lines.join('\n');
 }

@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 0.1.0+1
+version: 0.1.8+9
 
 environment:
   sdk: ^3.14.0
@@ -62,6 +62,18 @@ dependencies:
   animations: ^3.0.0
   cupertino_ui: ^1.1.7
   mobile_scanner: ^7.5.0
+  package_info_plus: ^10.2.2
+  open_filex: ^5.0.0
+  path_provider: ^2.1.6
+
+# 本地补丁版 flutter_sing_box（见 packages/flutter_sing_box/PATCH_NOTES.md）：
+# 上游 3.1.0 的 Android 插件在 init/startVpn 时硬要求 Activity，
+# 小米真机上 Activity 回调链没交过来导致 NO_ACTIVITY、代理起不来。
+# 补丁只改 Android 侧取 Activity 的方式，不动 Dart API 与其它平台；
+# 上游修了以后再评估切回官方版。
+dependency_overrides:
+  flutter_sing_box:
+    path: packages/flutter_sing_box
 
 dev_dependencies:
   flutter_test:

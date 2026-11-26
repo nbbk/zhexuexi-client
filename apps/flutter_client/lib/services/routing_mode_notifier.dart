@@ -80,9 +80,16 @@ class RoutingModeNotifier extends Notifier<RoutingModeState> {
         tunEnabled: tunEnabled,
       );
       if (!result.ok) {
+        // 校验失败要把真实原因写进 errorMessage（2026-11-26：以前
+        // 只剩固定句，首页弹的也是固定句，用户不知道为什么切不了）：
+        // 取第一条错误（通常就是根因那句），太长时截断；空错误列表
+        // 时回落固定文案。界面直接显示这条 errorMessage。
+        final reason = result.errors.isNotEmpty ? result.errors.first : '';
         state = state.copyWith(
           switching: false,
-          errorMessage: '配置校验失败，已保持原模式',
+          errorMessage: reason.isEmpty
+              ? '配置校验失败，已保持原模式'
+              : '配置校验失败：${_shortReason(reason)}，已保持原模式',
         );
         return false;
       }
@@ -120,3 +127,11 @@ final routingModeProvider =
     NotifierProvider<RoutingModeNotifier, RoutingModeState>(
       RoutingModeNotifier.new,
     );
+
+/// 校验原因截断（与首页 `_shortReason` 同一条规则：只留前 120 字，
+/// 根因字段名/路径都在前头，截不掉）。
+String _shortReason(String reason) {
+  const maxLength = 120;
+  if (reason.length <= maxLength) return reason;
+  return '${reason.substring(0, maxLength)}…';
+}

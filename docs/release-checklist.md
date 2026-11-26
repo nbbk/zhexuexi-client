@@ -26,6 +26,12 @@ CI 在 `.github/workflows/build.yml`（阶段 0 已接线）：
 - 打 tag `v0.1.0`（或 `workflow_dispatch` 手动触发）→ GitHub Actions
   自动编 Windows exe 与 Android APK，产物 + SHA256 一起上传
   （artifact 保留 90 天）。
+- **应用内更新的前置条件**：CI 现在只把产物上传为 Actions
+  artifact，不建 GitHub Release；客户端更新器查的是
+  `/releases/latest` 里的资产。发版时须把 CI 产物里的
+  `app-arm64-v8a-release.apk` 与同名 `.sha256` 挂到 Release 上
+  （文件名须与 CI 产物一致，更新器按这个名字匹配），否则客户端
+  查版会报“GitHub 上还没有 Release”。
 - Windows job：`flutter build windows --release`；Android job：
   `flutter build apk --release`（有 keystore Secrets 时签名）。
 - **CI 真跑尚未验过**：本机沙箱的 MITM 代理与 Java TLS 不兼容，

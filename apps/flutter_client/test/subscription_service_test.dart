@@ -67,6 +67,17 @@ Dio _fakeDio(Map<String, ({int status, String body, Map<String, String> headers}
   return dio;
 }
 
+/// 直接按给定异常拒绝的假 Dio（超时/断网等无响应场景用）。
+Dio _errorDio(DioException Function(RequestOptions options) makeError) {
+  final dio = Dio();
+  dio.interceptors.add(
+    InterceptorsWrapper(
+      onRequest: (options, handler) => handler.reject(makeError(options)),
+    ),
+  );
+  return dio;
+}
+
 void main() {
   const url = 'https://example.com/x9f2/sub_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 
@@ -121,7 +132,7 @@ void main() {
       expect(calls, 2);
     });
 
-    test('三种格式都解析失败 → 抛 parseFailed', () async {
+    test('三种格式都解析失败 → 抛 parseFailed“订阅内容解析失败”', () async {
       final service = SubscriptionService(
         dio: _fakeDio({
           'singbox': (status: 200, body: 'garbage', headers: {}),
@@ -133,16 +144,18 @@ void main() {
       expect(
         () => service.fetchNodes(subscriptionUrl: url),
         throwsA(
-          isA<SubscriptionException>().having(
-            (e) => e.kind,
-            'kind',
-            SubscriptionErrorKind.parseFailed,
-          ),
+          isA<SubscriptionException>()
+              .having(
+                (e) => e.kind,
+                'kind',
+                SubscriptionErrorKind.parseFailed,
+              )
+              .having((e) => e.message, 'message', '订阅内容解析失败'),
         ),
       );
     });
 
-    test('404 不回退，直接报“订阅已失效，请重新绑定”', () async {
+    test('404 不回退，直接报“订阅链接不对或令牌不对，请检查链接或重新获取”', () async {
       var calls = 0;
       final service = SubscriptionService(
         dio: _fakeDio(
@@ -163,26 +176,88 @@ void main() {
               .having(
                 (e) => e.message,
                 'message',
-                '订阅已失效，请重新绑定',
+                '订阅链接不对或令牌不对，请检查链接或重新获取',
               ),
         ),
       );
       expect(calls, 1);
     });
 
-    test('410 报“订阅已到期”', () async {
+    test('410 = 订阅已退场（不是到期）：报 retired，不回退', () async {
+      var calls = 0;
       final service = SubscriptionService(
-        dio: _fakeDio({'singbox': (status: 410, body: '', headers: {})}),
+        dio: _fakeDio(
+          {'singbox': (status: 410, body: '', headers: {})},
+          onRequest: () => calls++,
+        ),
         storage: _FakeSecureStorage(),
       );
-      expect(
+      await expectLater(
         () => service.fetchNodes(subscriptionUrl: url),
         throwsA(
-          isA<SubscriptionException>().having(
-            (e) => e.kind,
-            'kind',
-            SubscriptionErrorKind.expired,
+          isA<SubscriptionException>()
+              .having(
+                (e) => e.kind,
+                'kind',
+                SubscriptionErrorKind.retired,
+              )
+              .having(
+                (e) => e.message,
+                'message',
+                '该订阅已退场，请使用订阅用户的新订阅链接',
+              ),
+        ),
+      );
+      expect(calls, 1);
+    });
+
+    test('超时/断网（无响应）→ 报 network“网络不通，请检查网络后重试”', () async {
+      final service = SubscriptionService(
+        dio: _errorDio(
+          (options) => DioException(
+            requestOptions: options,
+            type: DioExceptionType.connectionTimeout,
           ),
+        ),
+        storage: _FakeSecureStorage(),
+      );
+      await expectLater(
+        () => service.fetchNodes(subscriptionUrl: url),
+        throwsA(
+          isA<SubscriptionException>()
+              .having(
+                (e) => e.kind,
+                'kind',
+                SubscriptionErrorKind.network,
+              )
+              .having(
+                (e) => e.message,
+                'message',
+                '网络不通，请检查网络后重试',
+              ),
+        ),
+      );
+    });
+
+    test('500 → 不当成订阅问题，按网络问题报', () async {
+      final service = SubscriptionService(
+        dio: _fakeDio({'singbox': (status: 500, body: '', headers: {})}),
+        storage: _FakeSecureStorage(),
+      );
+      await expectLater(
+        () => service.fetchNodes(subscriptionUrl: url),
+        throwsA(
+          isA<SubscriptionException>()
+              .having(
+                (e) => e.kind,
+                'kind',
+                SubscriptionErrorKind.network,
+              )
+              .having(
+                (e) => e.message,
+                'message',
+                '网络不通，请检查网络后重试',
+              ),
         ),
       );
     });

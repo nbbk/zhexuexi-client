@@ -1,13 +1,17 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../core/clash_api_client.dart';
 import '../core/core_provider.dart';
+import '../core/direct_ping.dart';
 import '../core/node_model.dart';
 import '../core/singbox_config.dart';
 import '../core/singbox_core.dart';
 import '../core/userinfo.dart';
 import 'remote_config_notifier.dart';
+import 'node_override_store.dart';
 import 'single_node_store.dart';
 import 'subscription_parser.dart';
 import 'subscription_service.dart';
@@ -17,6 +21,17 @@ import 'subscription_store.dart';
 final subscriptionServiceProvider = Provider<SubscriptionService>(
   (ref) => SubscriptionService(),
 );
+
+/// 直连探测（开关关着时测速用，可注入 fake 做测试，见
+/// speed_test_test.dart；生产默认走 [probeDirectLatency] 真 TCP 连接）。
+final directProbeProvider =
+    Provider<
+      Future<DirectProbeResult> Function(
+        String host,
+        int port, {
+        Duration timeout,
+      })
+    >((ref) => probeDirectLatency);
 
 /// 节点列表状态。
 enum NodesStatus {
@@ -49,6 +64,8 @@ class NodesState {
     this.speedTestError,
     this.selectionReason,
     this.speedTestAt,
+    this.speedTestDirect = false,
+    this.speedTestDirectFallback = false,
     this.autoSelectEnabled = false,
     this.addressNotice,
     this.subscriptionSummaries = const [],
@@ -89,7 +106,8 @@ class NodesState {
   /// 本轮测速的总节点数。
   final int speedTestTotal;
 
-  /// 测速失败时的提示（如“核心未启动，先在首页打开开关再测速”）。
+  /// 测速失败时的提示（如测速本身没跑起来）；单节点测速失败不走这里，
+  /// 只标该节点（[Node.latencyFailed]＋[Node.latencyFailureReason]）。
   final String? speedTestError;
 
   /// 最近一次选择的解释（自动选择：选了谁、为什么；手动选择：
@@ -98,6 +116,18 @@ class NodesState {
 
   /// 上次测速完成的时间。
   final DateTime? speedTestAt;
+
+  /// 上次测速的口径：true＝开关关着测的直连延迟（到服务器的 TCP 延迟），
+  /// false＝开关开着测的代理延迟（走代理的真实延迟）。两种口径不同，
+  /// 不能直接比（节点页按这个值写提示文案）。
+  final bool speedTestDirect;
+
+  /// 上次测速是不是“开关开着但探活失败、被迫改用直连探测”
+  ///（2026-11-26 二轮修复）：true 时节点页的口径提示不能写
+  /// “开关关着”，要写明是出站拨测失败后改走直连（结果不代表
+  /// 代理延迟）；失败原因同时写进 [speedTestError] 的横幅里，
+  /// 两处一起说，不静默切换。
+  final bool speedTestDirectFallback;
 
   /// 是否开着自动选择：用户点过“自动选择”后为 true，手动点节点
   /// 后为 false。true 时后台每 5 分钟重测一次（仅已连接时），
@@ -159,6 +189,8 @@ class NodesState {
     Object? speedTestError = _unset,
     Object? selectionReason = _unset,
     Object? speedTestAt = _unset,
+    bool? speedTestDirect,
+    bool? speedTestDirectFallback,
     bool? autoSelectEnabled,
     Object? addressNotice = _unset,
     List<SubscriptionSummary>? subscriptionSummaries,
@@ -188,6 +220,9 @@ class NodesState {
       speedTestAt: speedTestAt == _unset
           ? this.speedTestAt
           : speedTestAt as DateTime?,
+      speedTestDirect: speedTestDirect ?? this.speedTestDirect,
+      speedTestDirectFallback:
+          speedTestDirectFallback ?? this.speedTestDirectFallback,
       autoSelectEnabled: autoSelectEnabled ?? this.autoSelectEnabled,
       addressNotice: addressNotice == _unset
           ? this.addressNotice
@@ -269,13 +304,16 @@ class _CachedSubscriptionResult {
 
 /// 节点列表的状态管理（切片 1：拉取＋解析＋列表；切片 4：测速与自动选择）。
 class NodesNotifier extends Notifier<NodesState> {
-  /// 一轮测速的并发数：4 路并行打 Clash API，既不太慢，
-  /// 也不一次把核心打满。
-  static const int _speedTestConcurrency = 4;
+  /// 一轮测速的并发数：2 路并行打 Clash API（2026-11-26 0.1.2
+  /// 根因 B：4 路并发下冷拨号互相抢带宽，一次丢包就越线）。
+  static const int _speedTestConcurrency = 2;
 
   /// 单个节点测速的服务端超时（毫秒）；Clash API delay 接口
   /// 按 16 位解析超时，超过 32767 会 400，不要传更大的。
-  static const Duration _speedTestTimeout = Duration(seconds: 5);
+  /// 10 秒（2026-11-26 0.1.2 根因 B：5 秒单次、无预热、无重试，
+  /// 冷拨号全链路 3–7 RTT 一次丢包就越线；与启动探活 probeTimeout
+  /// 对齐）。
+  static const Duration _speedTestTimeout = Duration(seconds: 10);
 
   /// 后台重测的间隔（DEV-PLAN §4.3 1-6：每 5 分钟，仅已连接时）。
   static const Duration _retestInterval = Duration(minutes: 5);
@@ -442,7 +480,7 @@ class NodesNotifier extends Notifier<NodesState> {
         failedCount: 0,
         userinfo: null,
         format: null,
-        errorMessage: '网络不通，检查订阅地址',
+        errorMessage: '网络不通，请检查网络后重试',
         lastUpdated: null,
       );
     }
@@ -542,17 +580,21 @@ class NodesNotifier extends Notifier<NodesState> {
     for (final node in singles) {
       if (seen.add(node.dedupKey)) merged.add(node);
     }
+    // 本地改动（详情页编辑）盖在重新解析出的节点上：刷新重建
+    // Node 对象也不会丢改动（见 node_override_store.dart）。
+    // 盖完再算选中：改名后选中按新名字认。
+    final nodes = await _applyOverrides(merged);
     // 刷新后节点是新对象，延迟清零重测；选中名字还在就保留，
     // 不在了回落默认规则；自动选择开关保持。
     final prevSelected = state.selectedNodeName;
     final stillThere =
-        prevSelected != null && merged.any((n) => n.name == prevSelected);
+        prevSelected != null && nodes.any((n) => n.name == prevSelected);
     final selected = stillThere
         ? prevSelected
-        : SingboxConfigBuilder.defaultNodeName(merged);
+        : SingboxConfigBuilder.defaultNodeName(nodes);
     if (anySuccess || singles.isNotEmpty) {
       state = NodesState(
-        nodes: merged,
+        nodes: nodes,
         failedCount: failedCount,
         userinfo: primaryUserinfo,
         status: NodesStatus.loaded,
@@ -578,7 +620,7 @@ class NodesNotifier extends Notifier<NodesState> {
     } else {
       state = state.copyWith(
         status: NodesStatus.error,
-        errorMessage: firstError ?? '网络不通，检查订阅地址',
+        errorMessage: firstError ?? '网络不通，请检查网络后重试',
         subscriptionSummaries: summaries,
       );
     }
@@ -717,12 +759,91 @@ class NodesNotifier extends Notifier<NodesState> {
   }
 
   /// 删一个单节点（多节点正文里的单个节点删不干净，返回 false）。
+  /// 节点被本地改动过时按原始键删：改地址/端口后新 dedupKey 变了，
+  /// 只有 [Node.originDedupKey] 还指着原文解析出的那条。
   Future<bool> removeSingleNode(Node node) async {
     final store = ref.read(singleNodeStoreProvider);
-    final ok = await store.removeSingleNode(node.dedupKey);
+    final ok = await store.removeSingleNode(
+      node.originDedupKey ?? node.dedupKey,
+    );
     if (!ok) return false;
     await refresh();
     return true;
+  }
+
+  /// 把详情页的编辑落盘：先校验（不合法返回原因、不写盘），
+  /// 再写覆盖、刷新列表。成功返回 null。
+  /// [editedFields] 只含改过的几项也行：先用节点现有字段打底
+  /// 再盖上改动，整套字段一起存。
+  /// 覆盖键用原始键（[Node.originDedupKey]，没有就是当前 dedupKey），
+  /// 不是改后的 dedupKey：改地址/端口后新键变了，刷新时凭原始键
+  /// 才能找回这条覆盖。
+  Future<String?> updateNodeOverride(
+    Node node,
+    Map<String, dynamic> editedFields,
+  ) async {
+    final merged = {
+      ...NodeOverrideStore.fieldsOf(node),
+      ...editedFields,
+    };
+    final error = NodeOverrideStore.validateFields(merged);
+    if (error != null) return error;
+    final store = ref.read(nodeOverrideStoreProvider);
+    final originalKey = node.originDedupKey ?? node.dedupKey;
+    final wasSelected = state.selectedNodeName == node.name;
+    final newName = (merged['name'] as String?)?.trim() ?? node.name;
+    try {
+      await store.saveOverride(
+        subscriptionId: node.subscriptionId,
+        dedupKey: originalKey,
+        fields: merged,
+      );
+    } catch (_) {
+      return '保存失败，请重试';
+    }
+    await refresh();
+    // 改名后选中跟着新名字走，不然刷新后选中回落到默认节点。
+    // （核心配置里的默认选择仍是旧名对应的 tag，见回报里的边界。）
+    if (wasSelected && newName != node.name) {
+      state = state.copyWith(selectedNodeName: newName);
+    }
+    return null;
+  }
+
+  /// 恢复默认：删掉该节点的覆盖，再刷新——节点回到订阅/原文
+  /// 解析出的样子（名字、地址、端口、协议全部还原）。
+  Future<void> clearNodeOverride(Node node) async {
+    final store = ref.read(nodeOverrideStoreProvider);
+    try {
+      await store.clearOverride(
+        subscriptionId: node.subscriptionId,
+        dedupKey: node.originDedupKey ?? node.dedupKey,
+      );
+    } catch (_) {
+      // 删覆盖失败也刷新一次：列表按现有覆盖重算，不炸界面。
+    }
+    await refresh();
+  }
+
+  /// 把本地改动盖到刚拼装好的节点列表上（订阅节点＋单节点都走）。
+  /// 覆盖读失败时按没有覆盖算：改动是附加的，读不到它不能拖垮
+  /// 整轮订阅刷新（订阅节点照常显示）。
+  Future<List<Node>> _applyOverrides(List<Node> nodes) async {
+    Map<String, Map<String, dynamic>> all;
+    try {
+      all = await ref.read(nodeOverrideStoreProvider).readAll();
+    } catch (_) {
+      return nodes;
+    }
+    if (all.isEmpty) return nodes;
+    return nodes.map((node) {
+      final fields = all[NodeOverrideStore.overrideKey(
+        subscriptionId: node.subscriptionId,
+        dedupKey: node.dedupKey,
+      )];
+      if (fields == null) return node;
+      return NodeOverrideStore.applyTo(node, fields);
+    }).toList();
   }
 
   /// 粘贴一条完整订阅链接后绑定并刷新。链接不对时直接报原因，不刷新。
@@ -748,6 +869,7 @@ class NodesNotifier extends Notifier<NodesState> {
     for (final node in nodes) {
       node.latencyMs = null;
       node.latencyFailed = false;
+      node.latencyFailureReason = null;
     }
     state = state.copyWith(
       nodes: List.of(nodes),
@@ -755,6 +877,8 @@ class NodesNotifier extends Notifier<NodesState> {
       speedTestTotal: 0,
       speedTestError: null,
       speedTestAt: null,
+      speedTestDirect: false,
+      speedTestDirectFallback: false,
     );
   }
 
@@ -767,41 +891,79 @@ class NodesNotifier extends Notifier<NodesState> {
     state = const NodesState();
   }
 
-  /// 一键测速：全部节点逐个调 Clash API delay 接口测延迟。
+  /// 测速口径判定（2026-11-26 二轮修复）：只认“核心在跑且探活通过”
+  /// 才走代理口径——以前只认 `status == started`，首页闩锁成 error
+  /// 时节点页会静默切回直连 TCP 探测，两边失败文案还相同（“超时不可达”
+  /// vs “核心没有响应”分不清），用户无法区分是代理不通还是直连不通。
+  /// 核心在跑但探活失败时改走直连探测，但必须明确提示（[speedTestError]
+  /// 横幅＋[NodesState.speedTestDirectFallback]），不静默切换。
+  /// 返回（是否走直连，写进横幅的提示——不走直连时为 null）。
+  (bool, String?) _speedTestMode() {
+    final core = ref.read(coreServiceProvider);
+    if (core.status != CoreStatus.started) return (true, null);
+    if (!core.probeFailed) return (false, null);
+    final reason = core.lastProbeError ?? '出站拨测失败';
+    return (
+      true,
+      '开关开着但$reason，本次改用直连探测（结果不代表代理延迟，'
+          '请先去首页点「重新拨测」或换节点）',
+    );
+  }
+
+  /// 一键测速：全部节点逐个测延迟，开关开不开都能测。
   ///
-  /// 测速要核心在跑（delay 接口是核心的 Clash API）：核心未启动时
-  /// 不发请求，直接报“核心未启动，先在首页打开开关再测速”。
-  /// 测到的写进节点的 [Node.latencyMs]；测不到的标
-  /// [Node.latencyFailed]（标灰、不自动选），不丢节点。
+  /// - 开关开着（核心在跑）且探活通过：走 Clash API delay 接口，
+  ///   测的是走代理的真实延迟；
+  /// - 开关关着：走直连探测（对节点地址做 TCP 连通测延迟，见
+  ///   direct_ping.dart），不为测速启动核心；
+  /// - 开关开着但探活失败（控制接口无响应或出站拨测失败）：
+  ///   改走直连探测，但横幅写明原因（见 [_speedTestMode]），
+  ///   不静默切换。
+  /// 两种口径不同，不能直接比（口径记在 [NodesState.speedTestDirect]，
+  /// 节点页按它写提示）。测到的写进节点的 [Node.latencyMs]；测不到的
+  /// 标 [Node.latencyFailed]、原因写 [Node.latencyFailureReason]
+  /// （超时不可达 vs 其他连接失败），不丢节点。
   /// 正在测速时再点直接返回，不开第二轮。
   Future<bool> testAllSpeeds() async {
     if (state.nodes.isEmpty || state.testingSpeed) return false;
-    final core = ref.read(coreServiceProvider);
-    if (core.status != CoreStatus.started) {
-      state = state.copyWith(
-        speedTestError: '核心未启动，先在首页打开开关再测速',
-      );
-      return false;
-    }
+    final (direct, fallbackNotice) = _speedTestMode();
     _ensureRetestTimer();
     final nodes = state.nodes;
     for (final node in nodes) {
       node.latencyMs = null;
       node.latencyFailed = false;
+      node.latencyFailureReason = null;
     }
     state = state.copyWith(
       nodes: List.of(nodes),
       testingSpeed: true,
       speedTestedCount: 0,
       speedTestTotal: nodes.length,
-      speedTestError: null,
+      speedTestError: fallbackNotice,
+      speedTestDirect: direct,
+      speedTestDirectFallback: fallbackNotice != null,
     );
     var tested = 0;
+    // 预热（2026-11-26 0.1.2 根因 B）：开批前先对当前默认出站
+    // （selector `Proxy`）做一次拨测，把冷拨号的首次握手＋落地
+    // 解析＋TLS 提前暖起来，后面的单节点测速就不用全走冷链路。
+    // 只在走代理口径时做；预热失败不阻塞测速，只记一行日志。
+    if (!direct) {
+      final api = ref.read(clashApiClientProvider);
+      final warmup = await api.proxyDelayDetailed(
+        'Proxy',
+        timeout: _speedTestTimeout,
+      );
+      debugPrint(
+        '[NodesNotifier] 测速预热 Proxy：delay=${warmup.delay} '
+        'failure=${warmup.failure}',
+      );
+    }
     for (var i = 0; i < nodes.length; i += _speedTestConcurrency) {
       final batch = nodes.skip(i).take(_speedTestConcurrency).toList();
       await Future.wait(
         batch.map((node) async {
-          await _testOneNode(node, nodes);
+          await _testOneNode(node, nodes, direct: direct);
           tested++;
           state = state.copyWith(
             nodes: List.of(nodes),
@@ -821,30 +983,30 @@ class NodesNotifier extends Notifier<NodesState> {
   ///
   /// 复用 [_testOneNode] 与一键测速同一套逻辑与超时：只改这一行的
   /// 延迟/失败标记，不碰其他行、不重排列表；测速中只这一行的芯片
-  /// 转圈。核心未启动时不发请求，直接报和一键测速一样的提示。
-  /// 一键测速进行中、或已有单节点在测时直接返回 false（两轮测速
-  /// 不打架）；后台重测定时器不由单测启动。
+  /// 转圈。开关关着时走直连探测，不为测速启动核心；
+  /// 开关开着且探活通过时走 Clash API；开关开着但探活失败时改走
+  /// 直连探测并写横幅提示（见 [_speedTestMode]）。一键测速进行中、
+  /// 或已有单节点在测时直接返回 false（两轮测速不打架）；
+  /// 后台重测定时器不由单测启动。
   Future<bool> testSingleSpeed(Node node) async {
     if (state.nodes.isEmpty ||
         state.testingSpeed ||
         state.testingSingleNodeKey != null) {
       return false;
     }
-    final core = ref.read(coreServiceProvider);
-    if (core.status != CoreStatus.started) {
-      state = state.copyWith(
-        speedTestError: '核心未启动，先在首页打开开关再测速',
-      );
-      return false;
-    }
+    final (direct, fallbackNotice) = _speedTestMode();
     final nodes = state.nodes;
     node.latencyMs = null;
     node.latencyFailed = false;
+    node.latencyFailureReason = null;
     state = state.copyWith(
       nodes: List.of(nodes),
       testingSingleNodeKey: node.dedupKey,
+      speedTestDirect: direct,
+      speedTestDirectFallback: fallbackNotice != null,
+      speedTestError: fallbackNotice,
     );
-    await _testOneNode(node, nodes);
+    await _testOneNode(node, nodes, direct: direct);
     state = state.copyWith(
       nodes: List.of(nodes),
       testingSingleNodeKey: null,
@@ -853,22 +1015,77 @@ class NodesNotifier extends Notifier<NodesState> {
     return true;
   }
 
-  /// 测一个节点的延迟：调 Clash API delay 接口，测到的写进
-  /// [Node.latencyMs]，测不到的标 [Node.latencyFailed]。
-  /// 配置里根本没有这个出站（未知协议、缺 UUID、grpc 等）时
-  /// 不调接口，直接标失败。
-  Future<void> _testOneNode(Node node, List<Node> nodes) async {
+  /// 测一个节点的延迟，测到的写进 [Node.latencyMs]，测不到的标
+  /// [Node.latencyFailed]、原因写 [Node.latencyFailureReason]。
+  ///
+  /// - [direct] 为 true（开关关着，或开关开着但探活失败改走直连）：
+  ///   直连探测节点地址，不看配置里有没有这个出站（grpc 等暂不
+  ///   支持进配置的节点也能测连通性）；
+  /// - [direct] 为 false（开关开着）：调 Clash API delay 接口；
+  ///   配置里根本没有这个出站（未知协议、缺 UUID、grpc 等）时
+  ///   不调接口，直接标失败。失败原因按 Clash API 的回码分
+  ///   （404 没有这个出站、408/504 超时、503 拨号失败、连不上是
+  ///   核心没有响应），不要只标失败不写原因。
+  Future<void> _testOneNode(
+    Node node,
+    List<Node> nodes, {
+    required bool direct,
+  }) async {
+    if (direct) {
+      final probe = ref.read(directProbeProvider);
+      final result = await probe(
+        node.address,
+        node.port,
+        timeout: _speedTestTimeout,
+      );
+      if (result.isReachable) {
+        node.latencyMs = result.latencyMs;
+      } else {
+        node.latencyFailed = true;
+        node.latencyFailureReason = result.failure?.label;
+      }
+      return;
+    }
     final tag = SingboxConfigBuilder.tagForNode(nodes, node);
     if (tag == null) {
       node.latencyFailed = true;
+      node.latencyFailureReason = '暂不支持测速';
       return;
     }
     final api = ref.read(clashApiClientProvider);
-    final delay = await api.proxyDelay(tag, timeout: _speedTestTimeout);
-    if (delay == null) {
+    // 计时（2026-11-26 0.1.2 根因 A）：REALITY 节点 1 秒内就
+    // 503，说明握手根本没建起来（核心版本问题），不是节点慢。
+    final stopwatch = Stopwatch()..start();
+    var result = await api.proxyDelayDetailed(
+      tag,
+      timeout: _speedTestTimeout,
+    );
+    // 只在超时失败时重试一次（立即重试）：冷拨号一次丢包就越线，
+    // 第二次往往能通；快速 503（拨号失败）不重试——重试也一样失败。
+    if (result.failure == ProxyDelayFailure.timeout) {
+      result = await api.proxyDelayDetailed(
+        tag,
+        timeout: _speedTestTimeout,
+      );
+    }
+    stopwatch.stop();
+    if (result.delay == null) {
       node.latencyFailed = true;
+      node.latencyFailureReason = switch (result.failure) {
+        ProxyDelayFailure.notFound => '节点不在运行配置里',
+        ProxyDelayFailure.timeout => '超时不可达',
+        ProxyDelayFailure.apiUnreachable => '核心没有响应',
+        // REALITY 节点 1 秒内就 503：握手瞬间被拒，极可能是
+        // sing-box 1.14.4 的 REALITY ClientHello 缺
+        // X25519MLKEM768 份额（sing-box#4520），不是节点慢。
+        ProxyDelayFailure.failed
+            when node.realityPublicKey != null &&
+                stopwatch.elapsed < const Duration(seconds: 1) =>
+          'REALITY 握手失败（核心版本问题，可能）',
+        _ => '连接失败',
+      };
     } else {
-      node.latencyMs = delay;
+      node.latencyMs = result.delay;
     }
   }
 
@@ -877,6 +1094,8 @@ class NodesNotifier extends Notifier<NodesState> {
   /// 还没测过时先测一轮再选；已有结果直接选，省时间。
   /// 全部测速失败时不选，原因写进 [NodesState.selectionReason]。
   /// 选上后打开自动选择开关（后台每 5 分钟重测，仅已连接时）。
+  /// 直连测速时配置里没有出站的节点（如 grpc）也能测到延迟，但它
+  /// 选不了：候选只取“测到了＋配置里有出站”的节点。
   Future<bool> autoSelect() async {
     if (state.nodes.isEmpty) return false;
     if (!state.nodes.any((n) => n.latencyMs != null)) {
@@ -885,6 +1104,9 @@ class NodesNotifier extends Notifier<NodesState> {
     }
     final candidates = state.nodes
         .where((n) => n.latencyMs != null)
+        .where(
+          (n) => SingboxConfigBuilder.tagForNode(state.nodes, n) != null,
+        )
         .toList();
     if (candidates.isEmpty) {
       state = state.copyWith(
@@ -895,8 +1117,11 @@ class NodesNotifier extends Notifier<NodesState> {
     candidates.sort(_compareByLatency);
     final best = candidates.first;
     final failed = state.nodes.where((n) => n.latencyFailed).length;
+    // 口径写清楚：直连延迟与代理延迟不能直接比，别让用户拿关着测的
+    // 数去跟开着测的数比高低。
+    final mode = state.speedTestDirect ? '直连延迟' : '代理延迟';
     final reason = '已选 ${best.name}：延迟最低 ${best.latencyMs}ms'
-        '（共测 ${state.nodes.length} 个，$failed 个失败）';
+        '（$mode，共测 ${state.nodes.length} 个，$failed 个失败）';
     return selectNode(best, reason: reason, auto: true);
   }
 
@@ -908,6 +1133,13 @@ class NodesNotifier extends Notifier<NodesState> {
   /// 切成功后把默认选择写进磁盘配置（只改 `default` 字段，
   /// 不重载），下次启动还用它；核心没启动时只落盘。
   /// 已经是当前节点时直接返回 true，不重复切。
+  ///
+  /// 切换认的是节点在 selector 里占的那一位 tag（见
+  /// [SingboxConfigBuilder.selectorTagForNode]）：成组节点（同名
+  /// 多入站）切的是组 tag，拿自身 tag 去 PUT 时 Clash API 回 400，
+  /// 不是核心没响应——失败原因要分清这两者。
+  /// PUT 成功后读回 `now` 确认：读不到不推翻 PUT 的结果，只在读回
+  /// 的名字明确不是要切的节点时才报失败。
   Future<bool> selectNode(
     Node node, {
     String? reason,
@@ -918,7 +1150,7 @@ class NodesNotifier extends Notifier<NodesState> {
     // 每次都走完这一遍，界面上的“使用中”和核心实际跑的节点永远是一张皮。
     // PUT 是幂等的本地调用，重复点一次的代价可以忽略；短路反而会在
     // 配置重载后留下“记的是它、跑的不是它”的不同步。
-    final tag = SingboxConfigBuilder.tagForNode(nodes, node);
+    final tag = SingboxConfigBuilder.selectorTagForNode(nodes, node);
     if (tag == null) {
       state = state.copyWith(selectionReason: '该节点暂不支持，无法选择');
       return false;
@@ -926,9 +1158,20 @@ class NodesNotifier extends Notifier<NodesState> {
     final core = ref.read(coreServiceProvider);
     if (core.status == CoreStatus.started) {
       final api = ref.read(clashApiClientProvider);
-      final switched = await api.selectProxy('Proxy', tag);
-      if (!switched) {
-        state = state.copyWith(selectionReason: '切换失败，核心没有响应');
+      final switched = await api.selectProxyDetailed('Proxy', tag);
+      if (!switched.ok) {
+        state = state.copyWith(
+          selectionReason: switch (switched.failure) {
+            ProxySelectFailure.notInGroup => '切换失败，节点不在运行配置里',
+            ProxySelectFailure.apiUnreachable => '切换失败，核心没有响应',
+            _ => '切换失败，核心拒绝了切换',
+          },
+        );
+        return false;
+      }
+      final now = await api.selectedProxy('Proxy');
+      if (now != null && now != tag) {
+        state = state.copyWith(selectionReason: '切换失败，核心未确认切换');
         return false;
       }
     }

@@ -1,11 +1,23 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../brand/remote_config.dart';
+import '../core/core_provider.dart';
+import '../core/singbox_core.dart';
 import 'remote_config_service.dart';
 
 /// 远程配置服务（可注入 fake 做测试）。
+///
+/// 0.1.3 D 路修复 3：注入经本地 mixed 入站的代理 Dio 与核心状态
+/// 回调——开关已开时远程配置直连失败后经代理再试一轮。
+/// （core_provider → singbox_core 不引用本文件，无 import 环路。）
 final remoteConfigServiceProvider = Provider<RemoteConfigService>(
-  (ref) => RemoteConfigService(),
+  (ref) => RemoteConfigService(
+    proxyDio: RemoteConfigService.createProxyDio(),
+    coreStarted: () =>
+        ref.read(coreServiceProvider).status == CoreStatus.started,
+  ),
 );
 
 /// 当前生效的远程配置的状态。
@@ -70,13 +82,32 @@ enum RemoteConfigSource {
 class RemoteConfigNotifier extends Notifier<RemoteConfigState> {
   @override
   RemoteConfigState build() {
+    // 0.1.4 C 路 P0-2：启动拉取发生在核心启动前，代理轮恒跳过。
+    // 核心起来（statusStream 推 started）后，若上次拉取失败了
+    // （source 不是 fresh），再触发一次 refresh——这回代理轮能跑。
+    // 注意不能 ref.listen(coreServiceProvider)：它是普通 Provider，
+    // 返回的 CoreService 对象身份不变，状态变化只走 statusStream，
+    // listen 永远不会触发；只在状态跃迁到 started 时触发，不在已
+    // 是 fresh 时重复拉；拉取进行中再触发会等同一轮（见 refresh
+    // 的 _inFlight），不开第二轮。
+    final core = ref.read(coreServiceProvider);
+    final sub = core.statusStream.listen((status) {
+      if (status == CoreStatus.started &&
+          state.source != RemoteConfigSource.fresh) {
+        unawaited(refresh());
+      }
+    });
+    ref.onDispose(sub.cancel);
     return RemoteConfigState(
       config: RemoteConfig.defaults(),
       source: RemoteConfigSource.bundled,
     );
   }
 
-  bool _refreshing = false;
+  /// 正在跑的那轮刷新（0.1.4 C 路 P0-3：进行中再调不要合成假结论，
+  /// 等这轮的结果；旧逻辑直接回 upToDate 配空 failures，全新安装
+  /// 从未拉到过配置却显示“已是最新配置（v0）”）。
+  Future<RemoteConfigRefreshResult>? _inFlight;
 
   /// App 启动时调一次：缓存先行，后台再拉。
   Future<void> init() async {
@@ -92,17 +123,20 @@ class RemoteConfigNotifier extends Notifier<RemoteConfigState> {
   }
 
   /// 刷新一次远程配置，返回刷新结果（设置页“检查更新”按结果给提示）。
-  /// 正在刷时再调直接返回上次的结果，不开第二轮。
+  /// 正在刷时再调，等正在跑的那轮出结果，不开第二轮、不合成假结论。
   Future<RemoteConfigRefreshResult> refresh() async {
-    if (_refreshing) {
-      return RemoteConfigRefreshResult(
-        status: state.source == RemoteConfigSource.cached
-            ? RemoteConfigRefreshStatus.offlineCached
-            : RemoteConfigRefreshStatus.upToDate,
-        config: state.config,
-      );
+    final inFlight = _inFlight;
+    if (inFlight != null) return inFlight;
+    final future = _refreshInner();
+    _inFlight = future;
+    try {
+      return await future;
+    } finally {
+      _inFlight = null;
     }
-    _refreshing = true;
+  }
+
+  Future<RemoteConfigRefreshResult> _refreshInner() async {
     state = state.copyWith(checking: true);
     try {
       final service = ref.read(remoteConfigServiceProvider);
@@ -125,7 +159,6 @@ class RemoteConfigNotifier extends Notifier<RemoteConfigState> {
       );
       return result;
     } finally {
-      _refreshing = false;
       if (state.checking) {
         state = state.copyWith(checking: false);
       }

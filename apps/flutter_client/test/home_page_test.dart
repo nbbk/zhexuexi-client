@@ -19,8 +19,11 @@ import 'package:zhexuexi_client/core/node_model.dart';
 import 'package:zhexuexi_client/core/singbox_core.dart';
 import 'package:zhexuexi_client/core/userinfo.dart';
 import 'package:zhexuexi_client/features/home/home_page.dart';
+import 'package:zhexuexi_client/services/announcement_service.dart';
+import 'package:zhexuexi_client/widgets/announcement_marquee.dart';
 import 'package:zhexuexi_client/services/nodes_notifier.dart';
 import 'package:zhexuexi_client/services/remote_config_notifier.dart';
+import 'package:zhexuexi_client/services/settings_notifier.dart';
 import 'package:zhexuexi_client/widgets/glass_card.dart';
 import 'package:zhexuexi_client/widgets/power_button.dart';
 
@@ -63,10 +66,49 @@ class _FakePlugin extends FlutterSingBox {
   Future<void> close() => _stateController.close();
 }
 
-/// 校验器 fake：默认通过。
+/// 校验器 fake：默认通过；errors 非空时模拟校验失败（原因进
+/// ConfigApplyResult.errors，首页要把它报出来，不只弹固定句）。
 class _FakeValidator implements ConfigValidator {
+  List<String> errors = const [];
+
   @override
-  Future<List<String>> validate(Map<String, dynamic> config) async => [];
+  Future<List<String>> validate(Map<String, dynamic> config) async =>
+      errors;
+}
+
+/// Clash API fake：启动后校验（`CoreService._verifyControlApi`）取一帧
+/// 就回，不碰真网络。widget 测试里 HttpClient 一律回 400，不注入
+/// 这个 fake 时校验会记探活失败，首页显示“运行中”＋拨测失败提示
+///（不是“连接失败”）。
+class _FakeClashApi extends ClashApiClient {
+  /// 启动后校验的拨测结果：默认测通；改成失败可模拟探活失败。
+  ProxyDelayResult delayResult = const ProxyDelayResult(delay: 100);
+
+  @override
+  Future<TrafficSample> trafficSample({
+    Duration timeout = const Duration(seconds: 5),
+  }) async => const TrafficSample(up: 0, down: 0);
+
+  /// 启动后校验的拨测桩：默认测通；不桩它时真实现会去连
+  /// 127.0.0.1:9090，widget 测试里 HttpClient 一律回 400，
+  /// 校验记探活失败、首页显示“运行中”＋拨测失败提示。
+  @override
+  Future<ProxyDelayResult> proxyDelayDetailed(
+    String proxyName, {
+    Duration timeout = const Duration(seconds: 5),
+  }) async => delayResult;
+}
+
+/// 设置桩：初始 tun 可指定（真实现读 SharedPreferences 是异步回落，
+/// 同文件多测试共用一个缓存实例时 mock 初值改不进去）；setTun 沿用
+/// 真实现（改 state＋写 prefs）。
+class _StubSettingsNotifier extends SettingsNotifier {
+  _StubSettingsNotifier({required this.initialTun});
+
+  final bool initialTun;
+
+  @override
+  SettingsState build() => SettingsState(tun: initialTun);
 }
 
 /// 节点列表桩：只返回给定的节点与 userinfo，不拉订阅。
@@ -86,7 +128,93 @@ class _StubNodesNotifier extends NodesNotifier {
   );
 }
 
-Node _node(String name, {NodeSource source = NodeSource.direct}) => Node(
+/// 节点选择弹窗桩：selectNode / testSingleSpeed 可注入行为，
+/// 不走真核心与真 Clash API（问题 5 的弹窗测试用）。
+class _PickerStubNodesNotifier extends _StubNodesNotifier {
+  _PickerStubNodesNotifier({
+    required super.nodes,
+    super.selected,
+  });
+
+  /// selectNode 返回什么（false 时模拟切换失败）。
+  bool selectResult = true;
+
+  /// selectNode 失败时写进 selectionReason 的原因。
+  String? selectReason;
+
+  /// testSingleSpeed 被调了几次。
+  int testSingleCalls = 0;
+
+  /// testSingleSpeed 测到后给节点写的延迟。
+  int singleLatencyMs = 88;
+
+  /// testAllSpeeds 被调了几次。
+  int testAllCalls = 0;
+
+  /// testAllSpeeds 测到后给全部节点写的延迟。
+  int allLatencyMs = 55;
+
+  /// testAllSpeeds 的门：设了就等它完成才回（测“测速中禁用”用），
+  /// 不设就立即完成。
+  Completer<bool>? testAllGate;
+
+  @override
+  Future<bool> selectNode(
+    Node node, {
+    String? reason,
+    bool auto = false,
+  }) async {
+    if (!selectResult) {
+      state = state.copyWith(
+        selectionReason: selectReason ?? '切换失败，核心没有响应',
+      );
+      return false;
+    }
+    state = state.copyWith(
+      selectedNodeName: node.name,
+      selectionReason: '已选择 ${node.name}',
+    );
+    return true;
+  }
+
+  @override
+  Future<bool> testSingleSpeed(Node node) async {
+    testSingleCalls++;
+    final nodes = state.nodes;
+    final target = nodes.where((n) => n.name == node.name).firstOrNull;
+    if (target != null) {
+      target.latencyMs = singleLatencyMs;
+      target.latencyFailed = false;
+      target.latencyFailureReason = null;
+    }
+    state = state.copyWith(nodes: List.of(nodes));
+    return true;
+  }
+
+  @override
+  Future<bool> testAllSpeeds() async {
+    testAllCalls++;
+    if (testAllGate != null) {
+      final ok = await testAllGate!.future;
+      if (!ok) return false;
+    }
+    final nodes = state.nodes;
+    for (final node in nodes) {
+      node.latencyMs = allLatencyMs;
+      node.latencyFailed = false;
+      node.latencyFailureReason = null;
+    }
+    state = state.copyWith(nodes: List.of(nodes));
+    return true;
+  }
+}
+
+Node _node(
+  String name, {
+  NodeSource source = NodeSource.direct,
+  String? subscriptionId,
+  String? subscriptionName,
+}) => Node(
   name: name,
   protocol: NodeProtocol.vless,
   address: '203.0.113.1',
@@ -95,6 +223,8 @@ Node _node(String name, {NodeSource source = NodeSource.direct}) => Node(
   uuidOrPassword: '11111111-2222-3333-4444-555555555555',
   tls: true,
   sni: 'example.com',
+  subscriptionId: subscriptionId,
+  subscriptionName: subscriptionName,
 );
 
 /// 远程配置桩：只返回给定的配置与来源，不拉网络、不读缓存。
@@ -126,7 +256,7 @@ RemoteConfig _bundledConfig() => RemoteConfig(
       features: const RemoteConfigFeatures(),
     );
 
-/// 强制更新的配置（当前版本 0.1.0 < 最低 0.2.0，带下载地址）。
+/// 强制更新的配置（当前版本 0.1.1 < 最低 0.2.0，带下载地址）。
 RemoteConfig _forceUpdateConfig() => RemoteConfig(
       configVersion: 2,
       minAppVersion: '0.2.0',
@@ -158,6 +288,8 @@ void main() {
   late Directory tmpDir;
   late String configPath;
   late _FakePlugin plugin;
+  late _FakeValidator validator;
+  late _FakeClashApi fakeApi;
   late CoreService service;
   late String closedApiBaseUrl;
   var goToMeCalls = 0;
@@ -168,11 +300,14 @@ void main() {
     tmpDir = await Directory.systemTemp.createTemp('home-page-test-');
     configPath = '${tmpDir.path}/using_config.json';
     plugin = _FakePlugin();
+    validator = _FakeValidator();
+    fakeApi = _FakeClashApi();
     service = CoreService(
       plugin: plugin,
-      validator: _FakeValidator(),
+      validator: validator,
       usingConfigPath: () async => configPath,
       ensureSelectedProfile: (_) async {},
+      clashApiClient: fakeApi,
     );
     await service.init();
     // 拿一个当前没人监听的端口当 Clash API 地址：核心没启动时
@@ -196,7 +331,20 @@ void main() {
     RemoteConfig? remoteConfig,
     RemoteConfigSource remoteSource = RemoteConfigSource.fresh,
     Size viewSize = const Size(800, 1600),
+    NodesNotifier? nodesOverride,
+    SettingsNotifier? settingsOverride,
+    List<Announcement>? announcements,
   }) async {
+    // 公告默认一条（0.1.2：有公告才显示卡片；默认不断言它，
+    // 卡片尺寸测试用它当 72 高锚点）。
+    announcements ??= [
+      Announcement(
+        id: 'test-1',
+        title: '维护通知',
+        body: '今晚维护',
+        createdAt: DateTime(2026, 11, 26, 9),
+      ),
+    ];
     // 首页内容一屏放不下时 ListView 只构建可见子项，到期格与模式段
     // 会在 800x600 默认视口下不可见；测试用高视口一次全渲染。
     tester.view.physicalSize = viewSize;
@@ -207,11 +355,13 @@ void main() {
         overrides: [
           coreServiceProvider.overrideWithValue(service),
           nodesProvider.overrideWith(
-            () => _StubNodesNotifier(
-              nodes: nodes,
-              userinfo: userinfo,
-              selected: selected,
-            ),
+            () =>
+                nodesOverride ??
+                _StubNodesNotifier(
+                  nodes: nodes,
+                  userinfo: userinfo,
+                  selected: selected,
+                ),
           ),
           clashApiClientProvider.overrideWithValue(
             ClashApiClient(baseUrl: closedApiBaseUrl),
@@ -223,6 +373,9 @@ void main() {
                 source: remoteSource,
               ),
             ),
+          if (settingsOverride != null)
+            settingsProvider.overrideWith(() => settingsOverride),
+          announcementsProvider.overrideWith((ref) async => announcements!),
         ],
         child: MaterialApp(
           home: Scaffold(
@@ -370,6 +523,83 @@ void main() {
     expect(find.text('静候连接'), findsOneWidget);
   });
 
+  testWidgets('探活失败：首页仍显示运行中＋拨测失败提示＋重新拨测按钮', (
+    tester,
+  ) async {
+    // 2026-11-26 二轮修复（方案 A）：拨测失败不再翻 error——首页
+    // 保持“运行中”，副标题写失败原因，另给“重新拨测”按钮；
+    // 红字失败区只在真 error 时显示，这里不出现。
+    // 注意：不要在这里重建 CoreService 再调 init()——init 内部读盘，
+    // testWidgets 的 fake 时间下直接 await 文件 IO 永远等不到完成
+    //（见本文件 tapSwitch 上的注释）；复用 setUp 建好的共享 service，
+    // 只翻拨测桩的结果。
+    fakeApi.delayResult = const ProxyDelayResult(
+      failure: ProxyDelayFailure.failed,
+    );
+    await pumpHome(tester, nodes: [_node('甲-直连')]);
+    await tapSwitch(tester);
+    expect(plugin.startCalls, 1);
+    // 启动校验是 fire-and-forget：预热 2 秒＋重试 2 秒的定时器是在
+    // runAsync 真实区里建的，fake 时间的 pump 刷不动它，等 5 秒
+    // 真实时间（两次拨测都失败才记探活失败），再刷帧渲染。
+    await tester.runAsync(() async {
+      await Future<void>.delayed(const Duration(seconds: 5));
+    });
+    await pumpFrames(tester);
+    expect(find.text('运行中'), findsOneWidget);
+    expect(find.textContaining('出站拨测失败'), findsOneWidget);
+    expect(find.text('重新拨测'), findsOneWidget);
+    expect(find.text('连接失败'), findsNothing);
+    // 副标题被失败原因占了，不再是已连接时长。
+    expect(find.textContaining('已连接 '), findsNothing);
+    // 节点恢复后点“重新拨测”：提示消失，回到已连接时长。
+    fakeApi.delayResult = const ProxyDelayResult(delay: 200);
+    await tester.runAsync(() async {
+      await tester.tap(find.text('重新拨测'));
+      // 重测同样要等 2 秒预热（真实区定时器，等 3 秒真实时间）。
+      await Future<void>.delayed(const Duration(seconds: 3));
+    });
+    await pumpFrames(tester);
+    expect(find.textContaining('出站拨测失败'), findsNothing);
+    expect(find.text('重新拨测'), findsNothing);
+    expect(find.textContaining('已连接 '), findsOneWidget);
+  });
+
+  testWidgets('点开关（TUN 关着）：自动打开 TUN 再启动，配置里有 tun 入站', (
+    tester,
+  ) async {
+    await pumpHome(
+      tester,
+      nodes: [_node('甲-直连')],
+      settingsOverride: _StubSettingsNotifier(initialTun: false),
+    );
+    await tapSwitch(tester);
+    expect(plugin.startCalls, 1);
+    expect(find.text('运行中'), findsOneWidget);
+    expect(find.text('已自动开启 TUN，否则无法代理'), findsOneWidget);
+    final decoded =
+        jsonDecode((await tester.runAsync<String>(
+              () => File(configPath).readAsString(),
+            ))!)
+            as Map<String, dynamic>;
+    final inbounds = decoded['inbounds'] as List;
+    expect(inbounds.any((e) => (e as Map)['type'] == 'tun'), isTrue);
+  });
+
+  testWidgets('点开关（校验失败）：提示里带真实原因，不启动', (tester) async {
+    // 2026-11-26：TUN 的 stack 字段被 schema 拒时这里只弹固定句
+    // “配置生成失败，已保持上次连接”，用户完全不知道为什么。
+    validator.errors = ['inbounds[1] 的 stack 字段不被允许'];
+    await pumpHome(tester, nodes: [_node('甲-直连')]);
+    await tapSwitch(tester);
+    expect(plugin.startCalls, 0);
+    expect(
+      find.textContaining('inbounds[1] 的 stack 字段不被允许'),
+      findsOneWidget,
+    );
+    expect(find.text('静候连接'), findsOneWidget);
+  });
+
   testWidgets('点开关（无节点）：不启动，提示先绑定订阅并跳到我的页', (
     tester,
   ) async {
@@ -412,7 +642,38 @@ void main() {
             ))!)
             as Map<String, dynamic>;
     expect((decoded['route'] as Map)['final'], 'direct');
-    expect(((decoded['route'] as Map)['rules'] as List), isEmpty);
+    // 0.1.6：直连模式只有 2 条前缀（sniff/私网旁路；
+    // QUIC 阻断已随 0.1.6 回滚删掉），但没有任何规则引用 Proxy（全直连）。
+    final directRules =
+        ((decoded['route'] as Map)['rules'] as List)
+            .cast<Map<String, dynamic>>();
+    expect(directRules.length, 2);
+    expect(directRules[0], {'action': 'sniff', 'timeout': '300ms'});
+    expect(
+      directRules[1],
+      {'ip_is_private': true, 'outbound': 'direct'},
+    );
+    expect(directRules.any((r) => r['outbound'] == 'Proxy'), isFalse);
+  });
+
+  testWidgets('模式切换（校验失败）：提示里带真实原因，模式不变', (tester) async {
+    // 2026-11-26：以前只弹固定句“切换失败，已保持原模式”。
+    validator.errors = ['route 缺少 default_domain_resolver'];
+    await pumpHome(tester, nodes: [_node('甲-直连')]);
+    await tester.runAsync(() async {
+      await tester.tap(find.text('全局模式'));
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+    });
+    await pumpFrames(tester);
+    expect(plugin.reloadCalls, 0);
+    expect(
+      find.textContaining('route 缺少 default_domain_resolver'),
+      findsOneWidget,
+    );
+    final segmented = tester.widget<SegmentedButton<String>>(
+      find.byType(SegmentedButton<String>),
+    );
+    expect(segmented.selected, {'rule'});
   });
 
   // 切片 8：限流状态行与强制更新下载地址。
@@ -571,10 +832,10 @@ void main() {
       remoteSource: RemoteConfigSource.bundled,
       viewSize: const Size(390, 2000),
     );
-    // 状态卡：bundled 提示、公告、当前节点——同高同宽、左右对齐。
+    // 状态卡：公告、当前节点——同高同宽、左右对齐；bundled 提示卡不在
+    // 72 组里（问题 9：标题副标题完整换行显示，卡片由内容定高）。
     final statusSizes = [
-      cardBoxSize(tester, '首次启动需要联网拉取配置'),
-      cardBoxSize(tester, '暂无公告'),
+      cardBoxSize(tester, '维护通知'),
       cardBoxSize(tester, '当前节点'),
     ];
     for (final size in statusSizes) {
@@ -583,6 +844,23 @@ void main() {
     expect(
       statusSizes.map((s) => s.width).toSet(),
       hasLength(1),
+    );
+    // bundled 提示卡：标题副标题完整显示、不省略（390 宽下标题
+    // intrinsic 198px、可用只有 148px，单行会被截成“首次启动需要联网…”），
+    // 卡片因此比 72 高。
+    final hintTitle = tester.widget<Text>(
+      find.text('首次启动需要联网拉取配置'),
+    );
+    expect(hintTitle.maxLines, isNull);
+    expect(hintTitle.overflow, isNot(TextOverflow.ellipsis));
+    final hintSubtitle = tester.widget<Text>(
+      find.text('拉不到配置也能先手动粘贴订阅使用'),
+    );
+    expect(hintSubtitle.maxLines, isNull);
+    expect(hintSubtitle.overflow, isNot(TextOverflow.ellipsis));
+    expect(
+      cardBoxSize(tester, '首次启动需要联网拉取配置').height,
+      greaterThan(72),
     );
     // 流量格：实时速率、已用 / 总量、剩余流量、到期日、流量口径——
     // 同高同宽（数值两行那格不再比单行那格高）。
@@ -617,7 +895,7 @@ void main() {
     final statusSizes = [
       cardBoxSize(tester, '当前版本过低'),
       cardBoxSize(tester, '配置中心暂时连不上'),
-      cardBoxSize(tester, '暂无公告'),
+      cardBoxSize(tester, '维护通知'),
       cardBoxSize(tester, '当前节点'),
     ];
     for (final size in statusSizes) {
@@ -627,5 +905,417 @@ void main() {
       statusSizes.map((s) => s.width).toSet(),
       hasLength(1),
     );
+  });
+
+  // 问题 5：首页当前节点卡片可点，弹节点列表弹窗选节点。
+  testWidgets('当前节点卡片可点：点开弹窗，点一行切过去并关闭弹窗', (tester) async {
+    final stub = _PickerStubNodesNotifier(
+      nodes: [_node('甲-直连'), _node('乙-中转')],
+      selected: '甲-直连',
+    );
+    await pumpHome(tester, nodesOverride: stub);
+    expect(find.text('当前节点：甲-直连'), findsOneWidget);
+    // 点当前节点卡片：弹窗列出节点、带测速入口。
+    await tester.tap(find.text('当前节点：甲-直连'));
+    await tester.pumpAndSettle();
+    expect(find.text('选择节点'), findsOneWidget);
+    expect(find.text('测速全部'), findsOneWidget);
+    expect(find.text('测速当前节点'), findsOneWidget);
+    // 分组默认全部折叠：组头在、节点不在，点组头展开才看到节点。
+    expect(find.text('未命名订阅'), findsOneWidget);
+    expect(find.text('甲-直连'), findsNothing);
+    expect(find.text('乙-中转'), findsNothing);
+    await tester.tap(find.text('未命名订阅'));
+    await tester.pumpAndSettle();
+    expect(find.text('甲-直连'), findsOneWidget);
+    expect(find.text('乙-中转'), findsOneWidget);
+    // 点乙：切过去、弹窗关闭、首页当前节点变成乙。
+    await tester.tap(find.text('乙-中转'));
+    await tester.pumpAndSettle();
+    expect(find.text('选择节点'), findsNothing);
+    expect(find.text('当前节点：乙-中转'), findsOneWidget);
+  });
+
+  testWidgets('节点弹窗：点“测速当前节点”，只测选中节点、延迟就地更新', (
+    tester,
+  ) async {
+    final stub = _PickerStubNodesNotifier(
+      nodes: [_node('甲-直连'), _node('乙-中转')],
+      selected: '甲-直连',
+    );
+    await pumpHome(tester, nodesOverride: stub);
+    await tester.tap(find.text('当前节点：甲-直连'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('未命名订阅'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('测速当前节点'));
+    await tester.pumpAndSettle();
+    expect(stub.testSingleCalls, 1);
+    // 只测了选中的甲：弹窗里甲显示 88ms（绿色），乙还是未测速。
+    expect(find.text('88ms'), findsOneWidget);
+    expect(find.text('未测速'), findsOneWidget);
+    final latencyText = tester.widget<Text>(find.text('88ms'));
+    expect(latencyText.style?.color, const Color(0xFF157347));
+  });
+
+  testWidgets('节点弹窗：切节点失败时原因留在弹窗里，不静默、不关弹窗', (
+    tester,
+  ) async {
+    final stub = _PickerStubNodesNotifier(
+      nodes: [_node('甲-直连'), _node('乙-中转')],
+      selected: '甲-直连',
+    )
+      ..selectResult = false
+      ..selectReason = '切换失败，核心没有响应';
+    await pumpHome(tester, nodesOverride: stub);
+    await tester.tap(find.text('当前节点：甲-直连'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('未命名订阅'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('乙-中转'));
+    await tester.pumpAndSettle();
+    expect(find.text('选择节点'), findsOneWidget);
+    expect(find.text('切换失败，核心没有响应'), findsOneWidget);
+    expect(find.text('当前节点：甲-直连'), findsOneWidget);
+  });
+
+  testWidgets('节点弹窗：无节点时点当前节点卡片不弹弹窗、提示去绑定', (
+    tester,
+  ) async {
+    await pumpHome(tester);
+    await tester.tap(find.text('当前节点：未选择'));
+    await tester.pumpAndSettle();
+    expect(find.text('选择节点'), findsNothing);
+    expect(find.text('请先绑定订阅，再选择节点'), findsOneWidget);
+    expect(goToMeCalls, 1);
+  });
+
+  // 问题 8：首页小卡片之间留 8px 缝隙，两行都改，高度与内容不变。
+  testWidgets('小卡片间距：两行三格之间各留 8px，流量格仍是 102 高', (
+    tester,
+  ) async {
+    await pumpHome(
+      tester,
+      nodes: [_node('甲-直连')],
+      viewSize: const Size(390, 2000),
+    );
+    Rect cardRect(String label) {
+      final card = find
+          .byType(GlassCard)
+          .evaluate()
+          .map((e) => e.widget)
+          .firstWhere(
+            (w) =>
+                find
+                    .descendant(
+                      of: find.byWidget(w),
+                      matching: find.text(label),
+                    )
+                    .evaluate()
+                    .isNotEmpty,
+          );
+      return tester.getRect(
+        find.descendant(
+          of: find.byWidget(card),
+          matching: find.byType(ClipRRect),
+        ),
+      );
+    }
+
+    // 第一行：实时速率 | 已用 / 总量 | 剩余流量。
+    final rate = cardRect('实时速率');
+    final used = cardRect('已用 / 总量');
+    final remain = cardRect('剩余流量');
+    expect(used.left - rate.right, 8);
+    expect(remain.left - used.right, 8);
+    // 第二行：到期日 | 流量口径 | 空格。
+    final expire = cardRect('到期日');
+    final caliber = cardRect('流量口径');
+    expect(caliber.left - expire.right, 8);
+    // 高度与内容不变：流量格仍是 102。
+    expect(rate.height, 102);
+    expect(expire.height, 102);
+  });
+
+  // 问题 9：360 窄屏下 bundled 提示标题副标题仍完整显示、不省略。
+  testWidgets('bundled 提示：360 窄屏下标题副标题完整显示、不省略', (
+    tester,
+  ) async {
+    await pumpHome(
+      tester,
+      remoteConfig: _bundledConfig(),
+      remoteSource: RemoteConfigSource.bundled,
+      viewSize: const Size(360, 2000),
+    );
+    final hintTitle = tester.widget<Text>(
+      find.text('首次启动需要联网拉取配置'),
+    );
+    expect(hintTitle.maxLines, isNull);
+    expect(hintTitle.overflow, isNot(TextOverflow.ellipsis));
+    final hintSubtitle = tester.widget<Text>(
+      find.text('拉不到配置也能先手动粘贴订阅使用'),
+    );
+    expect(hintSubtitle.maxLines, isNull);
+    expect(hintSubtitle.overflow, isNot(TextOverflow.ellipsis));
+  });
+
+  // 节点弹窗按订阅分组（2026-11-26）：不同订阅的节点不混在一起，
+  // 分组默认折叠，点组头展开/收起；测速全部与单行测速入口。
+  testWidgets('节点弹窗分组：默认全部折叠，点组头展开只看到该组节点', (
+    tester,
+  ) async {
+    final stub = _PickerStubNodesNotifier(
+      nodes: [
+        _node(
+          '甲-A',
+          subscriptionId: 'sub-a',
+          subscriptionName: '自家面板',
+        ),
+        _node(
+          '乙-A',
+          subscriptionId: 'sub-a',
+          subscriptionName: '自家面板',
+        ),
+        _node('丙-B', subscriptionId: 'sub-b', subscriptionName: '机场B'),
+        _node(
+          '丁-手',
+          subscriptionId: 'single_nodes',
+          subscriptionName: '手动添加',
+        ),
+      ],
+      selected: '甲-A',
+    );
+    await pumpHome(tester, nodesOverride: stub);
+    await tester.tap(find.text('当前节点：甲-A'));
+    await tester.pumpAndSettle();
+    // 默认全部折叠：三个组头都在，节点一个都不显示。
+    expect(find.text('自家面板'), findsOneWidget);
+    expect(find.text('机场B'), findsOneWidget);
+    expect(find.text('手动添加'), findsOneWidget);
+    expect(find.text('甲-A'), findsNothing);
+    expect(find.text('乙-A'), findsNothing);
+    expect(find.text('丙-B'), findsNothing);
+    expect(find.text('丁-手'), findsNothing);
+    // 点“自家面板”展开：只看到该组的甲、乙，丙、丁还藏着。
+    await tester.tap(find.text('自家面板'));
+    await tester.pumpAndSettle();
+    expect(find.text('甲-A'), findsOneWidget);
+    expect(find.text('乙-A'), findsOneWidget);
+    expect(find.text('丙-B'), findsNothing);
+    expect(find.text('丁-手'), findsNothing);
+    // 再点收起：甲、乙又藏起来。
+    await tester.tap(find.text('自家面板'));
+    await tester.pumpAndSettle();
+    expect(find.text('甲-A'), findsNothing);
+    expect(find.text('乙-A'), findsNothing);
+    // 另一组独立展开：点“机场B”只看到丙。
+    await tester.tap(find.text('机场B'));
+    await tester.pumpAndSettle();
+    expect(find.text('丙-B'), findsOneWidget);
+    expect(find.text('甲-A'), findsNothing);
+  });
+
+  testWidgets('节点弹窗分组标题：没订阅名用订阅 id，两者都没有叫未命名订阅', (
+    tester,
+  ) async {
+    final stub = _PickerStubNodesNotifier(
+      nodes: [
+        _node('甲', subscriptionId: 'sub-x'),
+        _node('乙'),
+      ],
+      selected: '甲',
+    );
+    await pumpHome(tester, nodesOverride: stub);
+    await tester.tap(find.text('当前节点：甲'));
+    await tester.pumpAndSettle();
+    expect(find.text('sub-x'), findsOneWidget);
+    expect(find.text('未命名订阅'), findsOneWidget);
+  });
+
+  testWidgets('节点弹窗分组标题：单节点组没名字也叫手动添加', (tester) async {
+    final stub = _PickerStubNodesNotifier(
+      nodes: [_node('丁-手', subscriptionId: 'single_nodes')],
+      selected: '丁-手',
+    );
+    await pumpHome(tester, nodesOverride: stub);
+    await tester.tap(find.text('当前节点：丁-手'));
+    await tester.pumpAndSettle();
+    expect(find.text('手动添加'), findsOneWidget);
+  });
+
+  testWidgets('节点弹窗测速全部：点一次测全部节点，延迟就地更新', (tester) async {
+    final stub = _PickerStubNodesNotifier(
+      nodes: [
+        _node(
+          '甲-A',
+          subscriptionId: 'sub-a',
+          subscriptionName: '自家面板',
+        ),
+        _node('丙-B', subscriptionId: 'sub-b', subscriptionName: '机场B'),
+      ],
+      selected: '甲-A',
+    );
+    await pumpHome(tester, nodesOverride: stub);
+    await tester.tap(find.text('当前节点：甲-A'));
+    await tester.pumpAndSettle();
+    // 折叠时也能测全部：不用先展开。
+    await tester.tap(find.text('测速全部'));
+    await tester.pumpAndSettle();
+    expect(stub.testAllCalls, 1);
+    expect(stub.testSingleCalls, 0);
+    await tester.tap(find.text('自家面板'));
+    await tester.tap(find.text('机场B'));
+    await tester.pumpAndSettle();
+    expect(find.text('55ms'), findsNWidgets(2));
+  });
+
+  testWidgets('节点弹窗测速全部：测速中按钮禁用，测完才恢复', (tester) async {
+    final stub = _PickerStubNodesNotifier(
+      nodes: [_node('甲-直连'), _node('乙-中转')],
+      selected: '甲-直连',
+    )..testAllGate = Completer<bool>();
+    await pumpHome(tester, nodesOverride: stub);
+    await tester.tap(find.text('当前节点：甲-直连'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('测速全部'));
+    await tester.pump();
+    // 测速中：“测速全部”变成“测速中…”且禁用，再点也不会多调一次。
+    expect(find.text('测速中…'), findsOneWidget);
+    final button = tester.widget<TextButton>(
+      find.widgetWithText(TextButton, '测速中…'),
+    );
+    expect(button.onPressed, isNull);
+    await tester.tap(find.text('测速中…'), warnIfMissed: false);
+    await tester.pump();
+    expect(stub.testAllCalls, 1);
+    stub.testAllGate!.complete(true);
+    await tester.pumpAndSettle();
+    expect(find.text('测速全部'), findsOneWidget);
+    await tester.tap(find.text('未命名订阅'));
+    await tester.pumpAndSettle();
+    expect(find.text('55ms'), findsNWidgets(2));
+  });
+
+  testWidgets('节点弹窗单行测速：点行内延迟处只测这一行', (tester) async {
+    final stub = _PickerStubNodesNotifier(
+      nodes: [_node('甲-直连'), _node('乙-中转')],
+      selected: '甲-直连',
+    );
+    await pumpHome(tester, nodesOverride: stub);
+    await tester.tap(find.text('当前节点：甲-直连'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('未命名订阅'));
+    await tester.pumpAndSettle();
+    // 点甲那行的“未测速”（延迟处）：只测甲，不测乙、不关弹窗。
+    final latency = find.descendant(
+      of: find.widgetWithText(ListTile, '甲-直连'),
+      matching: find.text('未测速'),
+    );
+    await tester.tap(latency);
+    await tester.pumpAndSettle();
+    expect(stub.testSingleCalls, 1);
+    expect(stub.testAllCalls, 0);
+    expect(find.text('选择节点'), findsOneWidget);
+    expect(find.text('88ms'), findsOneWidget);
+    expect(find.text('未测速'), findsOneWidget);
+  });
+
+  testWidgets('节点弹窗选中不挪位置：选了组内第二个，重进后顺序不变', (
+    tester,
+  ) async {
+    final stub = _PickerStubNodesNotifier(
+      nodes: [
+        _node(
+          '甲-A',
+          subscriptionId: 'sub-a',
+          subscriptionName: '自家面板',
+        ),
+        _node(
+          '乙-A',
+          subscriptionId: 'sub-a',
+          subscriptionName: '自家面板',
+        ),
+      ],
+      selected: '甲-A',
+    );
+    await pumpHome(tester, nodesOverride: stub);
+    await tester.tap(find.text('当前节点：甲-A'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('自家面板'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('乙-A'));
+    await tester.pumpAndSettle();
+    expect(find.text('当前节点：乙-A'), findsOneWidget);
+    // 重进弹窗再展开：甲仍在乙上面，没被挪到下面、也没重排。
+    await tester.tap(find.text('当前节点：乙-A'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('自家面板'));
+    await tester.pumpAndSettle();
+    final topA = tester.getTopLeft(find.text('甲-A')).dy;
+    final topB = tester.getTopLeft(find.text('乙-A')).dy;
+    expect(topA, lessThan(topB));
+  });
+
+  testWidgets('公告：没有公告时公告栏不存在，不留占位', (tester) async {
+    await pumpHome(tester, announcements: []);
+    expect(find.byType(AnnouncementMarquee), findsNothing);
+    expect(find.text('维护通知'), findsNothing);
+  });
+
+  testWidgets('公告：有公告时跑马灯出现，点进公告列表页', (tester) async {
+    await pumpHome(tester);
+    expect(find.byType(AnnouncementMarquee), findsOneWidget);
+    expect(find.text('维护通知'), findsOneWidget);
+    await tester.tap(find.byType(AnnouncementMarquee));
+    await tester.pumpAndSettle();
+    // 列表页：标题栏“公告”，列表里有这条的标题＋正文＋时间。
+    expect(find.text('公告'), findsOneWidget);
+    expect(find.text('维护通知'), findsOneWidget);
+    expect(find.text('今晚维护'), findsOneWidget);
+    expect(find.textContaining('2026-11-26'), findsOneWidget);
+  });
+
+  testWidgets('开关五种状态文案：未连接/连接中/运行中/断开中/失败', (
+    tester,
+  ) async {
+    await pumpHome(tester, nodes: [_node('甲-直连')]);
+    // 未连接。
+    expect(find.text('静候连接'), findsOneWidget);
+    expect(find.text('轻触开启'), findsOneWidget);
+
+    // 连接中。
+    await tester.runAsync(() async {
+      plugin.emit(const ProxyStarting());
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    });
+    await pumpFrames(tester);
+    expect(find.text('正在连接…'), findsOneWidget);
+    expect(find.text('稍等片刻'), findsOneWidget);
+
+    // 已连接。
+    await tester.runAsync(() async {
+      plugin.emit(const ProxyStarted());
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    });
+    await pumpFrames(tester);
+    expect(find.text('运行中'), findsOneWidget);
+    expect(find.textContaining('已连接'), findsOneWidget);
+
+    // 断开中。
+    await tester.runAsync(() async {
+      plugin.emit(const ProxyStopping());
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    });
+    await pumpFrames(tester);
+    expect(find.text('正在断开…'), findsOneWidget);
+
+    // 失败。
+    await tester.runAsync(() async {
+      plugin.emit(const ProxyStopped(errMessage: '内核崩了'));
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    });
+    await tester.pumpAndSettle();
+    expect(find.text('连接失败'), findsOneWidget);
+    expect(find.text('轻触重试'), findsOneWidget);
   });
 }

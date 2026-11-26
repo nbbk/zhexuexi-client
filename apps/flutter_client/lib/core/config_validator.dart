@@ -40,6 +40,13 @@ class SingBoxSchemaConfigValidator implements ConfigValidator {
     return errors;
   }
 
+  /// 是否 IP 字面量（IPv4 点分十进制，或含 `:` 的 IPv6 字面量）；
+  /// 域名不是 IP，须走引导解析。
+  static bool _isIpLiteral(String value) {
+    if (value.contains(':')) return true;
+    return RegExp(r'^(\d{1,3}\.){3}\d{1,3}$').hasMatch(value);
+  }
+
   /// 与 schema 无关的结构检查（纯同步，单测可直接调）。
   static List<String> structuralErrors(Map<String, dynamic> config) {
     final errors = <String>[];
@@ -59,6 +66,18 @@ class SingBoxSchemaConfigValidator implements ConfigValidator {
             }
             if (server['type'] == null) {
               errors.add('dns.servers[$i] 缺少 type');
+            }
+            // 带 detour 的 DNS 服务器必须写 IP、不能写域名：域名要先
+            // 经 default_domain_resolver 解析才能建连，引导解析一死
+            // 就全死（2026-11-26 根因：dns.google 经 Proxy 的引导
+            // 依赖直连 1.1.1.1，国内直连境外解析被拦）。
+            if (server.containsKey('detour')) {
+              final srv = server['server'];
+              if (srv is String && !_isIpLiteral(srv)) {
+                errors.add(
+                  'dns.servers[$i] 带 detour 却用域名 $srv（须写 IP）',
+                );
+              }
             }
           } else {
             errors.add('dns.servers[$i] 不是对象');

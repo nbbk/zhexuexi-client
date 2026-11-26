@@ -142,7 +142,7 @@ class SubscriptionService {
       options: Options(
         responseType: ResponseType.plain,
         headers: {'User-Agent': userAgent},
-        // 订阅拉取超时 15 秒，失败由调用方提示“网络不通，检查订阅地址”。
+        // 订阅拉取超时 15 秒，失败由调用方提示“网络不通，请检查网络后重试”。
         sendTimeout: const Duration(seconds: 15),
         receiveTimeout: const Duration(seconds: 15),
       ),
@@ -182,7 +182,7 @@ class SubscriptionService {
     throw lastError ??
         const SubscriptionException(
           kind: SubscriptionErrorKind.parseFailed,
-          message: '订阅解析失败，三种格式都读不懂',
+          message: '订阅内容解析失败',
         );
   }
 
@@ -218,7 +218,7 @@ class SubscriptionService {
       if (parsed.nodes.isEmpty && parsed.failedCount > 0) {
         throw const SubscriptionException(
           kind: SubscriptionErrorKind.parseFailed,
-          message: '订阅正文解析失败',
+          message: '订阅内容解析失败',
         );
       }
       return NodeListResult(
@@ -232,7 +232,7 @@ class SubscriptionService {
     } on FormatException {
       throw const SubscriptionException(
         kind: SubscriptionErrorKind.parseFailed,
-        message: '订阅正文解析失败',
+        message: '订阅内容解析失败',
       );
     } on DioException catch (e) {
       throw _mapDioError(e);
@@ -244,14 +244,18 @@ class SubscriptionService {
     final retryAfter = e.response?.headers.value('retry-after');
     switch (status) {
       case 404:
+        // 面板语义：令牌不对或路由不对（Worker 对未知路径也回 404），
+        // 不是“订阅失效”——别让用户以为订阅本身没了。
         return const SubscriptionException(
           kind: SubscriptionErrorKind.invalid,
-          message: '订阅已失效，请重新绑定',
+          message: '订阅链接不对或令牌不对，请检查链接或重新获取',
         );
       case 410:
+        // 面板 1.4.27 语义：410 = 该订阅已退场（通用/合并订阅退场），
+        // 不是到期；要用户去用订阅用户的新链接。
         return const SubscriptionException(
-          kind: SubscriptionErrorKind.expired,
-          message: '订阅已到期',
+          kind: SubscriptionErrorKind.retired,
+          message: '该订阅已退场，请使用订阅用户的新订阅链接',
         );
       case 429:
         return SubscriptionException(
@@ -265,9 +269,11 @@ class SubscriptionService {
           message: '订阅请求参数不对，请联系管理员',
         );
       default:
+        // 没收到响应（超时/断网）或未列出的状态码：先按网络问题报，
+        // 让用户检查网络后重试，不猜订阅本身的原因。
         return const SubscriptionException(
           kind: SubscriptionErrorKind.network,
-          message: '网络不通，检查订阅地址',
+          message: '网络不通，请检查网络后重试',
         );
     }
   }
@@ -314,11 +320,11 @@ class NodeListResult {
 
 /// 订阅失败的种类（界面按种类给不同的提示，不把技术细节推给用户）。
 enum SubscriptionErrorKind {
-  /// 令牌查无此人（404）：订阅已失效，请重新绑定。
+  /// 订阅链接不对或令牌不对（404）：链接或令牌有问题，请检查或重新获取。
   invalid,
 
-  /// 令牌已过期（410）：订阅已到期。
-  expired,
+  /// 该订阅已退场（410）：通用/合并订阅退场，请用订阅用户的新订阅链接。
+  retired,
 
   /// 同一 IP 连续失败被锁（429）：退避重试，带 Retry-After。
   rateLimited,

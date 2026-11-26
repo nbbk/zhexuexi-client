@@ -141,7 +141,7 @@ class AuthService {
     if (domain.isEmpty) {
       throw const AuthException(
         kind: AuthErrorKind.invalidDomain,
-        message: '面板域名不对，请填写面板域名（如 ccpanel.jiankong.cf）',
+        message: '面板域名不对，请填写面板域名（如 panel.example.com）',
       );
     }
     if (username.trim().isEmpty || password.isEmpty) {

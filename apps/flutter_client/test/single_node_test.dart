@@ -11,6 +11,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:zhexuexi_client/core/node_model.dart';
 import 'package:zhexuexi_client/services/content_intake.dart';
 import 'package:zhexuexi_client/services/nodes_notifier.dart';
+import 'package:zhexuexi_client/services/node_override_store.dart';
 import 'package:zhexuexi_client/services/single_node_store.dart';
 import 'package:zhexuexi_client/services/subscription_parser.dart';
 import 'package:zhexuexi_client/services/subscription_service.dart';
@@ -253,6 +254,9 @@ void main() {
           singleNodeStoreProvider.overrideWithValue(
             SingleNodeStore(storage: storage),
           ),
+          nodeOverrideStoreProvider.overrideWithValue(
+            NodeOverrideStore(storage: storage),
+          ),
         ],
       );
       addTearDown(container.dispose);
@@ -396,6 +400,9 @@ void main() {
           singleNodeStoreProvider.overrideWithValue(
             SingleNodeStore(storage: storage),
           ),
+          nodeOverrideStoreProvider.overrideWithValue(
+            NodeOverrideStore(storage: storage),
+          ),
         ],
       );
       addTearDown(container.dispose);
@@ -455,6 +462,22 @@ void main() {
       expect(result.error, '内容无法识别：不是节点链接，也不是订阅链接');
       expect(container.read(nodesProvider).nodes, isEmpty);
       expect(container.read(subscriptionsProvider), isEmpty);
+    });
+
+    testWidgets('自家面板订阅链接 410 → 报退场原因，不当成到期', (tester) async {
+      await buildContainer();
+      const primaryLink =
+          'https://example.com/x9f2/sub_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+      service.primaryUrl = primaryLink;
+      service.failures[primaryLink] = const SubscriptionException(
+        kind: SubscriptionErrorKind.retired,
+        message: '该订阅已退场，请使用订阅用户的新订阅链接',
+      );
+      final ref = await pumpRef(tester);
+      final result = await handleContent(ref, primaryLink);
+      expect(result.error, '该订阅已退场，请使用订阅用户的新订阅链接');
+      expect(result.message, isNull);
+      expect(container.read(nodesProvider).status, NodesStatus.error);
     });
   });
 }

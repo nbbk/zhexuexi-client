@@ -8,10 +8,12 @@ import '../../widgets/app_icon.dart';
 import '../../core/app_tokens.dart';
 
 import '../../core/userinfo.dart';
+import '../../features/announcements/announcement_list_page.dart';
 import '../../services/announcement_service.dart';
 import '../../services/auth_notifier.dart';
 import '../../services/nodes_notifier.dart';
 import '../../services/subscription_auto_refresh.dart';
+import '../../widgets/glass_card.dart';
 import '../auth/login_page.dart';
 
 /// “我的”页（切片 5）：账号区 + 订阅卡片 + 订阅更新 + 公告列表 +
@@ -23,8 +25,9 @@ import '../auth/login_page.dart';
 /// - 订阅更新：上次更新时间 + 手动刷新按钮；失败时原因常驻显示，
 ///   不静默失败；每天自动更新一次（仅 Wi-Fi），见
 ///   [SubscriptionAutoRefresh]；
-/// - 公告：面板 `GET /api/v1/public-info` 的 `login_notice`，
-///   拉不到显示“暂无公告”；
+/// - 公告：[announcementsProvider] 的多条公告（远程配置 / 面板
+///   public-info / 面板公告接口 / login_notice），有公告才显示，
+///   没有就隐藏（0.1.2）；
 /// - 换绑：粘贴新链接重新绑定；
 /// - 账号登录（切片 9，DEV-PLAN §10.2）：未登录时账号区有“账号登录”入口，
 ///   点进登录页；已登录时账号区显示账号名；退出登录分两路——已登录只清
@@ -37,31 +40,18 @@ class MePage extends ConsumerStatefulWidget {
 }
 
 class _MePageState extends ConsumerState<MePage> {
-  String? _notice;
-  bool _noticeLoaded = false;
   String? _subscriptionHost;
   bool _refreshing = false;
 
   @override
   void initState() {
     super.initState();
-    unawaited(_loadAnnouncement());
     unawaited(_loadSubscriptionHost());
     // 账号登录态恢复（切片 9）：令牌与账号名都在才算登录态，
     // 读不到就当免登录，不阻断界面。
     unawaited(ref.read(authProvider.notifier).restore());
     // 每天自动更新一次（仅 Wi-Fi）：条件不满足时什么都不做。
     unawaited(maybeAutoRefreshSubscription(ref));
-  }
-
-  Future<void> _loadAnnouncement() async {
-    final notice = await ref.read(announcementServiceProvider).fetchNotice();
-    if (mounted) {
-      setState(() {
-        _notice = notice;
-        _noticeLoaded = true;
-      });
-    }
   }
 
   Future<void> _loadSubscriptionHost() async {
@@ -97,7 +87,8 @@ class _MePageState extends ConsumerState<MePage> {
         await ref.read(subscriptionAutoRefreshProvider).markRefreshed();
         _showSnack('订阅已更新');
       }
-      await _loadAnnouncement();
+      // 手动刷新订阅时公告也重拉一次（共用 provider）。
+      ref.invalidate(announcementsProvider);
     } finally {
       if (mounted) setState(() => _refreshing = false);
     }
@@ -227,12 +218,14 @@ class _MePageState extends ConsumerState<MePage> {
     final loading = nodesState.status == NodesStatus.loading;
     final auth = ref.watch(authProvider);
     final username = auth.username;
+    final announcementList = ref.watch(announcementsProvider).valueOrNull;
 
-    return ListView(
+    return GlassBackground(
+      child: ListView(
       padding: const EdgeInsets.all(AppTokens.spacingMd),
       children: [
         // 账号区：已登录显示账号名；未登录显示绑定状态。
-        Card(
+        GlassCard(
           child: ListTile(
             leading: const CircleAvatar(child: AppIcon(icon: AppIcons.user)),
             title: Text(
@@ -252,7 +245,7 @@ class _MePageState extends ConsumerState<MePage> {
         // 账号登录入口（切片 9）：只在未登录时显示。
         if (username == null) ...[
           const SizedBox(height: AppTokens.spacingMd),
-          Card(
+          GlassCard(
             child: ListTile(
               leading: const AppIcon(icon: AppIcons.logIn),
               title: const Text('账号登录'),
@@ -266,7 +259,7 @@ class _MePageState extends ConsumerState<MePage> {
         ],
         const SizedBox(height: AppTokens.spacingMd),
         // 订阅卡片：剩余流量大字 + 已用/总量 + 到期日（userinfo 口径）。
-        Card(
+        GlassCard(
           child: Padding(
             padding: const EdgeInsets.all(AppTokens.spacingMd),
             child: Column(
@@ -324,7 +317,7 @@ class _MePageState extends ConsumerState<MePage> {
         ),
         const SizedBox(height: AppTokens.spacingMd),
         // 订阅更新：上次更新时间 + 手动刷新；失败原因常驻显示。
-        Card(
+        GlassCard(
           child: Padding(
             padding: const EdgeInsets.all(AppTokens.spacingMd),
             child: Column(
@@ -361,17 +354,28 @@ class _MePageState extends ConsumerState<MePage> {
           ),
         ),
         const SizedBox(height: AppTokens.spacingMd),
-        // 公告列表：面板 public-info 的 login_notice。
-        Card(
-          child: ListTile(
-            leading: const AppIcon(icon: AppIcons.megaphone),
-            title: const Text('公告'),
-            subtitle: Text(!_noticeLoaded ? '加载中…' : (_notice ?? '暂无公告')),
-            trailing: const AppIcon(icon: AppIcons.chevronRight),
+        // 公告（0.1.2）：有公告才渲染，副标题“共 N 条，点击查看”，
+        // chevron 变活、点进列表页；空/加载中整个 Card＋其后
+        // SizedBox 都不渲染。
+        if (announcementList != null && announcementList.isNotEmpty) ...[
+          GlassCard(
+            child: ListTile(
+              leading: const AppIcon(icon: AppIcons.megaphone),
+              title: const Text('公告'),
+              subtitle: Text('共 ${announcementList.length} 条，点击查看'),
+              trailing: const AppIcon(icon: AppIcons.chevronRight),
+              onTap: () => Navigator.push(
+                context,
+                appPageRoute(
+                  context,
+                  (_) => const AnnouncementListPage(),
+                ),
+              ),
+            ),
           ),
-        ),
-        const SizedBox(height: AppTokens.spacingMd),
-        Card(
+          const SizedBox(height: AppTokens.spacingMd),
+        ],
+        GlassCard(
           child: ListTile(
             leading: const AppIcon(icon: AppIcons.swap),
             title: const Text('换绑订阅'),
@@ -380,7 +384,7 @@ class _MePageState extends ConsumerState<MePage> {
           ),
         ),
         const SizedBox(height: AppTokens.spacingMd),
-        Card(
+        GlassCard(
           child: ListTile(
             leading: const AppIcon(icon: AppIcons.logOut),
             title: const Text('退出登录'),
@@ -391,6 +395,7 @@ class _MePageState extends ConsumerState<MePage> {
           ),
         ),
       ],
+      ),
     );
   }
 }

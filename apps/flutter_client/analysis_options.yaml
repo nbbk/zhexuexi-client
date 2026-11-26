@@ -15,6 +15,11 @@ analyzer:
     - android/**
     - windows/**
     - linux/**
+    # 本地 fork 的 flutter_sing_box 自带的示例 App 与开发脚本（packages/flutter_sing_box/PATCH_NOTES.md）：
+    # 不参与打包，作 path 依赖时其内部 import 解析不到，analyze 会误报；
+    # 插件本体 lib/ 与 App 的 lib/、test/ 仍正常分析。
+    - packages/flutter_sing_box/example/**
+    - packages/flutter_sing_box/tool/**
 
 linter:
   # The lint rules applied to this project can be customized in the

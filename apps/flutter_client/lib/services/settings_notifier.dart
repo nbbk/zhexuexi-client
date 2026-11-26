@@ -14,7 +14,7 @@ class SettingsState {
     this.notifications = true,
     this.autoStart = false,
     this.keepAlive = false,
-    this.tun = false,
+    this.tun = true,
   });
 
   /// 订阅自动更新（切片 5）：每天一次、仅 Wi-Fi；关掉后 App 启动
@@ -33,6 +33,12 @@ class SettingsState {
   /// TUN 模式：开启后配置里加一条 tun 入站（见
   /// [SingboxConfigBuilder.build] 的 `tunEnabled`），下次生成配置
   /// 时生效；核心在跑时切换会立即重载配置。
+  ///
+  /// 默认开启（2026-11-26 问题 6）：TUN 是系统级流量接管的唯一
+  /// 入口，关掉时配置里只有 127.0.0.1:2080 的 mixed 入站，没有任何
+  /// 流量进核心，但核心照样报 Started、首页照样显示“运行中”
+  /// （假运行、无 VPN 标识）。从未改过该开关的用户默认开；
+  /// 明确关过的用户保持关（不强行改回）。
   final bool tun;
 
   SettingsState copyWith({
@@ -55,7 +61,7 @@ class SettingsState {
 /// 设置页开关的状态管理（切片 6）。
 ///
 /// 读持久化是异步的：先给默认值，再把存过的值读回来覆盖。调用方
-/// 读到的默认值与“用户没改过”一致（自动更新与通知默认开），不会
+/// 读到的默认值与“用户没改过”一致（自动更新、通知与 TUN 默认开），不会
 /// 因为读回时机晚了一步就把开关闪成反的。
 class SettingsNotifier extends Notifier<SettingsState> {
   static const String _autoUpdateKey = 'settings_auto_update';
@@ -73,7 +79,7 @@ class SettingsNotifier extends Notifier<SettingsState> {
         notifications: prefs.getBool(_notificationsKey) ?? true,
         autoStart: prefs.getBool(_autoStartKey) ?? false,
         keepAlive: prefs.getBool(_keepAliveKey) ?? false,
-        tun: prefs.getBool(_tunKey) ?? false,
+        tun: prefs.getBool(_tunKey) ?? true,
       );
     });
     return const SettingsState();

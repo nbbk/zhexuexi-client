@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>io.nekohasekai</groupId>
+  <artifactId>libbox</artifactId>
+  <version>1.14.4-patched</version>
+  <packaging>aar</packaging>
+  <name>libbox (patched)</name>
+  <description>sing-box 1.14.4 libbox with REALITY X25519MLKEM768 patch. Built by tools/build-patched-libbox.sh; do not edit by hand.</description>
+</project>

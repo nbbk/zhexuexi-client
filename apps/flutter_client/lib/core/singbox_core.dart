@@ -2,8 +2,10 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_sing_box/flutter_sing_box.dart';
 
+import 'clash_api_client.dart';
 import 'config_validator.dart';
 import 'custom_rule.dart';
 import 'node_model.dart';
@@ -12,6 +14,26 @@ import 'singbox_config.dart';
 
 /// 核心状态（界面只认这个枚举，不直接认插件的 [ProxyState]）。
 enum CoreStatus { stopped, starting, started, stopping, error }
+
+/// 一次启动探活的结果（独立于 [CoreStatus]，见 [CoreService]）。
+///
+/// 2026-11-26 二轮修复（方案 A）：拨测失败不再翻 [CoreStatus.error]——
+/// 核心明明在跑，翻 error 会闩锁首页（_syncTraffic/_syncDurationTimer
+/// 按 started 跑，error 一闩锁速率与计时全停），还让节点页误判成
+/// “开关关着”静默切回直连探测。探活失败只写这里：首页保持“运行中”，
+/// 另起一行写拨测失败；节点页据此决定测速口径。
+class ProbeState {
+  const ProbeState({required this.failed, this.error, this.at});
+
+  /// 没探活过、或最近一次探活通过时为 false。
+  final bool failed;
+
+  /// 失败原因（人话，界面直接显示）；通过时为 null。
+  final String? error;
+
+  /// 最近一次探活完成的时间；没探活过时为 null。
+  final DateTime? at;
+}
 
 /// 应用一次配置的结果。
 class ConfigApplyResult {
@@ -55,20 +77,64 @@ class CoreService {
     ConfigValidator? validator,
     Future<String> Function()? usingConfigPath,
     Future<void> Function(String configPath)? ensureSelectedProfile,
+    ClashApiClient? clashApiClient,
+    // 启动拨测的容错参数（默认即线上值；测试可传 0 缩短等待）：
+    // - probeTimeout 10 秒：冷 VLESS/REALITY 首次握手（手机→中转→落地
+    //   多段 RTT）＋落地解析测速域名＋到 Google 的 TLS＋GET 串行完成，
+    //   5 秒预算一次丢包重传或落地 DNS 一慢就越线；sing-box 按 16 位
+    //   解析超时毫秒数，10000 合法；
+    // - probeWarmup 2 秒：取到 /traffic 帧后先预热再拨，给核心与出站
+    //   冷握手留时间；
+    // - probeRetryDelay 2 秒：拨测失败后隔这么久重试一次，仍失败才翻
+    //   error；重试期间保持 started，不闪 error。
+    // - realTrafficProbe（0.1.3 D 路修复 2）：delay 通过后的真实
+    //   流量复核（经本地 mixed 入站的 HTTPS GET）；默认走真实现，
+    //   测试可注入 fake（测试环境没有真 mixed 入站）。
+    this.probeTimeout = const Duration(seconds: 10),
+    this.probeWarmup = const Duration(seconds: 2),
+    this.probeRetryDelay = const Duration(seconds: 2),
+    Future<bool> Function()? realTrafficProbe,
   }) : _plugin = plugin ?? FlutterSingBox(),
        _validator = validator ?? SingBoxSchemaConfigValidator(),
        _usingConfigPath =
            usingConfigPath ?? _defaultUsingConfigPath,
        _ensureSelectedProfile =
-           ensureSelectedProfile ?? _defaultEnsureSelectedProfile;
+           ensureSelectedProfile ?? _defaultEnsureSelectedProfile,
+       _clashApi = clashApiClient ?? ClashApiClient(),
+       // ignore: prefer_initializing_formals
+       _realTrafficProbe = realTrafficProbe;
 
   final FlutterSingBox _plugin;
   final ConfigValidator _validator;
   final Future<String> Function() _usingConfigPath;
   final Future<void> Function(String configPath) _ensureSelectedProfile;
 
+  /// 启动后校验用的 Clash API 客户端（可注入 fake 做测试）。
+  final ClashApiClient _clashApi;
+
+  /// 启动拨测的超时预算（默认 10 秒，见构造函数注释）。
+  final Duration probeTimeout;
+
+  /// 取到 /traffic 帧后、拨测前的预热等待（默认 2 秒）。
+  final Duration probeWarmup;
+
+  /// 拨测失败后、重试前的等待（默认 2 秒）。
+  final Duration probeRetryDelay;
+
+  /// delay 通过后的真实流量复核（可注入 fake 做测试；不注入时走
+  /// [_probeRealTraffic] 的真实现）。
+  final Future<bool> Function()? _realTrafficProbe;
+
   CoreStatus _status = CoreStatus.stopped;
   String? _lastError;
+
+  /// 启动探活位（2026-11-26 二轮修复）：只反映出站拨测，不改
+  /// [_status]。新一轮启动时清掉，停核心时也清掉。
+  ProbeState _probe = const ProbeState(failed: false);
+
+  /// 正在跑的启动校验（[_verifyControlApi]）——“重新拨测”与启动
+  /// 校验撞上时不重开第二轮，等正在跑的那轮出结果。
+  bool _verifying = false;
 
   /// 最后一份成功写入的配置 JSON（内存里的一份；重启后由 [init] 从磁盘读回）。
   String? _currentConfigJson;
@@ -82,11 +148,29 @@ class CoreService {
   final _statusController = StreamController<CoreStatus>.broadcast();
   StreamSubscription<ProxyState>? _pluginSubscription;
 
+  /// 启动探活变化流（界面订阅它刷新“出站拨测失败”提示与重测按钮）。
+  final _probeController = StreamController<ProbeState>.broadcast();
+
   /// 当前核心状态。
   CoreStatus get status => _status;
 
   /// 最近一次异常停止的原因；正常停止时为 null。
   String? get lastError => _lastError;
+
+  /// 最近一次启动探活是否失败（核心在跑但出站不通时为 true）。
+  bool get probeFailed => _probe.failed;
+
+  /// 最近一次启动探活的失败原因（人话）；通过时为 null。
+  String? get lastProbeError => _probe.error;
+
+  /// 最近一次启动探活完成的时间；没探活过时为 null。
+  DateTime? get lastProbeAt => _probe.at;
+
+  /// 当前探活位。
+  ProbeState get probeState => _probe;
+
+  /// 探活位变化流（界面订阅它刷新拨测提示；状态流不动它）。
+  Stream<ProbeState> get probeStream => _probeController.stream;
 
   /// 当前生效的配置 JSON（诊断与设置页“DNS 配置查看”用；没有时为 null）。
   String? get currentConfigJson => _currentConfigJson;
@@ -120,7 +204,25 @@ class CoreService {
             : CoreStatus.error,
       };
       if (state is ProxyStopped) _lastError = state.errMessage;
+      // 新一轮启动：上一轮的异常原因与探活失败都清掉（2026-11-26
+      // 二轮修复：started 时清 _lastError，首页不再把上一轮的
+      // “连接失败”带到新一轮；探活位也从头算，不沿用旧结论）。
+      // 停核心时同样清探活位：停了就没有什么“出站拨测失败”可言。
+      if (state is ProxyStarted) {
+        _lastError = null;
+        _setProbe(const ProbeState(failed: false));
+      } else if (state is ProxyStopped) {
+        _setProbe(const ProbeState(failed: false));
+      }
       _statusController.add(_status);
+      // Started 只说明 :remote 里的 commandServer 起来了，不等于代理
+      // 真可用：mixed-only 配置（没有 tun 入站）时核心照样 Started、
+      // 首页照样显示“运行中”，但没有任何流量进核心（假运行）。
+      // 所以 Started 之后再探一次 Clash API，探不到就翻成 error，
+      // 不要让“运行中”只由 AIDL 状态说了算。TUN 默认开启本身在
+      // SettingsState（新装与从未改过开关的用户默认开），这里是
+      // 启动后的第二道校验。
+      if (state is ProxyStarted) unawaited(_verifyControlApi());
     });
     try {
       final path = await _usingConfigPath();
@@ -227,6 +329,228 @@ class CoreService {
     }
   }
 
+  /// 写探活位并推流（controller 已关时只记值不推，避免 dispose 后
+  /// 插件再推状态时抛错）。
+  void _setProbe(ProbeState next) {
+    _probe = next;
+    if (!_probeController.isClosed) _probeController.add(next);
+  }
+
+  /// 启动后校验：Started 之后先去 Clash API 取一帧 `/traffic`
+  /// （5 秒超时；空闲时核心也每秒推一帧 `{"up":0,"down":0}`，
+  /// 真 sing-box 1.14.4 实测），预热 2 秒后对当前默认出站做一次
+  /// 真实拨测，失败重试一次，仍失败才记探活失败。
+  ///
+  /// `/traffic` 只能证明控制接口在推帧——空闲时也是 0/0——不证明
+  /// 代理能出网（2026-11-26：DNS 全死时 /traffic 照常推帧，首页
+  /// 显示“运行中”，实际没网络、测速全红点）。所以取到帧后再调一次
+  /// Clash API delay（与开着开关测速同一条路）。
+  ///
+  /// 拨测走当前默认出站，测速域名由出站（落地服务器）解析，不走
+  /// 客户端本地 DNS：VLESS/VMess/Trojan/HY2/TUIC 类出站的 delay
+  /// 根本不经过客户端 DNS（dns-direct/dns-proxy/final 只影响
+  /// direct 出站、节点 server 地址是域名时的解析，以及 TUN 真实
+  /// 流量）。所以拨测超时≠客户端 DNS 有问题，不要往 DNS 方向修。
+  ///
+  /// 2026-11-26 二轮修复（方案 A）：校验失败只写探活位、不翻
+  /// [CoreStatus.error]——核心在跑，翻 error 会闩锁首页（速率与
+  /// 计时都按 started 跑），还让节点页误判成“开关关着”静默切回
+  /// 直连探测。首页保持“运行中”，另起探活失败提示＋“重新拨测”
+  /// 按钮；[CoreStatus.error] 只留给插件原生 `ProxyStopped(err)`
+  /// （核心真停了、真崩了）。没有已写入配置 / 没有 Proxy 组时
+  /// （无节点启动）跳过拨测，只认 /traffic，不误报。
+  Future<void> _verifyControlApi() async {
+    if (_verifying) return;
+    _verifying = true;
+    try {
+      await _verifyControlApiInner();
+    } finally {
+      _verifying = false;
+    }
+  }
+
+  Future<void> _verifyControlApiInner() async {
+    try {
+      await _clashApi.trafficSample(timeout: const Duration(seconds: 5));
+    } catch (_) {
+      if (_status != CoreStatus.started) return;
+      // 校验还没跑完就 dispose 了：controller 已关，不能再往里写事件。
+      if (_statusController.isClosed) return;
+      // 控制接口无响应：只记探活失败，不翻 error（见上）。
+      _setProbe(
+        ProbeState(
+          failed: true,
+          error: '核心已启动但控制接口无响应',
+          at: DateTime.now(),
+        ),
+      );
+      return;
+    }
+    final probeTag = _egressProbeTag();
+    if (probeTag == null) return;
+    // 预热：给核心与出站冷握手留时间；等完再看一眼状态，用户可能
+    // 已经点了关、或 service 已 dispose。
+    await Future<void>.delayed(probeWarmup);
+    if (_status != CoreStatus.started) return;
+    if (_statusController.isClosed) return;
+    var probe = await _probeOnce(probeTag);
+    if (probe.delay != null) {
+      // delay 通过 ≠ 真实流量通（0.1.3 D 路修复 2）：再经本地
+      // mixed 入站复核一次 DNS＋路由＋出站整条路。
+      await _probeRealTrafficAfterDelay();
+      return;
+    }
+    // 失败重试一次（超时、503 快失败都可能是冷启动瞬态）；重试期间
+    // 保持 started，不闪 error。
+    await Future<void>.delayed(probeRetryDelay);
+    if (_status != CoreStatus.started) return;
+    if (_statusController.isClosed) return;
+    probe = await _probeOnce(probeTag);
+    if (probe.delay != null) {
+      await _probeRealTrafficAfterDelay();
+      return;
+    }
+    if (_status != CoreStatus.started) return;
+    if (_statusController.isClosed) return;
+    _setProbe(
+      ProbeState(
+        failed: true,
+        error: '代理出站拨测失败：${_delayFailureText(probe.failure)}',
+        at: DateTime.now(),
+      ),
+    );
+  }
+
+  /// 手动重新拨测（首页“重新拨测”按钮调）：只在核心在跑时跑，
+  /// 与正在跑的启动校验撞上时等那轮出结果，不重开第二轮。
+  /// 拨测通过会清探活失败，失败会刷新失败原因与时间。
+  Future<void> retryProbe() async {
+    if (_status != CoreStatus.started) return;
+    await _verifyControlApi();
+  }
+
+  /// 一次启动拨测，并记一行日志（tag、结果、耗时毫秒），以后不用
+  /// logcat 也能定位拨测是慢、是快失败、还是重试后才通。
+  Future<ProxyDelayResult> _probeOnce(String tag) async {
+    final stopwatch = Stopwatch()..start();
+    final result = await _clashApi.proxyDelayDetailed(
+      tag,
+      timeout: probeTimeout,
+    );
+    stopwatch.stop();
+    debugPrint(
+      '[CoreService] 启动拨测 tag=$tag delay=${result.delay} '
+      'failure=${result.failure} ${stopwatch.elapsedMilliseconds}ms',
+    );
+    return result;
+  }
+
+  /// delay 拨测通过后的真实流量复核（0.1.3 D 路修复 2）：经本地
+  /// mixed 入站（127.0.0.1:2080）发一次 HTTPS GET，覆盖 DNS＋
+  /// 路由＋出站整条路。0.1.2 的启动探活只拨 Clash API delay，直
+  /// 拨出站，绕过 TUN、绕过路由规则、绕过客户端 DNS——所以 0.1.2
+  /// “运行中”时真实流量可能早已死掉（DNS 全死时 /traffic 照常
+  /// 推帧、delay 照常通）。失败只写探活位、不翻 CoreStatus.error
+  ///（见 _verifyControlApiInner 的注释）。
+  ///
+  /// 注意：应用内任何探针都测不到 TUN 入口——App 自身流量因 UID
+  /// 排除根本不走 TUN，mixed 入站只覆盖“核心收到流量后的路”
+  /// （DNS＋路由＋出站）；TUN 入口本身只能看 Clash API
+  /// /connections 的实时连接链（诊断包的“实时连接”行）。
+  ///
+  /// 通过时清掉上一轮的探活失败（“重新拨测”成功后首页的失败提示
+  /// 要跟着消失，不留旧结论）。
+  Future<void> _probeRealTrafficAfterDelay() async {
+    if (_status != CoreStatus.started) return;
+    if (_statusController.isClosed) return;
+    final ok = await (_realTrafficProbe?.call() ?? _probeRealTraffic());
+    if (ok) {
+      _setProbe(ProbeState(failed: false, at: DateTime.now()));
+    } else {
+      _setProbe(
+        ProbeState(
+          failed: true,
+          error: '真实流量不通：DNS 或路由可能有问题',
+          at: DateTime.now(),
+        ),
+      );
+    }
+  }
+
+  /// 经本地 mixed 入站的 HTTPS GET：收到任何 HTTP 响应即算通
+  /// （状态码不限，204 只是约定）；连不上、超时、握手失败都算不通。
+  Future<bool> _probeRealTraffic() async {
+    HttpClient? client;
+    try {
+      client = HttpClient();
+      client.findProxy = (_) => 'PROXY 127.0.0.1:2080';
+      client.connectionTimeout = const Duration(seconds: 10);
+      final request = await client.getUrl(
+        Uri.parse('https://www.gstatic.com/generate_204'),
+      );
+      final response = await request
+          .close()
+          .timeout(const Duration(seconds: 10));
+      await response.drain<void>();
+      debugPrint(
+        '[CoreService] 真实流量拨测 status=${response.statusCode}',
+      );
+      return true;
+    } catch (e) {
+      debugPrint('[CoreService] 真实流量拨测失败 $e');
+      return false;
+    } finally {
+      client?.close(force: true);
+    }
+  }
+
+  /// 拨测用的出站 tag：当前配置里 selector `Proxy` 的默认出站，
+  /// 是什么就拨什么——组 tag 直接拨，不再沿成员表解到叶子。
+  ///
+  /// 真 sing-box 1.14.4 本地实测：`GET /proxies/{组 tag}/delay`
+  /// 返回组内当前选用（urltest 的 `now` / selector 的 `now`）的
+  /// 延迟；旧写法拨 `members.first`，成组（twin）节点时它不一定
+  /// 是组实际选用的入站，测的不是当前生效的路。没有已写入配置、
+  /// 没有 Proxy 组、或没有默认出站时返回 null（调用方跳过拨测，
+  /// 不误报）。
+  String? _egressProbeTag() {
+    final json = _currentConfigJson;
+    if (json == null) return null;
+    try {
+      final decoded = jsonDecode(json);
+      if (decoded is! Map<String, dynamic>) return null;
+      final outbounds = decoded['outbounds'];
+      if (outbounds is! List) return null;
+      for (final ob in outbounds) {
+        if (ob is Map<String, dynamic> &&
+            ob['tag'] == 'Proxy' &&
+            ob['type'] == 'selector') {
+          final tag = ob['default'] as String?;
+          if (tag == null || tag.isEmpty) return null;
+          return tag;
+        }
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 拨测失败原因的人话（界面直接显示这句）。
+  ///
+  /// 超时是重试都失败后的结论：写明已重试、节点响应慢或不通，并给
+  /// 下一步（换节点或再点一次开关），不要只留一句“超时”。
+  /// 503 类快失败与控制接口无响应保持原有区分。
+  static String _delayFailureText(ProxyDelayFailure? failure) =>
+      switch (failure) {
+        ProxyDelayFailure.notFound => '节点不在运行配置里',
+        ProxyDelayFailure.timeout =>
+          '拨测超时（10 秒无响应，已重试一次）：节点响应慢或不通，'
+              '建议换个节点或点「重新拨测」再试一次',
+        ProxyDelayFailure.apiUnreachable => '控制接口无响应',
+        _ => '拨测失败，可能是 DNS 或节点不通',
+      };
+
   /// 启动代理。没有可用配置时直接报错，不让核心空跑。
   Future<void> start() async {
     if (_currentConfigJson == null) {
@@ -250,6 +574,7 @@ class CoreService {
   void dispose() {
     _pluginSubscription?.cancel();
     _statusController.close();
+    _probeController.close();
   }
 
   /// 原子写盘：先写同目录临时文件，再改名覆盖（Windows 上改名覆盖会

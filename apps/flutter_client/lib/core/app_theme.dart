@@ -3,7 +3,7 @@ import 'package:material_ui/material_ui.dart';
 /// 全端共用的主题注册表：主题 = 一个主题对象（全部颜色 token），
 /// 新增主题就是加一个主题定义，不用改页面代码。
 ///
-/// 配色从品牌自己的 Logo（v1/v2：深蓝底＋金色信号弧＋留白哲人侧脸）
+/// 配色从品牌自己的 Logo（v1/v2：深蓝底＋金色信号弧＋金色实心哲人侧脸）
 /// 里取，不用 AI 默认的通用渐变；所有紫色、粉色渐变全部去掉。
 /// 气质：学术奢华感（深墨蓝＋香槟金＋象牙白），像烫金书封，
 /// 不要 corporate、不要亮金。金色要克制，只作细线点缀
@@ -162,6 +162,22 @@ class AppThemeDefinition {
         brightness: brightness,
       ),
       scaffoldBackgroundColor: tokens.background,
+      // 原生 Card / 弹窗的兜底色（2026-11-26 0.1.2 夜晚黑底）：
+      // 没换成 GlassCard 的地方也别露 M3 默认深色 surface；
+      // 夜晚白 8%、白天象牙白 60%（与 GlassCard 同款），
+      // surfaceTintColor 透明（不要 M3 的色调 tint）。
+      // 弹窗夜晚 #082E63、白天象牙白。
+      cardTheme: CardThemeData(
+        color: brightness == Brightness.dark
+            ? Colors.white.withValues(alpha: 0.08)
+            : const Color(0xFFFAF7F0).withValues(alpha: 0.6),
+        surfaceTintColor: Colors.transparent,
+      ),
+      dialogTheme: DialogThemeData(
+        backgroundColor: brightness == Brightness.dark
+            ? const Color(0xFF082E63)
+            : const Color(0xFFFAF7F0),
+      ),
       // 顶栏刷成墨蓝（不要 M3 默认的浅灰蓝 surface），标题与图标走白色。
       // 白字在墨蓝上的对比度 13.28:1，夜晚同理。
       appBarTheme: AppBarTheme(

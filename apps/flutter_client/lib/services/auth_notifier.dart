@@ -78,6 +78,20 @@ class AuthNotifier extends Notifier<AuthState> {
     return domain;
   }
 
+  /// 登录用面板域名的解析顺序（0.1.3）：手填的值优先；没填时用远程配置的
+  /// panelDomain；两边都没有（远程是占位域名也算没有）时返回 ''，调用方
+  /// 提示手填、不发请求。
+  static String resolvePanelDomain({
+    required String typed,
+    required String remoteDomain,
+  }) {
+    final t = AuthService.normalizePanelDomain(typed);
+    if (t.isNotEmpty) return t;
+    final r = AuthService.normalizePanelDomain(remoteDomain);
+    if (r.isEmpty || RemoteConfigService.isPlaceholderDomain(r)) return '';
+    return r;
+  }
+
   /// 登录：调 AuthService 拿会话令牌，成功后绑定该账号的订阅。
   /// 返回 true 时登录页可以关掉；false 时原因在 [AuthState.errorMessage]。
   Future<bool> login({
@@ -87,6 +101,18 @@ class AuthNotifier extends Notifier<AuthState> {
   }) async {
     if (state.loading) return false;
     state = state.copyWith(loading: true, errorMessage: null);
+    // 域名按手填 → 远程配置解析；两边都没有就不发请求，直接提示手填。
+    final resolvedDomain = resolvePanelDomain(
+      typed: panelDomain,
+      remoteDomain: ref.read(remoteConfigProvider).config.panelDomain,
+    );
+    if (resolvedDomain.isEmpty) {
+      state = state.copyWith(
+        loading: false,
+        errorMessage: '请先拉取远程配置或填写面板域名',
+      );
+      return false;
+    }
     final service = ref.read(authServiceProvider);
     // 先记下登录前的订阅绑定：绑定新订阅失败时要恢复它。
     final subscriptionService = ref.read(subscriptionServiceProvider);
@@ -95,7 +121,7 @@ class AuthNotifier extends Notifier<AuthState> {
     AuthLoginResult result;
     try {
       result = await service.login(
-        panelDomain: panelDomain,
+        panelDomain: resolvedDomain,
         username: username,
         password: password,
       );
@@ -106,9 +132,7 @@ class AuthNotifier extends Notifier<AuthState> {
       state = state.copyWith(loading: false, errorMessage: '登录失败，请稍后再试');
       return false;
     }
-    await service.saveLastPanelDomain(
-      AuthService.normalizePanelDomain(panelDomain),
-    );
+    await service.saveLastPanelDomain(resolvedDomain);
     // 账号下没有订阅：登录成功，不绑定，用户可再手动绑链接。
     final subscriptionUrl = result.subscriptionUrl;
     if (subscriptionUrl == null || subscriptionUrl.isEmpty) {
@@ -167,10 +191,13 @@ class AuthNotifier extends Notifier<AuthState> {
   static String _normalizeSubscriptionUrl(String url) =>
       url.trim().replaceAll(RegExp(r'/+$'), '');
 
-  /// 绑定新订阅失败时的错误文案：订阅本身已失效 / 已到期时按 §10.2
+  /// 绑定新订阅失败时的错误文案：订阅本身已失效 / 已退场时按 §10.2
   /// 提示“请重新导入或重新登录”，其它失败原样报绑定原因。
+  /// 注意：这里按新版映射文案匹配（订阅服务 2026-11-26 改映射后，
+  /// 404 报“令牌不对”、410 报“已退场”；旧文案已不再出现）。
   String _bindErrorMessage(String? nodesError) {
-    if (nodesError == '订阅已失效，请重新绑定' || nodesError == '订阅已到期') {
+    if (nodesError != null &&
+        (nodesError.contains('令牌不对') || nodesError.contains('已退场'))) {
       return '订阅已失效，请重新导入或重新登录';
     }
     if (nodesError == null || nodesError.isEmpty) {

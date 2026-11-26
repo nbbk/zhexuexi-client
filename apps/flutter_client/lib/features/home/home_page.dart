@@ -15,11 +15,15 @@ import '../../core/node_model.dart';
 import '../../core/routing_mode.dart';
 import '../../core/singbox_core.dart';
 import '../../core/userinfo.dart';
+import '../../services/announcement_service.dart';
 import '../../services/custom_rules_notifier.dart';
 import '../../services/nodes_notifier.dart';
 import '../../services/remote_config_notifier.dart';
 import '../../services/routing_mode_notifier.dart';
 import '../../services/settings_notifier.dart';
+import '../../services/single_node_store.dart';
+import '../../features/announcements/announcement_list_page.dart';
+import '../../widgets/announcement_marquee.dart';
 import '../../widgets/glass_card.dart';
 import '../../widgets/power_button.dart';
 
@@ -66,6 +70,17 @@ class _HomePageState extends ConsumerState<HomePage> {
   StreamSubscription<CoreStatus>? _statusSub;
   StreamSubscription<TrafficSample>? _trafficSub;
 
+  /// 启动探活位（2026-11-26 二轮修复，方案 A）：核心在跑但出站
+  /// 拨测失败时为 true，首页保持“运行中”，另起一行写失败原因＋
+  /// “重新拨测”按钮；不翻 CoreStatus.error（翻了会闩锁首页的
+  /// 速率与计时，还让节点页误判成“开关关着”）。
+  bool _probeFailed = false;
+  String? _probeError;
+  StreamSubscription<ProbeState>? _probeSub;
+
+  /// 正在手动重新拨测（按钮防重复点）。
+  bool _probing = false;
+
   /// 本轮连接开始的时间（“已连接 HH:MM:SS”用；断开后清掉）。
   DateTime? _connectedSince;
 
@@ -84,11 +99,29 @@ class _HomePageState extends ConsumerState<HomePage> {
     _loadBundledHintDismissed();
     final core = ref.read(coreServiceProvider);
     _status = core.status;
+    _probeFailed = core.probeFailed;
+    _probeError = core.lastProbeError;
+    _probeSub = core.probeStream.listen((probe) {
+      if (!mounted) return;
+      setState(() {
+        _probeFailed = probe.failed;
+        _probeError = probe.error;
+      });
+    });
     _statusSub = core.statusStream.listen((status) {
       if (!mounted) return;
       setState(() => _status = status);
       _syncTraffic();
       _syncDurationTimer(status);
+      // 异步失败（服务在 :remote 进程里起不来）不同步抛错，只走这条
+      // 状态流：转成失败态时把原因弹出来，不然用户只看到干巴巴的
+      // “连接失败”，不知道为什么（2026-11-26 真机就是这么丢的）。
+      if (status == CoreStatus.error) {
+        final reason = core.lastError;
+        if (reason != null && reason.isNotEmpty) {
+          _showSnack('连接失败：${_readableError(reason)}');
+        }
+      }
     });
     _syncTraffic();
   }
@@ -96,9 +129,23 @@ class _HomePageState extends ConsumerState<HomePage> {
   @override
   void dispose() {
     _statusSub?.cancel();
+    _probeSub?.cancel();
     _trafficSub?.cancel();
     _durationTimer?.cancel();
     super.dispose();
+  }
+
+  /// 手动重新拨测（探活失败提示下的按钮）：只调核心的探活，不动
+  /// 大开关（大开关仍是停核心）。跑完后探活流会推新结果，失败
+  /// 提示自动刷新或消失；这里不另弹 SnackBar。
+  Future<void> _retryProbe() async {
+    if (_probing || _status != CoreStatus.started) return;
+    setState(() => _probing = true);
+    try {
+      await ref.read(coreServiceProvider).retryProbe();
+    } finally {
+      if (mounted) setState(() => _probing = false);
+    }
   }
 
   /// 连接时长计时：运行中开始每秒刷一次，离开运行中就停并清掉起点。
@@ -169,6 +216,12 @@ class _HomePageState extends ConsumerState<HomePage> {
       widget.onGoToMe();
       return;
     }
+    // TUN 关着时自动打开并提示：没有 TUN 入站就没有 VPN 接口，
+    // 核心即使起来了流量也进不去（假运行，问题 6）。
+    if (!ref.read(settingsProvider).tun) {
+      await ref.read(settingsProvider.notifier).setTun(true);
+      _showSnack('已自动开启 TUN，否则无法代理');
+    }
     setState(() => _busy = true);
     try {
       final mode = ref.read(routingModeProvider).mode;
@@ -184,7 +237,16 @@ class _HomePageState extends ConsumerState<HomePage> {
         tunEnabled: ref.read(settingsProvider).tun,
       );
       if (!result.ok) {
-        _showSnack('配置生成失败，已保持上次连接');
+        // 校验失败要报出真实原因（2026-11-26：TUN 的 stack 字段被
+        // schema 拒时这里只剩固定文案，用户完全不知道为什么）：
+        // 取第一条错误（通常就是根因那句），太长时截断，SnackBar
+        // 里放不下全文；空错误列表时回落固定文案。
+        final reason = result.errors.isNotEmpty ? result.errors.first : '';
+        _showSnack(
+          reason.isEmpty
+              ? '配置生成失败，已保持上次连接'
+              : '配置生成失败：${_shortReason(reason)}，已保持上次连接',
+        );
         return;
       }
       if (result.skipped.isNotEmpty) {
@@ -201,12 +263,24 @@ class _HomePageState extends ConsumerState<HomePage> {
   }
 
   /// 模式切换：失败时 [RoutingModeNotifier.setMode] 已回滚旧模式，
-  /// 这里只提示一句，不再动状态。
+  /// 这里只提示一句，不再动状态；提示里带 setMode 写进
+  /// errorMessage 的真实原因（2026-11-26：以前只弹固定句）。
   Future<void> _onModeChanged(Set<String> selected) async {
     if (selected.isEmpty) return;
     final next = RoutingMode.fromStorage(selected.first);
     final ok = await ref.read(routingModeProvider.notifier).setMode(next);
-    if (!ok && mounted) _showSnack('切换失败，已保持原模式');
+    if (!ok && mounted) {
+      final reason = ref.read(routingModeProvider).errorMessage;
+      _showSnack(reason ?? '切换失败，已保持原模式');
+    }
+  }
+
+  /// 校验原因截断：schema 报错带完整路径很长，SnackBar 里只留前
+  /// 120 字，根因（字段名/路径）都在前头，截不掉。
+  static String _shortReason(String reason) {
+    const maxLength = 120;
+    if (reason.length <= maxLength) return reason;
+    return '${reason.substring(0, maxLength)}…';
   }
 
   /// 强制更新说明（切片 7）：配置要求强制更新，且当前版本低于最低版本。
@@ -278,6 +352,20 @@ class _HomePageState extends ConsumerState<HomePage> {
     await ref.read(remoteConfigProvider.notifier).refresh();
   }
 
+  /// 当前节点卡片可点（问题 5）：弹节点列表弹窗，点一行切过去。
+  /// 没节点时不弹，只提示去绑定订阅。
+  Future<void> _showNodePicker() async {
+    if (ref.read(nodesProvider).nodes.isEmpty) {
+      _showSnack('请先绑定订阅，再选择节点');
+      widget.onGoToMe();
+      return;
+    }
+    await showAppDialog<void>(
+      context: context,
+      builder: (context) => const _NodePickerDialog(),
+    );
+  }
+
   void _showSnack(String message) {
     if (!mounted) return;
     ScaffoldMessenger.of(context)
@@ -299,7 +387,15 @@ class _HomePageState extends ConsumerState<HomePage> {
   /// 大开关状态文案（用户 2026-11-25 定稿，优雅简短、不要说明书口吻）：
   /// 未连接「静候连接 / 轻触开启」，已连接「运行中 / 已连接 HH:MM:SS」
   ///（只写已连接时长，不加操作说明）；连接中/断开中/失败同调子短句。
+  ///
+  /// 2026-11-26 二轮修复（方案 A）：已连接但探活失败时主标题仍是
+  /// 「运行中」（核心在跑），副标题改成拨测失败的原因＋“代理可能不通”；
+  /// 红字失败区只在真 error（核心停了/崩了）时显示，不在这里复用。
   (String, String) _statusTexts() {
+    if (_status == CoreStatus.started && _probeFailed) {
+      final reason = _probeError ?? '出站拨测失败';
+      return ('运行中', '出站拨测失败：$reason（代理可能不通）');
+    }
     return switch (_status) {
       CoreStatus.stopped => ('静候连接', '轻触开启'),
       CoreStatus.starting => ('正在连接…', '稍等片刻'),
@@ -307,6 +403,16 @@ class _HomePageState extends ConsumerState<HomePage> {
       CoreStatus.stopping => ('正在断开…', '稍等片刻'),
       CoreStatus.error => ('连接失败', '轻触重试'),
     };
+  }
+
+  /// 失败原因的人话版：旧版原生告警没带 message 时 Dart 侧只能拼出
+  /// "PlatformException(Stopped, null, null, null)"，直接显示等于没说；
+  /// 新版原生告警已带人话原因（见 BoxService.stopAndAlert），原样显示。
+  String _readableError(String error) {
+    if (error.startsWith('PlatformException(Stopped, null')) {
+      return '服务启动失败（没有返回原因），请重试或重新拉取订阅';
+    }
+    return error;
   }
 
   /// 已连接时长：`已连接 HH:MM:SS`。
@@ -334,6 +440,8 @@ class _HomePageState extends ConsumerState<HomePage> {
     final nodesState = ref.watch(nodesProvider);
     final modeState = ref.watch(routingModeProvider);
     final remoteState = ref.watch(remoteConfigProvider);
+    final announcements = ref.watch(announcementsProvider);
+    final announcementList = announcements.valueOrNull;
     final info = nodesState.userinfo;
     final currentNode = nodesState.selectedNode;
     final switching =
@@ -392,23 +500,19 @@ class _HomePageState extends ConsumerState<HomePage> {
           // bundled 配置提示：只在仍用包内默认配置、且用户没关过时出现；
           // 点右上角 × 就整条消失并记下来，下次打开不再出现（重试保留）。
           // offline（cached）与强制更新那两条不在这里，不可关闭。
+          //
+          // 标题与副标题完整显示（问题 9）：实测 390 宽下标题只剩 148px、
+          // intrinsic 198px，单行＋省略号会被截成“首次启动需要联网…”；
+          // 这里不设 maxLines、不设省略号，允许换行，卡片高度由内容定
+          //（不固定 72，见 GlassCard.height 不传即自适应）。
           if (remoteState.source == RemoteConfigSource.bundled &&
               !_bundledHintDismissed)
             GlassCard(
-              height: _homeCardHeight,
               margin: const EdgeInsets.only(bottom: AppTokens.spacingXs),
               child: ListTile(
                 leading: const AppIcon(icon: AppIcons.cloudOff),
-                title: const Text(
-                  '首次启动需要联网拉取配置',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                subtitle: const Text(
-                  '拉不到配置也能先手动粘贴订阅使用',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
+                title: const Text('首次启动需要联网拉取配置'),
+                subtitle: const Text('拉不到配置也能先手动粘贴订阅使用'),
                 trailing: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
@@ -428,26 +532,47 @@ class _HomePageState extends ConsumerState<HomePage> {
                 ),
               ),
             ),
-          // 公告栏（阶段 1 接面板公告；切片 5 前占位）。
-          const GlassCard(
-            height: _homeCardHeight,
-            margin: EdgeInsets.only(bottom: AppTokens.spacingXs),
-            child: ListTile(
-              leading: AppIcon(icon: AppIcons.megaphone),
-              title: Text(
-                '暂无公告',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-              subtitle: Text(
-                '面板公告会在这里显示',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
+          // 公告栏（0.1.2）：有公告才显示，没有就隐藏、不留占位、
+          // 布局收起；失败有缓存显示缓存，加载中/失败无缓存时不显示。
+          // 有公告时跑马灯只滚标题行（displayLine），全文在列表页看；
+          // 整卡可点，进公告列表页。
+          if (announcementList != null && announcementList.isNotEmpty)
+            GlassCard(
+              height: _homeCardHeight,
+              margin: const EdgeInsets.only(bottom: AppTokens.spacingXs),
+              child: Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(AppTokens.radiusLarge),
+                  onTap: () => Navigator.push(
+                    context,
+                    appPageRoute(
+                      context,
+                      (_) => const AnnouncementListPage(),
+                    ),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: Row(
+                      children: [
+                        const AppIcon(icon: AppIcons.megaphone),
+                        const SizedBox(width: AppTokens.spacingSm),
+                        Expanded(
+                          child: AnnouncementMarquee(
+                            lines: announcementList
+                                .map((a) => a.displayLine)
+                                .toList(),
+                          ),
+                        ),
+                        const AppIcon(icon: AppIcons.chevronRight),
+                      ],
+                    ),
+                  ),
+                ),
               ),
             ),
-          ),
           const SizedBox(height: AppTokens.spacingMd + AppTokens.spacingXs),
-          // 大开关：蓝→紫渐变＋呼吸动效（开）/灰色静态（关），
+          // 大开关：深蓝渐变＋呼吸动效（开）/灰色静态（关），
           // 中心图标是可替换组件（图标方向等 UI 调研回来再定，
           // 现默认放金色信号弧占位，不写死电源符号）。
           Center(
@@ -464,42 +589,93 @@ class _HomePageState extends ConsumerState<HomePage> {
           ),
           const SizedBox(height: 2),
           Center(
-            child: Text(_statusTexts().$2, style: theme.textTheme.bodySmall),
+            child: Text(
+              _statusTexts().$2,
+              style: theme.textTheme.bodySmall,
+              textAlign: TextAlign.center,
+              maxLines: 3,
+              overflow: TextOverflow.ellipsis,
+            ),
           ),
+          // 探活失败时（核心在跑、出站不通）的“重新拨测”入口
+          //（2026-11-26 二轮修复）：只重跑一次拨测，不停核心、
+          // 不重建配置；跑完探活流推新结果，上面那行失败提示自动
+          // 刷新或消失。大开关仍是停核心，不兼做重测。
+          if (_status == CoreStatus.started && _probeFailed)
+            TextButton(
+              onPressed: _probing ? null : _retryProbe,
+              child: Text(_probing ? '拨测中…' : '重新拨测'),
+            ),
+          // 失败原因常驻显示（2026-11-26）：只在失败态显示 CoreService
+          // 记下的最后一次错误原因；只读，不改状态机。
+          if (_status == CoreStatus.error) ...[
+            const SizedBox(height: 4),
+            Padding(
+              padding: const EdgeInsets.symmetric(
+                horizontal: AppTokens.spacingMd,
+              ),
+              child: Text(
+                _readableError(
+                  ref.read(coreServiceProvider).lastError ?? '连接失败，请重试',
+                ),
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.error,
+                ),
+                textAlign: TextAlign.center,
+                maxLines: 3,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
           const SizedBox(height: AppTokens.spacingMd + AppTokens.spacingXs),
-          // 当前节点。
+          // 当前节点：点一下弹节点列表弹窗选节点（问题 5）。
+          // ListTile 的 onTap 要有 Material 祖先才能画按压墨水，
+          // GlassCard 的底色 DecoratedBox 会盖住它（会抛断言）；
+          // 照节点行的做法包一层透明 Material＋InkWell（见 _NodeRow）。
           GlassCard(
             height: _homeCardHeight,
-            child: ListTile(
-              leading: const AppIcon(icon: AppIcons.globe),
-              title: Text(
-                currentNode == null ? '当前节点：未选择' : '当前节点：${currentNode.name}',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                borderRadius: BorderRadius.circular(AppTokens.radiusLarge),
+                onTap: _showNodePicker,
+                child: ListTile(
+                  leading: const AppIcon(icon: AppIcons.globe),
+                  title: Text(
+                    currentNode == null
+                        ? '当前节点：未选择'
+                        : '当前节点：${currentNode.name}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  subtitle: Text(
+                    _currentNodeSubtitle(currentNode),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  trailing: currentNode == null
+                      ? TextButton(
+                          onPressed: widget.onGoToMe,
+                          child: const Text('去订阅'),
+                        )
+                      : const AppIcon(icon: AppIcons.chevronRight),
+                ),
               ),
-              subtitle: Text(
-                _currentNodeSubtitle(currentNode),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-              trailing: currentNode == null
-                  ? TextButton(
-                      onPressed: widget.onGoToMe,
-                      child: const Text('去订阅'),
-                    )
-                  : null,
             ),
           ),
           const SizedBox(height: AppTokens.spacingMd),
           // 实时速率 + 流量三格（userinfo 头，中转口径）。
+          // 格子之间留 8px 缝隙（问题 8），不改卡片高度与内容。
           Row(
             children: [
               Expanded(
                 child: _StatCell(label: '实时速率', value: rateText),
               ),
+              const SizedBox(width: AppTokens.spacingXs),
               Expanded(
                 child: _StatCell(label: '已用 / 总量', value: _usedTotalText(info)),
               ),
+              const SizedBox(width: AppTokens.spacingXs),
               Expanded(
                 child: _StatCell(label: '剩余流量', value: _remainingText(info)),
               ),
@@ -511,9 +687,11 @@ class _HomePageState extends ConsumerState<HomePage> {
               Expanded(
                 child: _StatCell(label: '到期日', value: _expireText(info)),
               ),
+              const SizedBox(width: AppTokens.spacingXs),
               const Expanded(
                 child: _StatCell(label: '流量口径', value: '全部节点'),
               ),
+              const SizedBox(width: AppTokens.spacingXs),
               const Expanded(child: SizedBox.shrink()),
             ],
           ),
@@ -559,6 +737,410 @@ class _HomePageState extends ConsumerState<HomePage> {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// 节点选择弹窗（问题 5）：按订阅分组列出 [nodesProvider] 的节点
+///（名称＋延迟），当前选中的一行标出来（选中底色＋对勾）；点某一行
+/// 就调 [NodesNotifier.selectNode] 切过去，成功关弹窗，失败把原因
+/// 留在弹窗里（不静默）。
+///
+/// 分组（2026-11-26）：不同订阅的节点不混在一起，每个订阅一组，
+/// 组头是订阅名，组内节点保持 [nodesProvider] 原有顺序、不重排；
+/// 选中只变选中态，不挪位置。分组默认全部折叠，点组头展开/收起，
+/// 折叠状态只记在弹窗 State 里，不持久化。
+///
+/// 测速：弹窗里有“测速全部”（[NodesNotifier.testAllSpeeds]）与
+/// “测速当前节点”（[NodesNotifier.testSingleSpeed]，只测当前选中
+/// 节点）；每行点延迟处只测这一行（复用节点页 `_LatencyChip` 的
+/// 做法），测速中该行转圈、其他行不动。测完弹窗里的延迟就地更新。
+class _NodePickerDialog extends ConsumerStatefulWidget {
+  const _NodePickerDialog();
+
+  @override
+  ConsumerState<_NodePickerDialog> createState() => _NodePickerDialogState();
+}
+
+/// 一组节点：组 key（折叠状态用）＋组头标题＋组内节点（原顺序）。
+typedef _NodeGroup = ({String key, String title, List<Node> nodes});
+
+class _NodePickerDialogState extends ConsumerState<_NodePickerDialog> {
+  /// 弹窗内显示的错误（切节点失败的原因 / 测速失败的原因），不关弹窗。
+  String? _error;
+
+  /// 正在测当前选中节点（按钮禁用、防重复点）。
+  bool _testing = false;
+
+  /// 正在测全部节点（按钮禁用、防重复点）。
+  bool _testingAll = false;
+
+  /// 已展开的分组 key；默认空＝全部折叠，只记在弹窗 State 里。
+  final Set<String> _expandedGroups = {};
+
+  /// 按订阅分组：组内保持 [nodes] 原有顺序，不重排；组按首次出现
+  /// 的顺序排。
+  List<_NodeGroup> _groupNodes(List<Node> nodes) {
+    final groups = <_NodeGroup>[];
+    final byKey = <String, _NodeGroup>{};
+    for (final node in nodes) {
+      final (key: key, title: title) = _groupOf(node);
+      var group = byKey[key];
+      if (group == null) {
+        group = (key: key, title: title, nodes: <Node>[]);
+        byKey[key] = group;
+        groups.add(group);
+      }
+      group.nodes.add(node);
+    }
+    return groups;
+  }
+
+  /// 分组标题取值：单节点那组固定叫“手动添加”（[SingleNodeStore]
+  /// 的显示名，见 single_node_store.dart）；其余订阅有订阅名用
+  /// 订阅名，没名字用订阅 id，两者都没有叫“未命名订阅”。
+  ({String key, String title}) _groupOf(Node node) {
+    final id = node.subscriptionId;
+    if (id == SingleNodeStore.singleNodesId) {
+      return (key: id!, title: SingleNodeStore.singleNodesName);
+    }
+    final name = node.subscriptionName?.trim();
+    if (name != null && name.isNotEmpty) {
+      return (key: id ?? name, title: name);
+    }
+    if (id != null && id.isNotEmpty) {
+      return (key: id, title: id);
+    }
+    return (key: '', title: '未命名订阅');
+  }
+
+  /// 点一行：调 selectNode 切过去；成功关弹窗，失败把原因留在弹窗里。
+  Future<void> _select(Node node) async {
+    final ok = await ref.read(nodesProvider.notifier).selectNode(node);
+    if (!mounted) return;
+    if (ok) {
+      Navigator.of(context).pop();
+      return;
+    }
+    setState(() {
+      _error = ref.read(nodesProvider).selectionReason ?? '切换失败，请重试';
+    });
+  }
+
+  /// 测当前选中节点的连通性（testSingleSpeed 只测这一个，不测全部）；
+  /// 测完 nodesProvider 里的延迟已更新，弹窗跟着刷新。
+  Future<void> _testSelected() async {
+    if (_testing) return;
+    final selected = ref.read(nodesProvider).selectedNode;
+    if (selected == null) return;
+    setState(() {
+      _testing = true;
+      _error = null;
+    });
+    final ok = await ref
+        .read(nodesProvider.notifier)
+        .testSingleSpeed(selected);
+    if (!mounted) return;
+    setState(() {
+      _testing = false;
+      if (!ok) {
+        _error =
+            ref.read(nodesProvider).speedTestError ?? '正在测速，请稍后再试';
+      }
+    });
+  }
+
+  /// 测全部节点（testAllSpeeds 测全部，不只测当前选中节点）；
+  /// 测速中按钮禁用、防重复点；失败原因留在弹窗里。
+  /// 单节点测速失败不走这里（只标该节点），只有整轮没跑起来
+  /// 才留错。
+  Future<void> _testAll() async {
+    if (_testingAll || ref.read(nodesProvider).testingSpeed) return;
+    setState(() {
+      _testingAll = true;
+      _error = null;
+    });
+    final ok = await ref.read(nodesProvider.notifier).testAllSpeeds();
+    if (!mounted) return;
+    setState(() {
+      _testingAll = false;
+      if (!ok) {
+        _error =
+            ref.read(nodesProvider).speedTestError ?? '测速失败，请稍后再试';
+      }
+    });
+  }
+
+  /// 只测一行（点行内延迟处触发，复用节点页 `_LatencyChip` 的
+  /// 做法）：只改这一行的延迟/失败标记，不碰其他行、不重排；
+  /// 一键测速进行中、或已有单节点在测时直接返回（不另起一轮）。
+  /// 单节点测速失败只标该行（红点＋原因），不写进弹窗错误行。
+  Future<void> _testSingle(Node node) async {
+    final state = ref.read(nodesProvider);
+    if (state.testingSpeed || state.testingSingleNodeKey != null) return;
+    final ok = await ref.read(nodesProvider.notifier).testSingleSpeed(node);
+    if (!mounted) return;
+    if (!ok) {
+      setState(() {
+        _error =
+            ref.read(nodesProvider).speedTestError ?? '正在测速，请稍后再试';
+      });
+    }
+  }
+
+  /// 弹窗里的延迟文案：与节点页延迟芯片同一口径——测到的数字本身绿色，
+  /// 失败只显示红色圆点＋原因（不写“测速失败”四个字当标题），没测过灰字。
+  /// 绿色与 nodes_page.dart 的 _LatencyChip 是同一对（白天 #157347 /
+  /// 夜晚 #4ADE80），主题 token 里没有成功/绿色，见那里的注释。
+  Widget _latencyLabel(Node node, bool testingThis) {
+    final theme = Theme.of(context);
+    // 测速中该行转圈（复用节点页 _LatencyChip 的做法），其他行不动。
+    if (testingThis) {
+      return const SizedBox(
+        width: 14,
+        height: 14,
+        child: CircularProgressIndicator(strokeWidth: 2),
+      );
+    }
+    if (node.latencyMs != null) {
+      final okColor = theme.brightness == Brightness.dark
+          ? const Color(0xFF4ADE80)
+          : const Color(0xFF157347);
+      return Text(
+        '${node.latencyMs}ms',
+        style: TextStyle(color: okColor),
+      );
+    }
+    if (node.latencyFailed) {
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 8,
+            height: 8,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: theme.colorScheme.error,
+            ),
+          ),
+          const SizedBox(width: 6),
+          Flexible(
+            child: Text(
+              node.latencyFailureReason ?? '测速失败',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(color: theme.colorScheme.error),
+            ),
+          ),
+        ],
+      );
+    }
+    return const Text('未测速');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final nodesState = ref.watch(nodesProvider);
+    final nodes = nodesState.nodes;
+    final selectedName = nodesState.selectedNodeName;
+    final testingKey = nodesState.testingSingleNodeKey;
+    final testingAll = _testingAll || nodesState.testingSpeed;
+    final theme = Theme.of(context);
+    final groups = _groupNodes(nodes);
+    return AlertDialog(
+      title: const Text('选择节点'),
+      content: SizedBox(
+        width: double.maxFinite,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (_error != null)
+              Padding(
+                padding: const EdgeInsets.only(bottom: AppTokens.spacingXs),
+                child: Text(
+                  _error!,
+                  style: TextStyle(color: theme.colorScheme.error),
+                ),
+              ),
+            Flexible(
+              child: ListView(
+                shrinkWrap: true,
+                children: [
+                  for (final group in groups) ...[
+                    _GroupHeader(
+                      title: group.title,
+                      count: group.nodes.length,
+                      expanded: _expandedGroups.contains(group.key),
+                      onTap: () {
+                        setState(() {
+                          if (_expandedGroups.contains(group.key)) {
+                            _expandedGroups.remove(group.key);
+                          } else {
+                            _expandedGroups.add(group.key);
+                          }
+                        });
+                      },
+                    ),
+                    if (_expandedGroups.contains(group.key))
+                      for (final node in group.nodes)
+                        _NodeRow(
+                          node: node,
+                          isSelected: node.name == selectedName,
+                          testingThis: testingKey == node.dedupKey,
+                          testingAny: testingAll,
+                          latencyLabel: _latencyLabel(
+                            node,
+                            testingKey == node.dedupKey,
+                          ),
+                          onSelect: () => _select(node),
+                          onTestSingle: () => _testSingle(node),
+                        ),
+                  ],
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: testingAll ? null : _testAll,
+          child: Text(testingAll ? '测速中…' : '测速全部'),
+        ),
+        TextButton(
+          onPressed:
+              _testing ||
+                  testingAll ||
+                  nodesState.selectedNode == null
+              ? null
+              : _testSelected,
+          child: Text(_testing ? '测速中…' : '测速当前节点'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+      ],
+    );
+  }
+}
+
+/// 订阅分组的组头：点一下展开/收起该组（箭头跟着转）。
+/// 标题只写订阅名，节点数另起一格，避免标题带数字后
+/// `find.text(订阅名)` 认不出来。
+class _GroupHeader extends StatelessWidget {
+  const _GroupHeader({
+    required this.title,
+    required this.count,
+    required this.expanded,
+    required this.onTap,
+  });
+
+  final String title;
+  final int count;
+  final bool expanded;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(
+          vertical: AppTokens.spacingXs,
+          horizontal: AppTokens.spacingXs,
+        ),
+        child: Row(
+          children: [
+            AnimatedRotation(
+              turns: expanded ? 0.25 : 0,
+              duration: const Duration(milliseconds: 150),
+              child: AppIcon(
+                icon: AppIcons.chevronRight,
+                size: AppIconSize.sm,
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(width: AppTokens.spacingXs),
+            Expanded(
+              child: Text(
+                title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.titleSmall,
+              ),
+            ),
+            Text(
+              '$count 个节点',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 弹窗里的一行节点：名称＋延迟，选中行用选中底色＋对勾。
+///
+/// 点行本身是选节点（[_NodePickerDialogState._select]）；点行内
+/// 延迟处是只测这一行（内层 InkWell，复用节点页 `_LatencyChip`
+/// 的做法：手势仲裁内层优先，点延迟不选中）。测速中该行转圈。
+class _NodeRow extends StatelessWidget {
+  const _NodeRow({
+    required this.node,
+    required this.isSelected,
+    required this.testingThis,
+    required this.testingAny,
+    required this.latencyLabel,
+    required this.onSelect,
+    required this.onTestSingle,
+  });
+
+  final Node node;
+  final bool isSelected;
+  final bool testingThis;
+  final bool testingAny;
+  final Widget latencyLabel;
+  final VoidCallback onSelect;
+  final VoidCallback onTestSingle;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final canTestSingle = !testingThis && !testingAny;
+    return ListTile(
+      selected: isSelected,
+      selectedTileColor: theme.colorScheme.primary.withValues(alpha: 0.08),
+      title: Text(
+        node.name,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
+      subtitle: Tooltip(
+        message: testingThis
+            ? '正在测速…'
+            : '点一下只测这一个节点',
+        child: InkWell(
+          borderRadius: BorderRadius.circular(4),
+          onTap: canTestSingle ? onTestSingle : null,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: latencyLabel,
+          ),
+        ),
+      ),
+      trailing: isSelected
+          ? AppIcon(
+              icon: AppIcons.circleCheck,
+              size: AppIconSize.sm,
+              color: theme.colorScheme.primary,
+            )
+          : null,
+      onTap: onSelect,
     );
   }
 }

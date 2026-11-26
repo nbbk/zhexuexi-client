@@ -6,6 +6,7 @@ DiagnosticsReportInput _input({
   String? currentNodeName,
   String? coreLastError,
   String? nodesErrorMessage,
+  DateTime? probeAt,
 }) {
   return DiagnosticsReportInput(
     appVersion: '0.1.0',
@@ -23,6 +24,7 @@ DiagnosticsReportInput _input({
     autoUpdateEnabled: true,
     coreLastError: coreLastError,
     nodesErrorMessage: nodesErrorMessage,
+    probeAt: probeAt,
   );
 }
 
@@ -42,9 +44,82 @@ void main() {
       expect(report, contains('当前节点延迟：123ms'));
       expect(report, contains('自定义规则：2 条'));
       expect(report, contains('DNS 防泄漏：已开启，不可关闭'));
-      expect(report, contains('1.1.1.1'));
-      expect(report, contains('dns.google'));
+      expect(report, contains('223.5.5.5'));
+      expect(report, contains('8.8.8.8/dns-query'));
       expect(report, contains('最近错误：核心：核心异常停止'));
+    });
+
+    test('0.1.2：有值时报告含配置 route/dns 快照与实时连接 chain', () {
+      final report = buildDiagnosticsReport(
+        DiagnosticsReportInput(
+          appVersion: '0.1.2',
+          coreVersion: '1.14.4',
+          coreStatusText: '已连接',
+          modeLabel: '规则模式',
+          hasBinding: true,
+          nodeCount: 3,
+          currentNodeName: '日本-直连',
+          currentLatencyMs: 123,
+          tunEnabled: true,
+          customRulesCount: 0,
+          autoUpdateEnabled: true,
+          configSnapshot: '{"route":{"rules":[{"action":"sniff"}]}}',
+          connectionChains: ['Proxy → 直连节点 → direct'],
+        ),
+      );
+      expect(report, contains('当前配置 route/dns：'));
+      expect(report, contains('sniff'));
+      expect(report, contains('实时连接：Proxy → 直连节点 → direct'));
+    });
+
+    test('0.1.2：快照与 chain 为空时不出现对应行', () {
+      final report = buildDiagnosticsReport(_input());
+      expect(report, isNot(contains('当前配置 route/dns：')));
+      expect(report, isNot(contains('实时连接：')));
+    });
+
+    test('0.1.3：探活失败进诊断包（D 路修复 2）', () {
+      // 探活失败不翻 CoreStatus.error、状态仍是“运行中”，不写
+      // 这一行就看不出“运行中但流量不通”。
+      final report = buildDiagnosticsReport(
+        DiagnosticsReportInput(
+          appVersion: '0.1.3',
+          coreVersion: '1.14.4',
+          coreStatusText: '已连接',
+          modeLabel: '规则模式',
+          hasBinding: true,
+          nodeCount: 3,
+          currentNodeName: '日本-直连',
+          tunEnabled: true,
+          customRulesCount: 0,
+          autoUpdateEnabled: true,
+          probeFailed: true,
+          probeError: '真实流量不通：DNS 或路由可能有问题',
+          probeAt: DateTime(2026, 11, 26, 20, 30, 0),
+        ),
+      );
+      expect(
+        report,
+        contains('启动探活：失败（真实流量不通：DNS 或路由可能有问题'),
+      );
+      expect(report, contains('核心状态：已连接'));
+      expect(report, contains('最近错误：无'));
+    });
+
+    test('0.1.3：探活通过时也写一行，不留“没测过”的歧义', () {
+      // 探活真的跑过（probeAt 有时间）才印“通过”。
+      final report = buildDiagnosticsReport(
+        _input(probeAt: DateTime(2026, 11, 26, 20, 30, 0)),
+      );
+      expect(report, contains('启动探活：通过'));
+    });
+
+    test('0.1.4：一次也没探过（probeAt 为空）时印“未探活”，不印“通过”', () {
+      // 0.1.3 诊断包的教训：核心停着时 probeFailed 默认 false，
+      // 旧渲染印“启动探活：通过（最近结果：—）”，等于默认值谎言。
+      final report = buildDiagnosticsReport(_input());
+      expect(report, contains('启动探活：未探活'));
+      expect(report, isNot(contains('启动探活：通过')));
     });
 
     test('没有错误时最近错误写“无”；空值显示“—”', () {

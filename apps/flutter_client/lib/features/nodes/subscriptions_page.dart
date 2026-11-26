@@ -35,6 +35,7 @@ class SubscriptionsPage extends ConsumerStatefulWidget {
 
 class _SubscriptionsPageState extends ConsumerState<SubscriptionsPage> {
   final _addController = TextEditingController();
+  final _addFocusNode = FocusNode();
   final _listKey = GlobalKey<AnimatedListState>();
   String? _addError;
   final _refreshingIds = <String>{};
@@ -51,6 +52,7 @@ class _SubscriptionsPageState extends ConsumerState<SubscriptionsPage> {
   @override
   void dispose() {
     _addController.dispose();
+    _addFocusNode.dispose();
     super.dispose();
   }
 
@@ -186,6 +188,34 @@ class _SubscriptionsPageState extends ConsumerState<SubscriptionsPage> {
         .showSnackBar(SnackBar(content: Text(message)));
   }
 
+  /// “添加订阅”按钮与输入框回车共用：去首尾空白后走订阅添加，
+  /// 失败原因显示在粘贴框下面（走映射后的原因，见 subscription_service）。
+  Future<void> _submitAdd() async {
+    final link = _addController.text.trim();
+    if (link.isEmpty) return;
+    final error = await ref.read(subscriptionsProvider.notifier).add(link);
+    if (!mounted) return;
+    if (error != null) {
+      setState(() => _addError = error);
+    } else {
+      setState(() => _addError = null);
+      _addController.clear();
+      _showSnack('已添加订阅');
+    }
+  }
+
+  /// “粘贴”按钮：读剪贴板填进输入框（去首尾空白），填上就给输入框
+  /// 焦点，方便接着改；剪贴板是空的就把原因显示在框下面。
+  Future<void> _pasteAdd() async {
+    final pasted = await pasteClipboardInto(_addController);
+    if (!mounted) return;
+    if (pasted) {
+      _addFocusNode.requestFocus();
+    } else {
+      setState(() => _addError = '剪贴板是空的，先复制订阅链接再粘贴');
+    }
+  }
+
   /// AnimatedList 的一项：淡入＋高度展开（250ms）。
   Widget _buildAnimatedItem(
     SubscriptionEntry entry,
@@ -207,14 +237,32 @@ class _SubscriptionsPageState extends ConsumerState<SubscriptionsPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          TextField(
-            controller: _addController,
-            decoration: const InputDecoration(
-              hintText: '粘贴完整订阅链接（如机场订阅）',
-              border: OutlineInputBorder(),
-            ),
-            maxLines: 3,
-            minLines: 1,
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _addController,
+                  focusNode: _addFocusNode,
+                  decoration: const InputDecoration(
+                    hintText: '粘贴完整订阅链接（如机场订阅）',
+                    border: OutlineInputBorder(),
+                  ),
+                  // 链接是 URL：键盘给 URL 布局；点“粘贴”按钮直接读剪贴板
+                  // 填入（去首尾空白），不用只靠长按菜单。
+                  keyboardType: TextInputType.url,
+                  textInputAction: TextInputAction.done,
+                  onSubmitted: (_) => _submitAdd(),
+                  maxLines: 3,
+                  minLines: 1,
+                ),
+              ),
+              const SizedBox(width: AppTokens.spacingSm),
+              OutlinedButton(
+                onPressed: _pasteAdd,
+                child: const Text('粘贴'),
+              ),
+            ],
           ),
           if (_addError != null) ...[
             const SizedBox(height: AppTokens.spacingXs),
@@ -230,21 +278,7 @@ class _SubscriptionsPageState extends ConsumerState<SubscriptionsPage> {
             children: [
               Expanded(
                 child: FilledButton.icon(
-                  onPressed: () async {
-                    final link = _addController.text.trim();
-                    if (link.isEmpty) return;
-                    final error = await ref
-                        .read(subscriptionsProvider.notifier)
-                        .add(link);
-                    if (!mounted) return;
-                    if (error != null) {
-                      setState(() => _addError = error);
-                    } else {
-                      setState(() => _addError = null);
-                      _addController.clear();
-                      _showSnack('已添加订阅');
-                    }
-                  },
+                  onPressed: _submitAdd,
                   icon: const AppIcon(icon: AppIcons.plus, size: AppIconSize.sm),
                   label: const Text('添加订阅'),
                 ),

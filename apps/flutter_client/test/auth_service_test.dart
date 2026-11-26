@@ -143,6 +143,29 @@ void main() {
   });
 
   group('login', () {
+    test('域名为空：报通用占位，不含真实域名', () async {
+      final service = AuthService(
+        dio: Dio(),
+        storage: _FakeSecureStorage(),
+      );
+      await expectLater(
+        service.login(
+          panelDomain: '',
+          username: 'nianba',
+          password: 'pw',
+        ),
+        throwsA(
+          isA<AuthException>()
+              .having((e) => e.kind, 'kind', AuthErrorKind.invalidDomain)
+              .having(
+                (e) => e.message,
+                'message',
+                '面板域名不对，请填写面板域名（如 panel.example.com）',
+              ),
+        ),
+      );
+    });
+
     test('9876 直通：成功，令牌进安全存储，端口被记住', () async {
       final storage = _FakeSecureStorage();
       final tried = <int>[];

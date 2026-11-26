@@ -42,6 +42,10 @@
     "tun_default": true,
     "show_traffic": true
   },
+  "update": {
+    "server_base_url": "https://update.example.com",
+    "version_path": "/api/v1/client/version"
+  },
   "signature": "BASE64_ED25519_SIGNATURE_OVER_CANONICAL_JSON"
 }
 ```
@@ -56,6 +60,7 @@
 | `panel.panel_domain` / `panel_api_base` | 面板域名与接口地址 | 面板换域名后改这里，客户端不用重装 |
 | `announcement.*` | 公告（带唯一 id，去重用） | 远程配置公告优先于面板 public-info 的公告 |
 | `features.*` | 功能开关（自动选节点、TUN 默认开、流量显示） | 可远程关掉出问题的功能，不用发版 |
+| `update.server_base_url` / `update.version_path` | 自托管更新通道的两个配置位：更新服务器基地址 / 版本描述接口路径（应用内更新，双通道设计；本轮只加字段与读法、不接线，自托管通道尚未启用，见客户端 `SelfHostedUpdateSource`） | 以后服务端就绪后填上再接线；两字段都空时自托管通道报“尚未启用”，不影响 GitHub 主通道 |
 | `signature` | Ed25519 签名 | 验签失败的配置一律不用 |
 
 注意：

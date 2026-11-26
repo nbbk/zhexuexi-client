@@ -229,4 +229,195 @@ void main() {
       expect(await down.selectedProxy('Proxy'), isNull);
     });
   });
+
+  group('selectProxyDetailed / proxyDelayDetailed（问题 7）', () {
+    /// 假服务器：PUT 到 MissingGroup 回 404（组本身不存在）、
+    /// PUT body 名字是 not-in-group 回 400（sing-box 对组里没有的
+    /// 名字就是这么回的，见真核复现）；delay 按名字给状态码。
+    Future<String> startDetailedServer() async {
+      server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      server.listen((request) async {
+        try {
+          final segments = request.uri.pathSegments;
+          if (request.method == 'GET' &&
+              segments.length == 3 &&
+              segments[0] == 'proxies' &&
+              segments[2] == 'delay') {
+            final name = segments[1];
+            final response = request.response;
+            response.headers.contentType = ContentType.json;
+            if (name == 'good-node') {
+              response.write('{"delay":123}');
+            } else if (name == 'missing-node') {
+              response.statusCode = HttpStatus.notFound;
+              response.write('{"message":"Resource not found"}');
+            } else if (name == 'slow-node') {
+              response.statusCode = HttpStatus.gatewayTimeout;
+              response.write('{"message":"Timeout"}');
+            } else {
+              response.statusCode = HttpStatus.serviceUnavailable;
+              response.write(
+                '{"message":"An error occurred in the delay test"}',
+              );
+            }
+            await response.close();
+            return;
+          }
+          if (request.method == 'PUT' &&
+              segments.length == 2 &&
+              segments[0] == 'proxies') {
+            final body = await utf8.decoder.bind(request).join();
+            final parsed = jsonDecode(body) as Map<String, dynamic>;
+            if (segments[1] == 'MissingGroup') {
+              request.response.statusCode = HttpStatus.notFound;
+            } else if (parsed['name'] == 'not-in-group') {
+              request.response.statusCode = HttpStatus.badRequest;
+              request.response.write(
+                '{"message":"Selector update error: not found"}',
+              );
+            } else {
+              request.response.statusCode = HttpStatus.noContent;
+            }
+            await request.response.close();
+            return;
+          }
+          request.response.statusCode = HttpStatus.notFound;
+          await request.response.close();
+        } catch (_) {}
+      });
+      return 'http://127.0.0.1:${server.port}';
+    }
+
+    test('selectProxyDetailed：204 是 ok；400/404 是 notInGroup', () async {
+      final baseUrl = await startDetailedServer();
+      final client = ClashApiClient(baseUrl: baseUrl);
+      final ok = await client.selectProxyDetailed('Proxy', 'good-node');
+      expect(ok.ok, isTrue);
+      expect(ok.failure, isNull);
+      expect(ok.statusCode, HttpStatus.noContent);
+
+      final notInGroup = await client.selectProxyDetailed(
+        'Proxy',
+        'not-in-group',
+      );
+      expect(notInGroup.ok, isFalse);
+      expect(notInGroup.failure, ProxySelectFailure.notInGroup);
+      expect(notInGroup.statusCode, HttpStatus.badRequest);
+
+      final missingGroup = await client.selectProxyDetailed(
+        'MissingGroup',
+        'good-node',
+      );
+      expect(missingGroup.ok, isFalse);
+      expect(missingGroup.failure, ProxySelectFailure.notInGroup);
+      expect(missingGroup.statusCode, HttpStatus.notFound);
+    });
+
+    test('selectProxyDetailed：核心连不上是 apiUnreachable', () async {
+      final probe = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final port = probe.port;
+      await probe.close();
+      final down = ClashApiClient(baseUrl: 'http://127.0.0.1:$port');
+      final result = await down.selectProxyDetailed('Proxy', 'good-node');
+      expect(result.ok, isFalse);
+      expect(result.failure, ProxySelectFailure.apiUnreachable);
+      expect(result.statusCode, isNull);
+    });
+
+    test('proxyDelayDetailed：200/404/504/503 各有原因', () async {
+      final baseUrl = await startDetailedServer();
+      final client = ClashApiClient(baseUrl: baseUrl);
+      final ok = await client.proxyDelayDetailed('good-node');
+      expect(ok.delay, 123);
+      expect(ok.failure, isNull);
+      expect(ok.ok, isTrue);
+
+      final missing = await client.proxyDelayDetailed('missing-node');
+      expect(missing.delay, isNull);
+      expect(missing.failure, ProxyDelayFailure.notFound);
+
+      final slow = await client.proxyDelayDetailed('slow-node');
+      expect(slow.delay, isNull);
+      expect(slow.failure, ProxyDelayFailure.timeout);
+
+      final bad = await client.proxyDelayDetailed('bad-node');
+      expect(bad.delay, isNull);
+      expect(bad.failure, ProxyDelayFailure.failed);
+    });
+
+    test('proxyDelayDetailed：核心连不上是 apiUnreachable', () async {
+      final probe = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final port = probe.port;
+      await probe.close();
+      final down = ClashApiClient(baseUrl: 'http://127.0.0.1:$port');
+      final result = await down.proxyDelayDetailed('good-node');
+      expect(result.delay, isNull);
+      expect(result.failure, ProxyDelayFailure.apiUnreachable);
+    });
+  });
+
+  group('0.1.2：10 秒预算、getConnections', () {
+    test('proxyDelayDetailed：timeout=10000 发给服务端，Dart 侧等 15 秒', () async {
+      // 服务端 11 秒后才回 200：Dart 侧超时是预算＋5 秒（15 秒），
+      // 不会先超时误报 apiUnreachable；旧写法（预算＋5 秒按 5 秒算
+      // 出 10 秒）会在 10 秒时先断。
+      String? seenTimeout;
+      server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      server.listen((request) async {
+        try {
+          seenTimeout = request.uri.queryParameters['timeout'];
+          await Future<void>.delayed(const Duration(seconds: 11));
+          request.response.headers.contentType = ContentType.json;
+          request.response.write('{"delay":123}');
+          await request.response.close();
+        } catch (_) {}
+      });
+      final client = ClashApiClient(
+        baseUrl: 'http://127.0.0.1:${server.port}',
+      );
+      final result = await client.proxyDelayDetailed(
+        'good-node',
+        timeout: const Duration(seconds: 10),
+      );
+      expect(seenTimeout, '10000');
+      expect(result.delay, 123);
+      expect(result.failure, isNull);
+    });
+
+    test('getConnections：chain 拼成字符串；404/连不上返回空列表', () async {
+      server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      server.listen((request) async {
+        try {
+          final response = request.response;
+          response.headers.contentType = ContentType.json;
+          if (request.uri.path == '/connections') {
+            response.write(
+              '{"connections": ['
+              '{"metadata": {"host": "example.com"}, "chains": ["Proxy", "直连节点", "direct"]}, '
+              '{"metadata": {"host": "other.com"}, "chains": ["direct"]}, '
+              '{"metadata": {"host": "nochain.com"}}'
+              ']}',
+            );
+          } else {
+            response.statusCode = HttpStatus.notFound;
+          }
+          await response.close();
+        } catch (_) {}
+      });
+      final client = ClashApiClient(
+        baseUrl: 'http://127.0.0.1:${server.port}',
+      );
+      expect(await client.getConnections(), [
+        'Proxy → 直连节点 → direct',
+        'direct',
+      ]);
+
+      // 非 200：空列表，不抛错。
+      final probe = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final port = probe.port;
+      await probe.close();
+      final down = ClashApiClient(baseUrl: 'http://127.0.0.1:$port');
+      expect(await down.getConnections(), isEmpty);
+    });
+  });
 }

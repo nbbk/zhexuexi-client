@@ -73,7 +73,16 @@ class GlassCard extends StatelessWidget {
                 width: 1,
               ),
             ),
-            child: child,
+            // 透明 Material：卡片里的 ListTile 要有 Material 祖先才
+            // 能画背景与水波纹（0.1.2：我的页 7 张 Card 换成 GlassCard
+            // 后没了这层，debug 下 ListTile 直接断言报错；原生 Card
+            // 自带 Material，GlassCard 必须自己补）。
+            child: Material(
+              type: MaterialType.transparency,
+              borderRadius: radius,
+              clipBehavior: Clip.antiAlias,
+              child: child,
+            ),
           ),
         ),
       ),

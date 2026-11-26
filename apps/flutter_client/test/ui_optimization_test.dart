@@ -301,7 +301,8 @@ void main() {
         ),
       );
       // 只 pump 一帧、不 settle：开启动效时第二行要晚 80ms 才出现，
-      // 减弱动态时两行都直接在。
+      // 减弱动态时两行都直接在。分组默认折叠，先点组头展开再断言行。
+      await tester.tap(find.text('未分组（2）'));
       await tester.pump();
       expect(find.text('智利-直连'), findsOneWidget);
       expect(find.text('日本-直连'), findsOneWidget);
@@ -340,6 +341,33 @@ void main() {
       );
       expect(off.isOn, isFalse);
       expect(a.shouldRepaint(off), isTrue);
+    });
+
+    testWidgets('PowerButtonIcon：关态也画哲人图标、颜色淡（不画电源符号）', (tester) async {
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: Scaffold(
+            body: PowerButtonIcon(
+              color: Color(0xFF9CA3AF),
+              size: 48,
+              isOn: false,
+            ),
+          ),
+        ),
+      );
+      expect(
+        find.byWidgetPredicate(
+          (w) => w is CustomPaint && w.painter is SignalPhilosopherPainter,
+        ),
+        findsOneWidget,
+      );
+      // 减弱动态时静态全亮（animated: false 时三道弧全亮）。
+      final painter = tester.widget<CustomPaint>(
+        find.byWidgetPredicate(
+          (w) => w is CustomPaint && w.painter is SignalPhilosopherPainter,
+        ),
+      ).painter as SignalPhilosopherPainter;
+      expect(painter.isOn, isFalse);
     });
 
     testWidgets('PowerButtonIcon：开态画哲人图标（CustomPaint）', (tester) async {

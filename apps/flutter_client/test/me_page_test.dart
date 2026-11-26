@@ -64,6 +64,18 @@ class _FakeAnnouncementService extends AnnouncementService {
 
   @override
   Future<String?> fetchNotice() async => notice;
+
+  @override
+  Future<List<Announcement>> fetchAnnouncements() async => notice == null
+      ? const []
+      : [
+          Announcement(
+            id: 'test-1',
+            title: '',
+            body: notice!,
+            createdAt: DateTime(2026, 11, 26, 9),
+          ),
+        ];
 }
 
 class _FakeAutoRefresh extends SubscriptionAutoRefresh {
@@ -185,7 +197,8 @@ void main() {
     expect(find.text('未绑定订阅'), findsOneWidget);
     expect(find.text('绑定订阅'), findsOneWidget);
     expect(find.text('上次更新：尚未更新'), findsOneWidget);
-    expect(find.text('暂无公告'), findsOneWidget);
+    // 没有公告时公告卡整个不渲染（0.1.2 隐藏规则）。
+    expect(find.text('公告'), findsNothing);
   });
 
   testWidgets('已绑定有流量：剩余流量大字 + 已用/总量 + 到期日', (tester) async {
@@ -237,7 +250,7 @@ void main() {
     expect(find.text('更新失败：订阅已失效，请重新绑定'), findsOneWidget);
   });
 
-  testWidgets('公告：有公告显示公告，没有显示“暂无公告”', (tester) async {
+  testWidgets('公告：有公告显示“共 N 条，点击查看”，点进列表页', (tester) async {
     await _pumpPage(
       tester,
       const NodesState(status: NodesStatus.loaded),
@@ -247,8 +260,21 @@ void main() {
     // 视口外不构建，先滚到可见再断言。
     await tester.scrollUntilVisible(find.text('公告'), 200.0);
     await tester.pumpAndSettle();
-    expect(find.text('面板今晚维护'), findsOneWidget);
-    expect(find.text('暂无公告'), findsNothing);
+    expect(find.text('共 1 条，点击查看'), findsOneWidget);
+    await tester.tap(find.text('公告'));
+    await tester.pumpAndSettle();
+    // 列表页里有这条：标题为空时行标题取正文首行，
+    // 所以同一串字出现两次（行标题＋正文全文）。
+    expect(find.text('面板今晚维护'), findsWidgets);
+  });
+
+  testWidgets('公告：没有公告时公告卡不存在', (tester) async {
+    await _pumpPage(
+      tester,
+      const NodesState(status: NodesStatus.loaded),
+    );
+    expect(find.text('公告'), findsNothing);
+    expect(find.text('共 1 条，点击查看'), findsNothing);
   });
 
   testWidgets('绑定订阅：粘贴链接后调 bindAndRefresh，成功关弹窗', (tester) async {

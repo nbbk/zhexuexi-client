@@ -11,11 +11,15 @@ import 'package:flutter_sing_box/flutter_sing_box.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:zhexuexi_client/core/clash_api_client.dart';
 import 'package:zhexuexi_client/core/config_validator.dart';
 import 'package:zhexuexi_client/core/core_provider.dart';
 import 'package:zhexuexi_client/core/node_model.dart';
 import 'package:zhexuexi_client/core/singbox_core.dart';
 import 'package:zhexuexi_client/features/settings/settings_page.dart';
+import 'package:zhexuexi_client/services/app_update/app_update_provider.dart';
+import 'package:zhexuexi_client/services/app_update/app_updater.dart';
+import 'package:zhexuexi_client/services/app_update/update_source.dart';
 import 'package:zhexuexi_client/services/nodes_notifier.dart';
 import 'package:zhexuexi_client/services/remote_config_notifier.dart';
 import 'package:zhexuexi_client/services/remote_config_service.dart';
@@ -53,6 +57,16 @@ class _FakePlugin extends FlutterSingBox {
   void emit(ProxyState state) => _stateController.add(state);
 
   Future<void> close() => _stateController.close();
+}
+
+/// Clash API fake：启动后校验（`CoreService._verifyControlApi`）取一帧
+/// 就回，不碰真网络；不注入时 Started 后校验在测试里被 HttpClient
+/// 回 400 翻成 error（问题 6 的探活副作用，同 home/routing 测试）。
+class _FakeClashApi extends ClashApiClient {
+  @override
+  Future<TrafficSample> trafficSample({
+    Duration timeout = const Duration(seconds: 5),
+  }) async => const TrafficSample(up: 0, down: 0);
 }
 
 /// 校验器 fake：默认通过。
@@ -105,6 +119,7 @@ void main() {
       validator: _FakeValidator(),
       usingConfigPath: () async => configPath,
       ensureSelectedProfile: (_) async {},
+      clashApiClient: _FakeClashApi(),
     );
     await service.init();
   });
@@ -178,6 +193,8 @@ void main() {
     expect(find.text('规则模式'), findsOneWidget);
     expect(find.text('订阅自动更新'), findsOneWidget);
     expect(find.text('客户端版本'), findsOneWidget);
+    // 关于行显示的客户端版本与 pubspec / appVersion 常量一致（0.1.8）。
+    expect(find.text('0.1.8'), findsOneWidget);
     // 高级默认折叠：TUN、DNS、诊断都在折叠里，不可见。
     expect(find.text('TUN 模式'), findsNothing);
     expect(find.text('导出诊断包'), findsNothing);
@@ -214,16 +231,29 @@ void main() {
     expect(prefs.getBool('settings_auto_update'), isFalse);
   });
 
-  testWidgets('DNS 配置查看：DoH 双路与 DoT 兜底可见，写明不可关闭', (
+  testWidgets('通知行：副标题只写新版本提醒，不再写后续版本接入', (
+    tester,
+  ) async {
+    await pumpSettings(tester);
+    expect(find.text('通知'), findsOneWidget);
+    expect(find.text('新版本提醒'), findsOneWidget);
+    expect(find.text('后续版本接入'), findsNothing);
+    expect(find.textContaining('后续版本接入'), findsNothing);
+  });
+
+  testWidgets('DNS 配置查看：DoH 双路可见，写明不可关闭', (
     tester,
   ) async {
     await pumpSettings(tester);
     await expandAdvanced(tester);
     await tester.tap(find.text('DNS 配置'));
     await tester.pumpAndSettle();
-    expect(find.text('DoH https://1.1.1.1/dns-query'), findsOneWidget);
-    expect(find.text('DoH https://dns.google/dns-query（经代理出站）'), findsOneWidget);
-    expect(find.text('DoT 8.8.8.8:853'), findsOneWidget);
+    expect(find.text('DoH https://223.5.5.5/dns-query'), findsOneWidget);
+    expect(find.text('DoH https://8.8.8.8/dns-query（经代理出站）'), findsOneWidget);
+    expect(
+      find.text('规则模式默认走代理 DNS；.cn 始终直连解析'),
+      findsOneWidget,
+    );
     expect(find.text('防泄漏不可关闭'), findsOneWidget);
     // 全配置摘要里没有明文 UDP 服务器写法。
     expect(find.textContaining('udp'), findsNothing);
@@ -266,16 +296,22 @@ void main() {
     expect(find.text('暂无自定义规则，默认按内置规则分流'), findsOneWidget);
   });
 
-  testWidgets('TUN 开关：打开后配置里出现 tun 入站', (tester) async {
+  testWidgets('TUN 开关：默认开启，关掉后 tun 入站消失、再打开又出现', (tester) async {
     await pumpSettings(
       tester,
       nodes: [_node('日本-直连')],
       selected: '日本-直连',
     );
     await expandAdvanced(tester);
+    // 默认开：点一次关掉，配置里只剩 mixed 入站。
     await tapAsync(tester, find.text('TUN 模式'));
-    final config = await readWrittenConfig(tester);
-    final inbounds = config['inbounds'] as List;
+    var config = await readWrittenConfig(tester);
+    var inbounds = config['inbounds'] as List;
+    expect(inbounds.length, 1);
+    // 再点一次打开，tun 入站回来。
+    await tapAsync(tester, find.text('TUN 模式'));
+    config = await readWrittenConfig(tester);
+    inbounds = config['inbounds'] as List;
     expect(inbounds.length, 2);
     expect((inbounds[1] as Map)['type'], 'tun');
     expect((inbounds[1] as Map)['tag'], 'tun-in');
@@ -327,23 +363,27 @@ void main() {
       ],
     );
     await tapAsync(tester, find.text('检查更新'));
-    expect(find.textContaining('当前版本 0.1.0'), findsOneWidget);
+    expect(find.textContaining('当前版本 0.1.8'), findsOneWidget);
     expect(find.textContaining('检查失败，请检查网络后重试'), findsOneWidget);
   });
 
   testWidgets('检查更新：全部地址都 404 时报远程配置暂未发布，不说网络问题', (
     tester,
   ) async {
-    // 假 Dio：任何地址都直接回 404（服务端缺口：配置还没发布）。
+    // 假 Dio：任何地址都以 DioException 抛 404（服务端缺口：配置还没发布）。
     final dio = Dio();
     dio.interceptors.add(
       InterceptorsWrapper(
         onRequest: (options, handler) {
-          handler.resolve(
-            Response<String>(
+          handler.reject(
+            DioException(
               requestOptions: options,
-              statusCode: 404,
-              data: '',
+              response: Response<String>(
+                requestOptions: options,
+                statusCode: 404,
+                data: '',
+              ),
+              type: DioExceptionType.badResponse,
             ),
           );
         },
@@ -360,7 +400,7 @@ void main() {
       ],
     );
     await tapAsync(tester, find.text('检查更新'));
-    expect(find.textContaining('当前版本 0.1.0'), findsOneWidget);
+    expect(find.textContaining('当前版本 0.1.8'), findsOneWidget);
     expect(find.textContaining('远程配置暂未发布'), findsOneWidget);
     expect(find.textContaining('请检查网络后重试'), findsNothing);
   });
@@ -401,7 +441,7 @@ void main() {
       ],
     );
     await tapAsync(tester, find.text('检查更新'));
-    expect(find.textContaining('当前版本 0.1.0'), findsOneWidget);
+    expect(find.textContaining('当前版本 0.1.8'), findsOneWidget);
     expect(find.textContaining('已更新到配置 v1'), findsOneWidget);
   });
 
@@ -456,4 +496,123 @@ void main() {
     expect(themeSegmented().selected, {'day'});
     expect(prefs.getString('app_theme_id'), 'day');
   });
+
+  testWidgets('检查应用更新：已是最新时报当前版本，不弹更新弹窗', (tester) async {
+    await pumpSettings(
+      tester,
+      extraOverrides: [
+        appUpdaterProvider.overrideWithValue(
+          AppUpdater(
+            sources: [
+              _StubUpdateSource(
+                info: const UpdateReleaseInfo(
+                  version: '0.1.0',
+                  downloadUrl: 'https://example.com/app.apk',
+                  sourceName: 'GitHub',
+                ),
+              ),
+            ],
+            currentVersionReader: () async => '0.1.0',
+          ),
+        ),
+      ],
+    );
+    await tapAsync(tester, find.text('检查应用更新'));
+    expect(find.textContaining('已是最新版本（v0.1.0）'), findsOneWidget);
+    expect(find.textContaining('发现新版本'), findsNothing);
+  });
+
+  testWidgets('检查应用更新：两条通道都失败时报原因，不说已是最新', (
+    tester,
+  ) async {
+    await pumpSettings(
+      tester,
+      extraOverrides: [
+        appUpdaterProvider.overrideWithValue(
+          AppUpdater(
+            sources: [
+              _StubUpdateSource(
+                error: const UpdateException.notFound(
+                  'GitHub 上还没有 Release。',
+                ),
+              ),
+              _StubUpdateSource(
+                name: '自托管',
+                error: const UpdateException.notEnabled('尚未启用'),
+              ),
+            ],
+            currentVersionReader: () async => '0.1.0',
+          ),
+        ),
+      ],
+    );
+    await tapAsync(tester, find.text('检查应用更新'));
+    expect(find.textContaining('检查失败'), findsOneWidget);
+    expect(find.textContaining('GitHub 上还没有 Release'), findsOneWidget);
+    expect(find.textContaining('自托管：尚未启用'), findsOneWidget);
+    expect(find.textContaining('已是最新版本'), findsNothing);
+    // 失败弹窗注明检查走手机直连（开关帮不上）。
+    expect(find.textContaining('检查走手机直连'), findsOneWidget);
+  });
+
+  testWidgets('检查更新：失败时逐条列原因，并注明代理轮的用法', (tester) async {
+    // 假 Dio：任何地址都连不上（断网）。
+    final dio = Dio();
+    dio.interceptors.add(
+      InterceptorsWrapper(
+        onRequest: (options, handler) {
+          handler.reject(
+            DioException(
+              requestOptions: options,
+              type: DioExceptionType.connectionError,
+            ),
+          );
+        },
+      ),
+    );
+    final service = RemoteConfigService(
+      dio: dio,
+      configUrls: const [
+        'http://127.0.0.1:18081/client-config.json',
+        'http://127.0.0.1:18082/client-config.json',
+      ],
+    );
+    await pumpSettings(
+      tester,
+      extraOverrides: [
+        remoteConfigServiceProvider.overrideWithValue(service),
+      ],
+    );
+    await tapAsync(tester, find.text('检查更新'));
+    // 先一句定性，再逐条列原因（两个地址各一条）。
+    expect(find.textContaining('检查失败，请检查网络后重试'), findsOneWidget);
+    expect(find.textContaining('127.0.0.1:18081'), findsOneWidget);
+    expect(find.textContaining('127.0.0.1:18082'), findsOneWidget);
+    expect(find.textContaining('连不上'), findsOneWidget);
+    // 0.1.4：过时尾注“检查走手机直连，不走代理，开关开了也帮不上”
+    // 已删，改按实际写代理轮的用法（开关已开且核心已连接时经代理
+    // 再试一轮）。“检查走手机直连”那句只留在“检查应用更新”
+    // （GitHub Release 本来就只走直连）里。
+    expect(find.textContaining('经代理再试一轮'), findsOneWidget);
+    expect(find.textContaining('开关开了也帮不上'), findsNothing);
+    // 两项弹窗标题可区分：这是“检查更新”（远程配置），不是
+    // “检查应用更新”（GitHub Release）。
+    expect(find.text('检查应用更新'), findsOneWidget);
+  });
+}
+
+/// 应用内更新的更新源桩：只返回给定版本或抛给定错误，不碰网络。
+class _StubUpdateSource implements UpdateSource {
+  _StubUpdateSource({this.name = 'GitHub', this.info, this.error});
+
+  @override
+  final String name;
+  final UpdateReleaseInfo? info;
+  final UpdateException? error;
+
+  @override
+  Future<UpdateReleaseInfo> checkLatest() async {
+    if (error != null) throw error!;
+    return info!;
+  }
 }

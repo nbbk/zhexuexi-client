@@ -7,7 +7,7 @@ import 'remote_config_keys.dart';
 
 /// 客户端版本号（与 pubspec.yaml 的 version 同步）。
 /// 远程配置的 `min_app_version` 低于它时，`forceUpdateRequired` 为真。
-const String appVersion = '0.1.0';
+const String appVersion = '0.1.8';
 
 /// 远程配置（切片 7：远程配置中心＋品牌远程替换）。
 ///
@@ -33,6 +33,8 @@ class RemoteConfig {
     required this.subscriptionFormat,
     this.announcement,
     required this.features,
+    this.updateServerBaseUrl = '',
+    this.updateVersionPath = '',
   });
 
   /// 包内默认值（全新安装、本地无缓存、远程也拉不到时用）：
@@ -59,6 +61,7 @@ class RemoteConfig {
         json['announcement'] as Map<String, dynamic>?;
     final featuresJson = json['features'] as Map<String, dynamic>?;
     final backupUrls = panel['subscription_backup_urls'];
+    final update = json['update'] as Map<String, dynamic>? ?? const {};
     return RemoteConfig(
       configVersion: json['config_version'] as int? ?? 0,
       updatedAt: json['updated_at'] as String?,
@@ -84,6 +87,8 @@ class RemoteConfig {
       features: featuresJson == null
           ? const RemoteConfigFeatures()
           : RemoteConfigFeatures.fromJson(featuresJson),
+      updateServerBaseUrl: update['server_base_url'] as String? ?? '',
+      updateVersionPath: update['version_path'] as String? ?? '',
     );
   }
 
@@ -134,6 +139,16 @@ class RemoteConfig {
   /// 功能开关（可远程关掉出问题的功能，不用发版）。
   final RemoteConfigFeatures features;
 
+  /// 自托管更新通道的两个配置位（应用内更新，双通道设计）：
+  /// - [updateServerBaseUrl]：自托管更新服务器基地址，
+  ///   如 `https://update.example.com`；为空表示没配。
+  /// - [updateVersionPath]：版本描述接口路径，
+  ///   如 `/api/v1/client/version`。
+  /// 本轮只加字段与读法、不接线：自托管通道未启用（见
+  /// `SelfHostedUpdateSource`），以后服务端就绪后再接线。
+  final String updateServerBaseUrl;
+  final String updateVersionPath;
+
   /// 面板接口地址：填了就用，没填由面板域名派生。
   String get panelApiBaseOrDerived =>
       panelApiBase.isNotEmpty ? panelApiBase : 'https://$panelDomain';
@@ -171,6 +186,11 @@ class RemoteConfig {
         },
         if (announcement != null) 'announcement': announcement!.toJson(),
         'features': features.toJson(),
+        if (updateServerBaseUrl.isNotEmpty || updateVersionPath.isNotEmpty)
+          'update': {
+            'server_base_url': updateServerBaseUrl,
+            'version_path': updateVersionPath,
+          },
       };
 
   /// 验签：`signatureBase64` 是信封里的 `signature` 字段，

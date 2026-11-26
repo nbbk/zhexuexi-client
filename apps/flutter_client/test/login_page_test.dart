@@ -8,9 +8,26 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
+import 'package:zhexuexi_client/brand/remote_config.dart';
 import 'package:zhexuexi_client/features/auth/login_page.dart';
 import 'package:zhexuexi_client/services/auth_notifier.dart';
+import 'package:zhexuexi_client/services/remote_config_notifier.dart';
 import 'package:zhexuexi_client/widgets/app_icon.dart';
+
+/// 远程配置桩：只给 panel_domain，其余走 RemoteConfig.fromJson 默认值。
+class _StubRemoteConfigNotifier extends RemoteConfigNotifier {
+  _StubRemoteConfigNotifier(this.panelDomain);
+
+  final String panelDomain;
+
+  @override
+  RemoteConfigState build() => RemoteConfigState(
+    config: RemoteConfig.fromJson({
+      'panel': {'panel_domain': panelDomain},
+    }),
+    source: RemoteConfigSource.bundled,
+  );
+}
 
 class _StubAuthNotifier extends AuthNotifier {
   _StubAuthNotifier({
@@ -49,7 +66,7 @@ class _StubAuthNotifier extends AuthNotifier {
     calls.add('login:$panelDomain:$username');
     if (panelDomain.isEmpty) {
       state = state.copyWith(
-        errorMessage: '面板域名不对，请填写面板域名（如 ccpanel.jiankong.cf）',
+        errorMessage: '面板域名不对，请填写面板域名（如 panel.example.com）',
       );
       return false;
     }
@@ -76,11 +93,18 @@ class _StubAuthNotifier extends AuthNotifier {
 Future<_StubAuthNotifier> _pumpLoginPage(
   WidgetTester tester, {
   _StubAuthNotifier? stub,
+  String? remotePanelDomain,
 }) async {
   final authStub = stub ?? _StubAuthNotifier();
   await tester.pumpWidget(
     ProviderScope(
-      overrides: [authProvider.overrideWith(() => authStub)],
+      overrides: [
+        authProvider.overrideWith(() => authStub),
+        if (remotePanelDomain != null)
+          remoteConfigProvider.overrideWith(
+            () => _StubRemoteConfigNotifier(remotePanelDomain),
+          ),
+      ],
       child: MaterialApp(
         home: Scaffold(
           body: Builder(
@@ -131,6 +155,15 @@ void main() {
     expect(passwordField.obscureText, isTrue);
   });
 
+  testWidgets('域名框占位符是通用示例域名，不含真实域名', (tester) async {
+    await _pumpLoginPage(tester);
+    final domainField = tester.widget<TextField>(
+      find.byType(TextField).at(0),
+    );
+    expect(domainField.decoration?.hintText, '如 panel.example.com');
+    expect(domainField.decoration?.hintText, isNot(contains('jiankong')));
+  });
+
   testWidgets('域名未配置：域名框留空，提示常驻显示', (tester) async {
     await _pumpLoginPage(tester, stub: _StubAuthNotifier(defaultDomain: ''));
     final domainField = tester.widget<TextField>(find.byType(TextField).at(0));
@@ -140,6 +173,29 @@ void main() {
     await tester.enterText(find.byType(TextField).at(0), 'panel.example.org');
     await tester.pump();
     expect(find.text('面板地址未配置，请填写面板域名'), findsNothing);
+  });
+
+  testWidgets('拉到远程配置：域名栏不显示，点“使用其他面板”后才出现', (
+    tester,
+  ) async {
+    await _pumpLoginPage(
+      tester,
+      remotePanelDomain: 'ccpanel.jiankong.cf',
+    );
+    // 只留账号、密码：域名栏不渲染，域名不在屏幕上。
+    expect(find.text('面板域名'), findsNothing);
+    expect(find.text('账号'), findsOneWidget);
+    expect(find.text('密码'), findsOneWidget);
+    expect(find.text('使用其他面板'), findsOneWidget);
+    // 点入口：域名框出现，里面预填当前值。
+    await tester.tap(find.text('使用其他面板'));
+    await tester.pumpAndSettle();
+    expect(find.text('面板域名'), findsOneWidget);
+    expect(find.text('使用其他面板'), findsNothing);
+    final domainField = tester.widget<TextField>(
+      find.byType(TextField).at(0),
+    );
+    expect(domainField.controller?.text, 'ccpanel.jiankong.cf');
   });
 
   testWidgets('密码可见切换：点眼睛图标切换明文/密文', (tester) async {

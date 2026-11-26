@@ -13,8 +13,61 @@ class TrafficSample {
   String toString() => 'TrafficSample(up=$up, down=$down)';
 }
 
-/// sing-box 内置 Clash API 的最小客户端（切片 3：首页实时速率；
-/// 切片 4：测速与选出站）。
+/// 切换 selector 出站失败的原因（不要一律报“核心没有响应”：
+/// 连不上与名字不在组里是两回事，界面提示要分清）。
+enum ProxySelectFailure {
+  /// 连不上 Clash API（核心没起、端口没监听、请求超时）。
+  apiUnreachable,
+
+  /// 组里没有这个出站（sing-box 回 400/404，如成组节点用了自身 tag）。
+  notInGroup,
+
+  /// 其他非 2xx（状态码见 [ProxySelectResult.statusCode]）。
+  rejected,
+}
+
+/// 一次切换的结果。
+class ProxySelectResult {
+  const ProxySelectResult({required this.ok, this.failure, this.statusCode});
+
+  /// 是否切过去了。
+  final bool ok;
+
+  /// 失败原因；成功时为 null。
+  final ProxySelectFailure? failure;
+
+  /// Clash API 回的状态码；连不上时为 null。
+  final int? statusCode;
+}
+
+/// 测速失败的原因（调用方写进节点的失败原因，不要只标失败不写原因）。
+enum ProxyDelayFailure {
+  /// 连不上 Clash API（核心没起、端口没监听、请求超时）。
+  apiUnreachable,
+
+  /// 404：核心里没有这个出站。
+  notFound,
+
+  /// 408/504：规定时间内没测出延迟。
+  timeout,
+
+  /// 503/其他：出站存在但拨号或请求失败。
+  failed,
+}
+
+/// 一次测速的结果。
+class ProxyDelayResult {
+  const ProxyDelayResult({this.delay, this.failure});
+
+  /// 测到的延迟（毫秒）；测不到时为 null。
+  final int? delay;
+
+  /// 失败原因；测到时为 null。
+  final ProxyDelayFailure? failure;
+
+  /// 是否测到了延迟。
+  bool get ok => delay != null;
+}
 ///
 /// 只读 `/traffic`（流式，每秒推一帧）；测速与选出站在切片 4。
 /// 实现按阶段 0 的验证脚本 `docs/validation/stage0/clash_client.dart`：
@@ -57,6 +110,7 @@ class ClashApiClient {
 
   /// 单个出站的延迟（毫秒）；测不到返回 null（调用方当“测速失败”标灰，
   /// 不抛异常——一键测速要的是一张完整的表，不是第一个失败就炸掉）。
+  /// 要失败原因时用 [proxyDelayDetailed]。
   ///
   /// 走 Clash API `GET /proxies/{name}/delay?url=...&timeout=...`。
   /// 两个实测出来的坑（真 sing-box 1.14.4 验过，不要按直觉改回）：
@@ -76,6 +130,26 @@ class ClashApiClient {
     String proxyName, {
     Duration timeout = const Duration(seconds: 5),
   }) async {
+    final result = await proxyDelayDetailed(
+      proxyName,
+      timeout: timeout,
+    );
+    return result.delay;
+  }
+
+  /// [proxyDelay] 的带原因版：测不到时 [ProxyDelayResult.failure]
+  /// 说明是哪种失败（404 没有这个出站、408/504 超时、503 拨号失败、
+  /// 连不上是核心没响应），调用方据此写失败原因。
+  ///
+  /// Dart 侧的 getUrl / 等响应超时必须是拨测预算＋5 秒，大于服务端
+  /// 预算：服务端预算一到就回 408/504，Dart 必须等到那个响应；
+  /// Dart 先超时会误报成 apiUnreachable（2026-11-26 启动拨测
+  /// 预算放到 10 秒后这里跟着变成 15 秒，节点页手动测速仍是 5 秒
+  /// 预算、这里仍是 10 秒，各走各的预算）。
+  Future<ProxyDelayResult> proxyDelayDetailed(
+    String proxyName, {
+    Duration timeout = const Duration(seconds: 5),
+  }) async {
     final client = _httpClientFactory();
     try {
       final uri = Uri.parse(
@@ -83,23 +157,35 @@ class ClashApiClient {
         '?url=${Uri.encodeQueryComponent(speedTestUrl)}'
         '&timeout=${timeout.inMilliseconds}',
       );
-      final request = await client
-          .getUrl(uri)
-          .timeout(const Duration(seconds: 10));
-      final response = await request.close().timeout(
-        const Duration(seconds: 10),
-      );
+      final httpTimeout = timeout + const Duration(seconds: 5);
+      final request = await client.getUrl(uri).timeout(httpTimeout);
+      final response = await request.close().timeout(httpTimeout);
       final body = await response.transform(utf8.decoder).join();
-      if (response.statusCode != HttpStatus.ok) return null;
+      if (response.statusCode == HttpStatus.notFound) {
+        return const ProxyDelayResult(failure: ProxyDelayFailure.notFound);
+      }
+      if (response.statusCode == HttpStatus.requestTimeout ||
+          response.statusCode == HttpStatus.gatewayTimeout) {
+        return const ProxyDelayResult(failure: ProxyDelayFailure.timeout);
+      }
+      if (response.statusCode != HttpStatus.ok) {
+        return const ProxyDelayResult(failure: ProxyDelayFailure.failed);
+      }
       final parsed = jsonDecode(body);
-      if (parsed is! Map<String, dynamic>) return null;
+      if (parsed is! Map<String, dynamic>) {
+        return const ProxyDelayResult(failure: ProxyDelayFailure.failed);
+      }
       final delay = parsed['delay'];
       // delay 为 0 不是“0 毫秒”，是 sing-box 的错误信号（上游
       // delay==0 时直接回 503，这里只是兜底）；负数同理。
-      if (delay is! num || delay <= 0) return null;
-      return delay.toInt();
+      if (delay is! num || delay <= 0) {
+        return const ProxyDelayResult(failure: ProxyDelayFailure.failed);
+      }
+      return ProxyDelayResult(delay: delay.toInt());
     } catch (_) {
-      return null;
+      return const ProxyDelayResult(
+        failure: ProxyDelayFailure.apiUnreachable,
+      );
     } finally {
       client.close();
     }
@@ -111,7 +197,20 @@ class ClashApiClient {
   /// 204（sing-box 1.14.4 实测）或 200 返回 true，其余状态码与
   /// 网络异常返回 false。切换只改运行时选择，不改磁盘配置——
   /// 要落盘见 [CoreService.updateSelectorDefault]。
+  /// 要失败原因时用 [selectProxyDetailed]。
   Future<bool> selectProxy(String groupName, String proxyName) async {
+    final result = await selectProxyDetailed(groupName, proxyName);
+    return result.ok;
+  }
+
+  /// [selectProxy] 的带原因版：失败时区分“核心没有响应”
+  /// （[ProxySelectFailure.apiUnreachable]，连不上）与“节点不在
+  /// 运行配置里”（[ProxySelectFailure.notInGroup]，sing-box 回
+  /// 400/404），不要一律报“核心没有响应”。
+  Future<ProxySelectResult> selectProxyDetailed(
+    String groupName,
+    String proxyName,
+  ) async {
     final client = _httpClientFactory();
     try {
       final uri = Uri.parse(
@@ -126,10 +225,65 @@ class ClashApiClient {
         const Duration(seconds: 10),
       );
       await response.drain<void>();
-      return response.statusCode == HttpStatus.noContent ||
-          response.statusCode == HttpStatus.ok;
+      final statusCode = response.statusCode;
+      if (statusCode == HttpStatus.noContent ||
+          statusCode == HttpStatus.ok) {
+        return ProxySelectResult(ok: true, statusCode: statusCode);
+      }
+      if (statusCode == HttpStatus.badRequest ||
+          statusCode == HttpStatus.notFound) {
+        return ProxySelectResult(
+          ok: false,
+          failure: ProxySelectFailure.notInGroup,
+          statusCode: statusCode,
+        );
+      }
+      return ProxySelectResult(
+        ok: false,
+        failure: ProxySelectFailure.rejected,
+        statusCode: statusCode,
+      );
     } catch (_) {
-      return false;
+      return const ProxySelectResult(
+        ok: false,
+        failure: ProxySelectFailure.apiUnreachable,
+      );
+    } finally {
+      client.close();
+    }
+  }
+
+  /// 实时连接的 chain 列表（`GET /connections`，2026-11-26 0.1.2
+  /// P0-4 诊断可见性）：每条连接一条字符串，chain 用 ` → ` 拼起来
+  ///（如 `Proxy → 直连节点 → direct`）；核心没跑、接口不通或
+  /// 回包解析失败时返回空列表，不抛异常。
+  Future<List<String>> getConnections() async {
+    final client = _httpClientFactory();
+    try {
+      final uri = Uri.parse('$_baseUrl/connections');
+      final request = await client
+          .getUrl(uri)
+          .timeout(const Duration(seconds: 10));
+      final response = await request.close().timeout(
+        const Duration(seconds: 10),
+      );
+      final body = await response.transform(utf8.decoder).join();
+      if (response.statusCode != HttpStatus.ok) return const [];
+      final parsed = jsonDecode(body);
+      if (parsed is! Map<String, dynamic>) return const [];
+      final connections = parsed['connections'];
+      if (connections is! List) return const [];
+      final chains = <String>[];
+      for (final entry in connections) {
+        if (entry is! Map<String, dynamic>) continue;
+        final chain = entry['chains'];
+        if (chain is List && chain.isNotEmpty) {
+          chains.add(chain.map((e) => e.toString()).join(' → '));
+        }
+      }
+      return chains;
+    } catch (_) {
+      return const [];
     } finally {
       client.close();
     }
@@ -137,8 +291,7 @@ class ClashApiClient {
 
   /// 读 selector 组 [groupName] 当前选中的出站名（`now` 字段）；
   /// 读不到返回 null。供界面确认切换结果用。
-  Future<String?> selectedProxy(String groupName) async {
-    final client = _httpClientFactory();
+  Future<String?> selectedProxy(String groupName) async {    final client = _httpClientFactory();
     try {
       final uri = Uri.parse(
         '$_baseUrl/proxies/${Uri.encodeComponent(groupName)}',

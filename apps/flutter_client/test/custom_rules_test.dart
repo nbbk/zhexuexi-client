@@ -167,12 +167,15 @@ void main() {
         customRules: rules,
       );
       final routeRules = _routeRules(result.config);
-      // 前两条是自定义规则（按加入顺序），第三条才是内置 TikTok。
-      expect(routeRules[0]['domain_suffix'], ['example.com']);
-      expect(routeRules[0]['outbound'], 'direct');
-      expect(routeRules[1]['domain_suffix'], ['work.example.net']);
-      expect(routeRules[1]['outbound'], 'Proxy');
-      expect(routeRules[2]['domain_suffix'], SingboxConfigBuilder.tiktokSuffixes);
+      // 前两条是基础规则（sniff / 私网旁路；劫持 DNS
+      // 已随 0.1.3 D 路第 1 步去掉，QUIC 阻断已随 0.1.4 D 路第 2 步
+      // 去掉、0.1.5 加回、0.1.6 回滚删掉），其后两条是自定义规则（按加入顺序），
+      // 再后才是内置 TikTok。
+      expect(routeRules[2]['domain_suffix'], ['example.com']);
+      expect(routeRules[2]['outbound'], 'direct');
+      expect(routeRules[3]['domain_suffix'], ['work.example.net']);
+      expect(routeRules[3]['outbound'], 'Proxy');
+      expect(routeRules[4]['domain_suffix'], SingboxConfigBuilder.tiktokSuffixes);
 
       final dnsRules = _dnsRules(result.config);
       expect(dnsRules[0]['domain_suffix'], ['example.com']);
@@ -199,8 +202,10 @@ void main() {
       // 整份配置是否含该串断言。
       final routeRules = _routeRules(result.config);
       final dnsRules = _dnsRules(result.config);
+      // route 前 2 条是前缀（无 domain_suffix 键），空安全取。
       final inRules = [...routeRules, ...dnsRules].any(
-        (r) => (r['domain_suffix'] as List).contains('example.com'),
+        (r) =>
+            (r['domain_suffix'] as List?)?.contains('example.com') ?? false,
       );
       expect(inRules, isFalse);
     });
@@ -220,10 +225,10 @@ void main() {
       ];
       final result = SingboxConfigBuilder.build([], customRules: rules);
       final routeRules = _routeRules(result.config);
-      expect(routeRules.length, 2);
-      expect(routeRules[0]['domain_suffix'], ['direct.example.com']);
-      expect(routeRules[0]['outbound'], 'direct');
-      expect(routeRules[1]['domain_suffix'], ['.cn']);
+      expect(routeRules.length, 4);
+      expect(routeRules[2]['domain_suffix'], ['direct.example.com']);
+      expect(routeRules[2]['outbound'], 'direct');
+      expect(routeRules[3]['domain_suffix'], ['.cn']);
       final dnsRules = _dnsRules(result.config);
       expect(dnsRules[0]['domain_suffix'], ['direct.example.com']);
       expect(dnsRules[0]['server'], 'dns-direct');
@@ -243,8 +248,8 @@ void main() {
         customRules: rules,
       );
       final globalRules = _routeRules(global.config);
-      expect(globalRules.length, 1);
-      expect(globalRules[0]['outbound'], 'direct');
+      expect(globalRules.length, 3);
+      expect(globalRules[2]['outbound'], 'direct');
       expect((global.config['route'] as Map)['final'], 'Proxy');
 
       final direct = SingboxConfigBuilder.build(
@@ -259,15 +264,16 @@ void main() {
         ],
       );
       final directRules = _routeRules(direct.config);
-      expect(directRules.length, 1);
-      expect(directRules[0]['outbound'], 'Proxy');
+      expect(directRules.length, 3);
+      expect(directRules[2]['outbound'], 'Proxy');
       expect((direct.config['route'] as Map)['final'], 'direct');
     });
 
     test('不传 customRules 时老调用不受影响', () {
       final result = SingboxConfigBuilder.build([_node('甲-直连')]);
       final routeRules = _routeRules(result.config);
-      expect(routeRules[0]['domain_suffix'], SingboxConfigBuilder.tiktokSuffixes);
+      // 0.1.6：前缀 2 条，TikTok 在 [2]（0.1.5 是 3 条前缀、TikTok 在 [3]）。
+      expect(routeRules[2]['domain_suffix'], SingboxConfigBuilder.tiktokSuffixes);
     });
   });
 
@@ -288,19 +294,24 @@ void main() {
       expect(tun['type'], 'tun');
       expect(tun['tag'], 'tun-in');
       expect(tun['auto_route'], isTrue);
-      expect(tun['stack'], 'gvisor');
+      // 0.1.3 D 路第 1 步：TUN 入站不写 dns_mode（劫持对一起去掉，
+      // 不写即默认，恢复 0.1.1 行为）。
+      expect(tun.containsKey('dns_mode'), isFalse);
+      // 回归（2026-11-26）：tun 入站不能写 `stack`——插件内置 schema
+      // 的 tun 分支 additionalProperties 为 false、属性表里没有 stack，
+      // 写了校验恒失败、开关与模式切换全卡死；不写时走 sing-box 默认栈。
+      expect(tun.containsKey('stack'), isFalse);
       // TUN 只改入站，出站与 route.final 不变。
       expect((on.config['route'] as Map)['final'], 'direct');
     });
   });
 
   group('DNS 摘要（切片 6：设置页展示用）', () {
-    test('摘要含 DoH 双路、DoT 兜底、仅 IPv4、不回落明文、防泄漏不可关闭', () {
+    test('摘要含 DoH 双路、仅 IPv4、不回落明文、防泄漏不可关闭', () {
       final summary = SingboxConfigBuilder.dnsSummary;
       final text = summary.map((e) => '${e.label}：${e.value}').join('\n');
-      expect(text, contains('1.1.1.1'));
-      expect(text, contains('dns.google'));
-      expect(text, contains('8.8.8.8:853'));
+      expect(text, contains('223.5.5.5'));
+      expect(text, contains('8.8.8.8/dns-query'));
       expect(text, contains('ipv4_only'));
       expect(text, contains('不回落'));
       expect(text, contains('不可关闭'));

@@ -29,6 +29,21 @@ extension NodeProtocolLabel on NodeProtocol {
         NodeProtocol.unknown => '未知',
       };
 
+  /// 圆圈里的协议简称：最多 3 个字符，放得进 44px 圆圈、不折行、
+  /// 不溢出（全名太长，Hysteria2/SOCKS5 会溢出圆圈）。全名在
+  /// 详情页里显示（见 node_detail_page.dart）。
+  String get shortLabel => switch (this) {
+        NodeProtocol.vless => 'VL',
+        NodeProtocol.vmess => 'VM',
+        NodeProtocol.trojan => 'TR',
+        NodeProtocol.shadowsocks => 'SS',
+        NodeProtocol.hysteria2 => 'HY2',
+        NodeProtocol.tuic => 'TU',
+        NodeProtocol.anytls => 'AT',
+        NodeProtocol.socks5 => 'SK',
+        NodeProtocol.unknown => '?',
+      };
+
   static NodeProtocol fromString(String value) => switch (value
       .toLowerCase()) {
         'vless' => NodeProtocol.vless,
@@ -71,6 +86,7 @@ class Node {
     this.congestionControl,
     this.subscriptionId,
     this.subscriptionName,
+    this.originDedupKey,
   });
 
   /// 显示名（订阅里的节点名；旧后缀 -中转/-直连，面板 1.4.25 起
@@ -111,7 +127,7 @@ class Node {
   /// 分组名（面板分组只决定包含哪些落地，订阅正文里没有分组名）。
   final String? group;
 
-  /// 明文节点（无 TLS）：节点页上标“明文”角标。
+  /// 明文节点（无 TLS）：详情页显示“明文”，节点行上不再标角标。
   final bool isPlainText;
 
   /// SOCKS5 用户名（uuidOrPassword 存密码；其余协议不用）。
@@ -147,6 +163,11 @@ class Node {
   /// 多订阅：来源订阅的显示名（节点页来源小标签用）。
   final String? subscriptionName;
 
+  /// 本地改动所基于的原始去重键（见 node_override_store.dart）：
+  /// 有本地改动时是改动前节点的 [dedupKey]，刷新后凭它找回覆盖；
+  /// 没改动时为 null。不参与 [dedupKey] 计算。
+  final String? originDedupKey;
+
   /// 去重键：节点内容相同即同一条（名字不同也算同一条，去重只看内容，
   /// 不看名字与订阅来源）。多订阅合并时内容相同的只留第一条。
   String get dedupKey => [
@@ -166,12 +187,20 @@ class Node {
       ].join('|');
 
   /// 测速延迟（毫秒）；null 表示未测速。
+  ///
+  /// 开关开着时是 Clash API 测的走代理的延迟，关着时是直连探测到服务器
+  /// 的延迟（见 direct_ping.dart）：两种口径不同，不能直接比。
   int? latencyMs;
 
   /// 测速失败（核心里没有该出站、超时、目标不可达等）；
   /// 与 [latencyMs] 为 null 的“未测速”区分开：失败的节点标灰、
   /// 不自动选，未测速的只显示“未测速”。
   bool latencyFailed = false;
+
+  /// 测速失败的原因（给用户看的短句，如“超时不可达”“连接失败”，
+  /// 节点行 tooltip 与测速汇总用）；未失败、或失败原因未知
+  /// （走代理测速只回成功/失败、不分原因）时为 null。
+  String? latencyFailureReason;
 
   @override
   String toString() =>

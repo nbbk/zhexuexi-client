@@ -1,9 +1,11 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:material_ui/material_ui.dart';
 
+import '../../brand/remote_config.dart';
 import '../../core/app_motion.dart';
 import '../../widgets/app_icon.dart';
 import '../../core/app_tokens.dart';
@@ -14,6 +16,9 @@ import '../../core/custom_rule.dart';
 import '../../core/routing_mode.dart';
 import '../../core/singbox_config.dart';
 import '../../core/singbox_core.dart';
+import '../../features/update/app_update_dialog.dart';
+import '../../services/app_update/app_update_provider.dart';
+import '../../services/app_update/app_updater.dart';
 import '../../services/custom_rules_notifier.dart';
 import '../../services/diagnostics_service.dart';
 import '../../services/nodes_notifier.dart';
@@ -22,6 +27,7 @@ import '../../services/remote_config_service.dart';
 import '../../services/routing_mode_notifier.dart';
 import '../../services/settings_notifier.dart';
 import '../../services/theme_notifier.dart';
+import '../../widgets/glass_card.dart';
 
 /// 设置页：常用在上、高级默认折叠在下，底部是“关于”（切片 6）。
 ///
@@ -35,8 +41,8 @@ import '../../services/theme_notifier.dart';
 ///   检查更新（切片 7 接远程配置中心：拉到新版就换品牌与订阅地址）。
 ///
 /// 开关只记本地状态的是两处（通知、开机自启 / 后台保活）：偏好已
-/// 存 shared_preferences，功能本身后续版本接入，行内副标题写明，
-/// 不让用户以为点了就有用。其余开关都真实生效。
+/// 存 shared_preferences，推送功能本身后续版本接入。其余开关都
+/// 真实生效。
 class SettingsPage extends ConsumerStatefulWidget {
   const SettingsPage({super.key});
 
@@ -110,9 +116,26 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     final settings = ref.read(settingsProvider);
     final rules = ref.read(customRulesProvider);
     final current = nodesState.selectedNode;
+    // P0-4 诊断可见性（2026-11-26 0.1.2）：诊断包里带当前生成配置的
+    // route/dns 段快照＋实时连接 chain 列表；核心没跑时连接列表
+    // 为空，不阻塞导出。
+    final configResult = SingboxConfigBuilder.build(
+      nodesState.nodes,
+      mode: modeState.mode,
+      selectedNodeName: nodesState.selectedNodeName,
+      customRules: ref.read(customRulesProvider.notifier).activeRules,
+      tunEnabled: settings.tun,
+    );
+    final configSnapshot = jsonEncode({
+      'route': configResult.config['route'],
+      'dns': configResult.config['dns'],
+    });
+    final connectionChains = await ref
+        .read(clashApiClientProvider)
+        .getConnections();
     final report = buildDiagnosticsReport(
       DiagnosticsReportInput(
-        appVersion: '0.1.0',
+        appVersion: appVersion,
         coreVersion: _coreVersion,
         coreStatusText: _coreStatusText(core),
         modeLabel: modeState.mode.label,
@@ -126,7 +149,14 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
         customRulesCount: rules.length,
         autoUpdateEnabled: settings.autoUpdate,
         coreLastError: core.lastError,
+        // 0.1.3 D 路修复 2：探活状态进诊断包（core.probeState；
+        // 失败只写探活位、不翻状态，状态仍显示“运行中”）。
+        probeFailed: core.probeState.failed,
+        probeError: core.probeState.error,
+        probeAt: core.probeState.at,
         nodesErrorMessage: nodesState.errorMessage,
+        configSnapshot: configSnapshot,
+        connectionChains: connectionChains,
       ),
     );
     if (!mounted) return;
@@ -219,6 +249,15 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   Future<void> _checkUpdate() async {
     final result = await ref.read(remoteConfigProvider.notifier).refresh();
     if (!mounted) return;
+    // failed 时先一句定性、再逐条列原因（与 _checkAppUpdate 的
+    // failureMessage 模式一致）。0.1.4 C 路 P0-3：删掉 0.1.2 的过时
+    // 尾注“检查走手机直连，不走代理，开关开了也帮不上”——0.1.3
+    // 已加代理轮，那句与失败行里的“（经代理）”标记直接矛盾；
+    // 改按实际写：直连失败后开关已开且核心已连接时会经代理再试
+    // 一轮，开关没开时代理轮不跑（失败行里会有一行“代理轮未跑”）。
+    final failedDetail = result.failures.isEmpty
+        ? '检查失败，请检查网络后重试。'
+        : '检查失败，请检查网络后重试。\n${result.failureMessage}';
     final message = switch (result.status) {
       RemoteConfigRefreshStatus.updated =>
         '已更新到配置 v${result.config.configVersion}。品牌已同步，订阅地址下次更新时生效。',
@@ -226,7 +265,8 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
         '已是最新配置（v${result.config.configVersion}）。',
       RemoteConfigRefreshStatus.offlineCached =>
         '配置中心暂时连不上，正在用上次的配置（v${result.config.configVersion}）。',
-      RemoteConfigRefreshStatus.failed => '检查失败，请检查网络后重试。',
+      RemoteConfigRefreshStatus.failed =>
+        '$failedDetail\n直连失败后，开关已开且核心已连接时会经代理再试一轮；开关没开时代理轮不跑，开着开关再点一次会经代理再试。',
       RemoteConfigRefreshStatus.notPublished =>
         '远程配置暂未发布（配置中心还未上线），请稍后再试。',
     };
@@ -234,7 +274,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('检查更新'),
-        content: Text('当前版本 0.1.0。\n$message'),
+        content: Text('当前版本 $appVersion。\n$message'),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(),
@@ -243,6 +283,57 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
         ],
       ),
     );
+  }
+
+  /// 检查应用更新：查 GitHub 最新 Release（主通道；失败走备通道
+  /// 自托管，本轮备通道未启用时如实报原因）。
+  /// - 有新版：弹更新弹窗（版本号＋Release 说明，点“立即更新”下载安装）；
+  /// - 已是最新：报当前版本号；
+  /// - 查不到：报每条通道的原因，不说“已是最新”，不静默。
+  /// 与上面那个“检查更新”（拉远程配置、换品牌与订阅地址）是两回事，
+  /// 入口分开写，不共用。
+  Future<void> _checkAppUpdate() async {
+    final result = await ref.read(appUpdateProvider.notifier).checkManual();
+    if (!mounted) return;
+    switch (result.status) {
+      case AppUpdateCheckStatus.available:
+        await showAppUpdateDialog(
+          context: context,
+          updater: ref.read(appUpdaterProvider),
+          info: result.latest!,
+        );
+      case AppUpdateCheckStatus.upToDate:
+        await showAppDialog<void>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('检查应用更新'),
+            content: Text('已是最新版本（v${result.currentVersion}）。'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: const Text('知道了'),
+              ),
+            ],
+          ),
+        );
+      case AppUpdateCheckStatus.failed:
+        await showAppDialog<void>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('检查应用更新'),
+            content: Text(
+              '检查失败，请检查网络后重试。\n${result.failureMessage}'
+              '\n检查走手机直连，不走代理，开关开了也帮不上。',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: const Text('知道了'),
+              ),
+            ],
+          ),
+        );
+    }
   }
 
   String _coreStatusText(CoreService core) {
@@ -269,7 +360,10 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     final rules = ref.watch(customRulesProvider);
     final remoteState = ref.watch(remoteConfigProvider);
 
-    return ListView(
+    // 夜晚模式（0.1.2）：包一层 GlassBackground，与首页/节点页同款
+    // 渐变底（#070F1C→#082E63→#0B3D84），不再露 Scaffold 纯色底。
+    return GlassBackground(
+      child: ListView(
       padding: const EdgeInsets.all(AppTokens.spacingMd),
       children: [
         const Text('常用设置', style: TextStyle(fontSize: 16)),
@@ -300,7 +394,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
         ),
         SwitchListTile(
           title: const Text('通知'),
-          subtitle: const Text('新版本提醒（后续版本接入）'),
+          subtitle: const Text('新版本提醒'),
           value: settings.notifications,
           onChanged: (value) =>
               ref.read(settingsProvider.notifier).setNotifications(value),
@@ -354,7 +448,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
           children: [
             SwitchListTile(
               title: const Text('TUN 模式'),
-              subtitle: const Text('系统级 TUN 接管流量，切换后重载配置'),
+              subtitle: const Text('系统级 TUN 接管流量，不开就没有代理；切换后重载配置'),
               value: settings.tun,
               onChanged: _onTunChanged,
             ),
@@ -437,7 +531,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
         const SizedBox(height: AppTokens.spacingMd),
         const Text('关于', style: TextStyle(fontSize: 16)),
         const SizedBox(height: AppTokens.spacingXs),
-        const ListTile(title: Text('客户端版本'), trailing: Text('0.1.0')),
+        ListTile(title: const Text('客户端版本'), trailing: Text(appVersion)),
         ListTile(
           title: const Text('sing-box 核心版本'),
           trailing: Text(_coreVersion),
@@ -453,9 +547,25 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
         ListTile(
           title: const Text('检查更新'),
           subtitle: const Text('拉一次远程配置，品牌与订阅地址跟着换'),
-          onTap: _checkUpdate,
+          // 0.1.4 C 路 P0-3：拉取最坏要几十秒，检查中给进度提示
+          // （RemoteConfigState.checking），避免用户以为没反应而
+          // 重复点；检查中再点也不开第二轮（notifier 等同一轮）。
+          trailing: remoteState.checking
+              ? const SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : null,
+          onTap: remoteState.checking ? null : _checkUpdate,
+        ),
+        ListTile(
+          title: const Text('检查应用更新'),
+          subtitle: const Text('从 GitHub 检查新版本，可下载安装'),
+          onTap: _checkAppUpdate,
         ),
       ],
+      ),
     );
   }
 

@@ -68,18 +68,22 @@ class _FakeAuthService extends AuthService {
 
   final String? loginSubscriptionUrl;
   final logoutCalls = <String>[];
+  final loginCalls = <String>[];
 
   @override
   Future<AuthLoginResult> login({
     required String panelDomain,
     required String username,
     required String password,
-  }) async => AuthLoginResult(
-    token: 'sess_0123456789abcdef',
-    username: username,
-    subscriptionUrl: loginSubscriptionUrl,
-    port: 9876,
-  );
+  }) async {
+    loginCalls.add(panelDomain);
+    return AuthLoginResult(
+      token: 'sess_0123456789abcdef',
+      username: username,
+      subscriptionUrl: loginSubscriptionUrl,
+      port: 9876,
+    );
+  }
 
   @override
   Future<void> saveLastPanelDomain(String domain) async {}
@@ -202,6 +206,44 @@ void main() {
         username: 'nianba',
         password: 'pw',
       );
+
+  group('AuthNotifier.resolvePanelDomain 解析顺序（0.1.3）', () {
+    test('远程配置有值、手填为空：用远程配置的 panel_domain', () {
+      expect(
+        AuthNotifier.resolvePanelDomain(
+          typed: '',
+          remoteDomain: 'ccpanel.jiankong.cf',
+        ),
+        'ccpanel.jiankong.cf',
+      );
+    });
+
+    test('手填优先：手填了就用手填的，不用远程配置的', () {
+      expect(
+        AuthNotifier.resolvePanelDomain(
+          typed: 'my.panel.local',
+          remoteDomain: 'ccpanel.jiankong.cf',
+        ),
+        'my.panel.local',
+      );
+    });
+
+    test('两边都没有：不发请求，提示先拉取配置或手填', () async {
+      final env = await buildEnv();
+      final ok = await env.container.read(authProvider.notifier).login(
+        panelDomain: '',
+        username: 'nianba',
+        password: 'pw',
+      );
+      expect(ok, isFalse);
+      expect(
+        env.container.read(authProvider).errorMessage,
+        contains('拉取远程配置'),
+      );
+      // 没调登录服务：一个请求都没发。
+      expect(env.auth.loginCalls, isEmpty);
+    });
+  });
 
   group('AuthNotifier.login 订阅去重', () {
     test('手动加过同一订阅：跳过绑定，登录仍成功', () async {
