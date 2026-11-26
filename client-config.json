@@ -1,0 +1,27 @@
+{
+  "brand": {
+    "accent_color": "#EEC362",
+    "app_name": "哲学系",
+    "logo_url": "",
+    "primary_color": "#082E63",
+    "support_url": ""
+  },
+  "config_version": 1,
+  "features": {
+    "auto_select": true,
+    "show_traffic": true,
+    "tun_default": true
+  },
+  "force_update": false,
+  "min_app_version": "0.1.2",
+  "panel": {
+    "min_panel_version": "1.4.28",
+    "panel_api_base": "https://ccpanel.jiankong.cf:11111",
+    "panel_domain": "ccpanel.jiankong.cf",
+    "subscription_backup_urls": [],
+    "subscription_format": "singbox",
+    "subscription_url": "https://cc.jiankong.cf/x9f2/sub_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+  },
+  "updated_at": "2026-11-26T18:36:00+08:00",
+  "signature": "wg+J4RNIqLjjptfP3o1z4wAcO0vkOUgfDMb6W/CsKZTHkp/exFrrXzxXJqWip9s94Wdi9DFjVmA6q/0YuDbyDA=="
+}
