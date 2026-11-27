@@ -115,13 +115,15 @@ class _FakeSubscriptionService extends SubscriptionService {
 /// 切片 9：账号登录桩（我的页只调 restore/logout，登录页调
 /// defaultPanelDomain；登录本身在 login_page_test 里测）。
 class _StubAuthNotifier extends AuthNotifier {
-  _StubAuthNotifier({this.initialUsername});
+  _StubAuthNotifier({this.initialUsername, this.initialPlanName});
 
   final String? initialUsername;
+  final String? initialPlanName;
   final calls = <String>[];
 
   @override
-  AuthState build() => AuthState(username: initialUsername);
+  AuthState build() =>
+      AuthState(username: initialUsername, planName: initialPlanName);
 
   @override
   Future<void> restore() async {}
@@ -163,11 +165,15 @@ Future<({_StubNodesNotifier nodes, _StubAuthNotifier auth})> _pumpPage(
   String? bindError,
   bool bound = true,
   String? authUsername,
+  String? authPlanName,
 }) async {
   SharedPreferences.setMockInitialValues({});
   final stub = _StubNodesNotifier(state, bindError: bindError);
   final autoRefresh = _FakeAutoRefresh();
-  final authStub = _StubAuthNotifier(initialUsername: authUsername);
+  final authStub = _StubAuthNotifier(
+    initialUsername: authUsername,
+    initialPlanName: authPlanName,
+  );
   await tester.pumpWidget(
     ProviderScope(
       overrides: [
@@ -217,6 +223,33 @@ void main() {
     expect(find.textContaining('（剩'), findsOneWidget);
     expect(find.text('上次更新：2026-11-23 08:30'), findsOneWidget);
     expect(find.text('限流按全部节点流量算'), findsOneWidget);
+  });
+
+  testWidgets('已绑定有档位：订阅卡片显示套餐名（0.1.12）', (tester) async {
+    await _pumpPage(
+      tester,
+      NodesState(
+        status: NodesStatus.loaded,
+        userinfo: _info(),
+        lastUpdated: DateTime(2026, 11, 23, 8, 30),
+      ),
+      authUsername: 'nianba',
+      authPlanName: '标准版',
+    );
+    expect(find.text('套餐：标准版'), findsOneWidget);
+  });
+
+  testWidgets('已绑定无档位：不显示套餐行，不留占位（0.1.12）', (tester) async {
+    await _pumpPage(
+      tester,
+      NodesState(
+        status: NodesStatus.loaded,
+        userinfo: _info(),
+        lastUpdated: DateTime(2026, 11, 23, 8, 30),
+      ),
+      authUsername: 'nianba',
+    );
+    expect(find.textContaining('套餐：'), findsNothing);
   });
 
   testWidgets('无 userinfo 头：三格显示“—”不编数据', (tester) async {

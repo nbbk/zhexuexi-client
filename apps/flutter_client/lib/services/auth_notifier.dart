@@ -11,10 +11,18 @@ final authServiceProvider = Provider<AuthService>((ref) => AuthService());
 
 /// 账号登录状态。
 class AuthState {
-  const AuthState({this.username, this.loading = false, this.errorMessage});
+  const AuthState({
+    this.username,
+    this.planName,
+    this.loading = false,
+    this.errorMessage,
+  });
 
   /// 已登录的账号名；null 表示免登录模式。
   final String? username;
+
+  /// 登录回包里的套餐档位名；未登录或没有档位时为 null。
+  final String? planName;
 
   /// 是否正在登录。
   final bool loading;
@@ -26,11 +34,13 @@ class AuthState {
 
   AuthState copyWith({
     Object? username = _unset,
+    Object? planName = _unset,
     bool? loading,
     Object? errorMessage = _unset,
   }) {
     return AuthState(
       username: username == _unset ? this.username : username as String?,
+      planName: planName == _unset ? this.planName : planName as String?,
       loading: loading ?? this.loading,
       errorMessage: errorMessage == _unset
           ? this.errorMessage
@@ -60,7 +70,10 @@ class AuthNotifier extends Notifier<AuthState> {
     try {
       final session = await ref.read(authServiceProvider).restoreSession();
       if (session != null) {
-        state = state.copyWith(username: session.username);
+        state = state.copyWith(
+          username: session.username,
+          planName: session.planName,
+        );
       }
     } catch (_) {
       // 安全存储读失败（如测试环境没配通道）就当未登录。
@@ -136,14 +149,20 @@ class AuthNotifier extends Notifier<AuthState> {
     // 账号下没有订阅：登录成功，不绑定，用户可再手动绑链接。
     final subscriptionUrl = result.subscriptionUrl;
     if (subscriptionUrl == null || subscriptionUrl.isEmpty) {
-      state = AuthState(username: result.username);
+      state = AuthState(
+        username: result.username,
+        planName: result.planName,
+      );
       return true;
     }
     // 该订阅已经绑过：节点已经在列表里，不用再拉一次，订阅列表里
     // 也不再多一条重复项。跳过绑定时登录仍算成功；旧订阅就是当前
     // 订阅，不用回滚。
     if (await _isAlreadyBound(subscriptionUrl)) {
-      state = AuthState(username: result.username);
+      state = AuthState(
+        username: result.username,
+        planName: result.planName,
+      );
       return true;
     }
     // 绑定该账号的订阅；失败回滚本次登录，不留半登录态。
@@ -157,7 +176,10 @@ class AuthNotifier extends Notifier<AuthState> {
       );
       return false;
     }
-    state = AuthState(username: result.username);
+    state = AuthState(
+      username: result.username,
+      planName: result.planName,
+    );
     return true;
   }
 

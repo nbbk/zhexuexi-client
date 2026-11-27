@@ -218,6 +218,7 @@ class _MePageState extends ConsumerState<MePage> {
     final loading = nodesState.status == NodesStatus.loading;
     final auth = ref.watch(authProvider);
     final username = auth.username;
+    final planName = auth.planName;
     final announcementList = ref.watch(announcementsProvider).valueOrNull;
 
     return GlassBackground(
@@ -285,6 +286,12 @@ class _MePageState extends ConsumerState<MePage> {
                   Text('已用 / 总量：${usedTotalText(info)}'),
                   const SizedBox(height: 4),
                   Text('到期日：${expireText(info)}'),
+                  // 套餐档位名（0.1.12）：登录回包 plan_name / plan.name；
+                  // 未登录或没有档位时这一行不显示，不留占位。
+                  if (planName != null && planName.isNotEmpty) ...[
+                    const SizedBox(height: 4),
+                    Text('套餐：$planName'),
+                  ],
                   const SizedBox(height: 4),
                   // 限流展示（切片 8）：进度条 + 状态文案，只按 userinfo 头
                   // 里已有的数算；不限量或没拉到用量时不显示这一段。

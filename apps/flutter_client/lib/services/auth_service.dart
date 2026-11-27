@@ -29,6 +29,10 @@ class AuthService {
   /// 登录成功的账号名（只用于我的页显示，不敏感）。
   static const String _usernameKey = 'client_login_username';
 
+  /// 登录回包里的套餐档位名（0.1.12：只用于我的页显示，不敏感，
+  /// 存 shared_preferences；退出登录时清除）。
+  static const String _planNameKey = 'client_login_plan_name';
+
   /// 上次登录成功时服务器实际响应的端口（非敏感，下次优先试它）。
   static const String _rememberedPortKey = 'client_login_port';
 
@@ -93,6 +97,12 @@ class AuthService {
     return prefs.getString(_usernameKey);
   }
 
+  /// 读登录回包里的套餐档位名；没有返回 null。
+  Future<String?> readPlanName() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(_planNameKey);
+  }
+
   /// 读记住的端口；没有返回 null（段外的值不认，当作没有）。
   Future<int?> readRememberedPort() async {
     final prefs = await SharedPreferences.getInstance();
@@ -123,7 +133,11 @@ class AuthService {
     if (token == null || token.isEmpty) return null;
     final username = await readUsername();
     if (username == null || username.isEmpty) return null;
-    return AuthSession(token: token, username: username);
+    return AuthSession(
+      token: token,
+      username: username,
+      planName: await readPlanName(),
+    );
   }
 
   /// 登录。
@@ -204,6 +218,21 @@ class AuthService {
     }
   }
 
+  /// 登录回包里的套餐档位名（0.1.12，纯函数）：`plan_name` 字段
+  /// 优先，空时退到 `plan` 对象的 `name` 字段；都没有或全空时
+  /// 为 null（管理员登录 plan 为 null、plan_name 为 ''；没挂
+  /// 档位时 plan.name 也为空）。只做展示，不做鉴权。
+  static String? resolvePlanName(Map<String, dynamic> data) {
+    final top = (data['plan_name'] as String?)?.trim();
+    if (top != null && top.isNotEmpty) return top;
+    final plan = data['plan'];
+    if (plan is Map<String, dynamic>) {
+      final name = (plan['name'] as String?)?.trim();
+      if (name != null && name.isNotEmpty) return name;
+    }
+    return null;
+  }
+
   /// 成功响应的解析：不是 JSON 或缺 token，都是面板返回的数据不对
   ///（开发侧问题）。
   Future<AuthLoginResult> _mapSuccess(
@@ -232,13 +261,20 @@ class AuthService {
       );
     }
     final username = data['username'] as String? ?? '';
+    final planName = resolvePlanName(data);
     final subscriptionUrl = data['subscription_url'] as String?;
     await _storage.write(key: _sessionTokenKey, value: token);
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_usernameKey, username);
+    if (planName != null) {
+      await prefs.setString(_planNameKey, planName);
+    } else {
+      await prefs.remove(_planNameKey);
+    }
     return AuthLoginResult(
       token: token,
       username: username,
+      planName: planName,
       subscriptionUrl:
           subscriptionUrl == null || subscriptionUrl.isEmpty
               ? null
@@ -290,6 +326,7 @@ class AuthService {
     await _storage.delete(key: _sessionTokenKey);
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_usernameKey);
+    await prefs.remove(_planNameKey);
   }
 
   /// 当前 UA（与订阅拉取同一套，见 subscription_service.dart）。
@@ -298,10 +335,17 @@ class AuthService {
 
 /// 恢复出的登录会话（令牌 + 账号名）。
 class AuthSession {
-  const AuthSession({required this.token, required this.username});
+  const AuthSession({
+    required this.token,
+    required this.username,
+    this.planName,
+  });
 
   final String token;
   final String username;
+
+  /// 登录回包里的套餐档位名；没有档位时为 null。
+  final String? planName;
 }
 
 /// 一次登录成功的结果。
@@ -309,6 +353,7 @@ class AuthLoginResult {
   const AuthLoginResult({
     required this.token,
     required this.username,
+    this.planName,
     required this.subscriptionUrl,
     required this.port,
   });
@@ -318,6 +363,9 @@ class AuthLoginResult {
 
   /// 登录成功的账号名。
   final String username;
+
+  /// 登录回包里的套餐档位名；没有档位时为 null。
+  final String? planName;
 
   /// 该账号名下的订阅完整链接；账号下没有订阅时为 null，
   /// 此时登录成功但不绑定订阅。

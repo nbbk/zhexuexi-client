@@ -64,9 +64,10 @@ class _FakeSecureStorage extends FlutterSecureStorage {
 
 /// 登录桩：按预设回包返回，不发请求。
 class _FakeAuthService extends AuthService {
-  _FakeAuthService({this.loginSubscriptionUrl});
+  _FakeAuthService({this.loginSubscriptionUrl, this.planName});
 
   final String? loginSubscriptionUrl;
+  final String? planName;
   final logoutCalls = <String>[];
   final loginCalls = <String>[];
 
@@ -80,6 +81,7 @@ class _FakeAuthService extends AuthService {
     return AuthLoginResult(
       token: 'sess_0123456789abcdef',
       username: username,
+      planName: planName,
       subscriptionUrl: loginSubscriptionUrl,
       port: 9876,
     );
@@ -179,13 +181,17 @@ void main() {
     String? primaryUrl,
     List<String> customUrls = const [],
     String? bindError,
+    String? planName,
   }) async {
     final storage = _FakeSecureStorage();
     final store = SubscriptionStore(storage: storage);
     for (final url in customUrls) {
       expect((await store.addCustom(url)).error, isNull);
     }
-    final auth = _FakeAuthService(loginSubscriptionUrl: loginSubscriptionUrl);
+    final auth = _FakeAuthService(
+      loginSubscriptionUrl: loginSubscriptionUrl,
+      planName: planName,
+    );
     final service = _FakeSubscriptionService()..primaryUrl = primaryUrl;
     final nodes = _StubNodesNotifier(bindError: bindError);
     final container = ProviderContainer(
@@ -261,6 +267,12 @@ void main() {
       expect(await doLogin(env.container), isTrue);
       expect(env.container.read(authProvider).username, 'nianba');
       expect(env.nodes.bindCalls, [_loginUrl]);
+    });
+
+    test('登录成功：档位名进状态（0.1.12）', () async {
+      final env = await buildEnv(planName: '标准版');
+      expect(await doLogin(env.container), isTrue);
+      expect(env.container.read(authProvider).planName, '标准版');
     });
 
     test('主订阅已是同一条：跳过绑定', () async {

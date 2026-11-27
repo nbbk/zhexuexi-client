@@ -81,6 +81,23 @@ const _successBody =
     '{"token":"sess_0123456789abcdef","username":"nianba",'
     '"subscription_url":"https://example.com/x9f2/sub_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}';
 
+// 真实形状的登录回包（面板 client_login.go）：plan_name 顶层字段 +
+// plan 对象（name 为档位名）。
+const _successBodyWithPlan =
+    '{"token":"sess_0123456789abcdef","username":"nianba",'
+    '"plan_name":"标准版",'
+    '"plan":{"id":"pl-abc123","name":"标准版","group_id":"","group_name":"",'
+    '"traffic_limit_mb":102400,"traffic_limit_mode":"period",'
+    '"reset_mode":"monthly","traffic_used":123456,"expires_at":0},'
+    '"subscription_url":"https://example.com/x9f2/sub_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}';
+
+// 管理员登录：plan 为 null、plan_name 为 ''。
+const _successBodyAdmin =
+    '{"token":"sess_0123456789abcdef","username":"nianba",'
+    '"plan_name":"",'
+    '"plan":null,'
+    '"subscription_url":"https://example.com/x9f2/sub_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}';
+
 void main() {
   setUp(() {
     SharedPreferences.setMockInitialValues({});
@@ -396,6 +413,88 @@ void main() {
       );
       expect(result.subscriptionUrl, isNull);
       expect(result.username, 'nianba');
+    });
+  });
+
+  group('planName 解析（0.1.12）', () {
+    test('plan_name 优先：回包 plan_name 有值就用它', () {
+      expect(
+        AuthService.resolvePlanName({
+          'plan_name': '标准版',
+          'plan': {'name': '旧档位'},
+        }),
+        '标准版',
+      );
+    });
+
+    test('plan_name 为空：退到 plan.name', () {
+      expect(
+        AuthService.resolvePlanName({
+          'plan_name': '',
+          'plan': {'name': '标准版'},
+        }),
+        '标准版',
+      );
+    });
+
+    test('管理员：plan 为 null、plan_name 为空 → null', () {
+      expect(
+        AuthService.resolvePlanName({'plan_name': '', 'plan': null}),
+        isNull,
+      );
+    });
+
+    test('没有 plan 相关字段 → null', () {
+      expect(AuthService.resolvePlanName({'token': 'x'}), isNull);
+    });
+
+    test('登录成功：档位名进结果、进持久化，恢复会话也能读到', () async {
+      final storage = _FakeSecureStorage();
+      final service = AuthService(
+        dio: _fakeDio({9876: (status: 200, body: _successBodyWithPlan)}),
+        storage: storage,
+      );
+      final result = await service.login(
+        panelDomain: 'panel.example.com',
+        username: 'nianba',
+        password: 'pw',
+      );
+      expect(result.planName, '标准版');
+      expect(await service.readPlanName(), '标准版');
+      final session = await service.restoreSession();
+      expect(session?.planName, '标准版');
+    });
+
+    test('管理员登录：无档位，旧值不残留', () async {
+      SharedPreferences.setMockInitialValues(
+        {'client_login_plan_name': '旧档位'},
+      );
+      final service = AuthService(
+        dio: _fakeDio({9876: (status: 200, body: _successBodyAdmin)}),
+        storage: _FakeSecureStorage(),
+      );
+      final result = await service.login(
+        panelDomain: 'panel.example.com',
+        username: 'nianba',
+        password: 'pw',
+      );
+      expect(result.planName, isNull);
+      expect(await service.readPlanName(), isNull);
+    });
+
+    test('登出：档位名清除', () async {
+      final service = AuthService(
+        dio: _fakeDio({9876: (status: 200, body: _successBodyWithPlan)}),
+        storage: _FakeSecureStorage(),
+      );
+      await service.login(
+        panelDomain: 'panel.example.com',
+        username: 'nianba',
+        password: 'pw',
+      );
+      expect(await service.readPlanName(), '标准版');
+      await service.logout();
+      expect(await service.readPlanName(), isNull);
     });
   });
 
