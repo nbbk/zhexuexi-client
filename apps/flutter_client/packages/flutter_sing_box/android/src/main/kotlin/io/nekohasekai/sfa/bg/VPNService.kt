@@ -27,13 +27,14 @@ class VPNService :
     companion object {
         private const val TAG = "VPNService"
 
-        // protect() 诊断计数（2026-11-26 二轮修复）：
+        // protect() 诊断计数（2026-11-26 二轮修复；0.1.9 纠正）：
         // 上游 1.14.4 common/dialer/default.go 只在
         // networkManager.AutoDetectInterface() 为真时才给拨号挂
-        // ProtectFunc()，而 route/network.go 禁止在 Android 上开
-        // auto_detect_interface，所以 Android 上核心拨号根本不会
-        // 走到这里——计数恒为 0 本身就是证据（不是“没记到”）。
-        // 若某天计数非 0，失败数直接说明这台机子 protect 生效与否。
+        // ProtectFunc()。0.1.9 起配置写 auto_detect_interface: true，
+        // Android 上 C.IsLinux 为真、guard 不触发，拨号会走到这里——
+        // 计数非 0 是修法生效的证据，失败数说明这台机子 protect
+        // 是否生效；0.1.8 及之前配置没开，计数恒为 0 是正常的
+        // （不是“没记到”）。
         var protectCalls = 0
             private set
         var protectFailures = 0
@@ -73,9 +74,10 @@ class VPNService :
     // 2026-11-26 二轮修复：记下 protect() 的返回值（之前直接丢掉，
     // 真机上生效与否无从查证）。失败必记 WARN（小米等机型有
     // EPERM 兜底的前科）；成功记 DEBUG（拨号频繁，别刷屏）。
-    // 注意：见 companion 注释——Android 上核心拨号不走这条路时
-    // 这里恒为 0，环路隔离不靠它，靠下面 openTun 里的
-    // addDisallowedApplication(自家包名)。
+    // 注意：0.1.9 起配置写 auto_detect_interface: true，核心拨号
+    // 会走这条路（Android 上 guard 不触发，见 singbox_config.dart
+    // 的 route 注释）；环路隔离是这里的 protect(fd) 与下面 openTun
+    // 里的 addDisallowedApplication(自家包名) 两道并存。
     override fun autoDetectInterfaceControl(fd: Int) {
         protectCalls++
         val ok = protect(fd)
@@ -198,17 +200,14 @@ class VPNService :
                 }
             }
 
-            // 2026-11-26 二轮修复（TUN 环路硬隔离）：核心自己的 socket
-            // 必须绕过 TUN，否则出站向节点拨号的 SYN 进 TUN 后又被
-            // 当作新连接路由给出站，永不到达节点（拨测超时、YouTube
-            // 打不开、上行高企下行零）。上游三条配置路在 Android 上
-            // 全是死路（route.auto_detect_interface / default_interface
-            // / 出站 bind_interface 写了就启动报错，见 singbox_config.dart
-            // 的 route 注释）；而拨号挂 ProtectFunc() 的分支在 Android
-            // 上恒为假，protect(fd) 根本不会被调——所以在这里用
-            // VpnService 自带的分应用机制硬隔离：核心跑在 :remote
-            // 进程、与 App 同 UID，把自家包排除出 VPN 后，核心发出
-            // 的 socket 直接走物理网卡，不进 TUN。
+            // 2026-11-26 二轮修复（TUN 环路硬隔离；0.1.9 补充）：
+            // 核心自己的 socket 必须绕过 TUN，否则出站向节点拨号
+            // 的 SYN 进 TUN 后又被当作新连接路由给出站，永不到达节点
+            // （拨测超时、YouTube 打不开、上行高企下行零）。0.1.9
+            // 起配置另开一条路：route.auto_detect_interface 让拨号
+            // 挂 ProtectFunc() 走 protect(fd)（见 companion 注释）；
+            // 这行 addDisallowedApplication 仍保留作插件层隔离，
+            // 两道隔离并存，不互相替代。
             // - 只在 perAppProxyMode 不是 INCLUDE 时加：INCLUDE 模式
             //   下方已把自家包写进 allowed 列表，两边同时写同一个包
             //   会冲突；INCLUDE 本来就是“只有这些应用走 VPN”，自家包

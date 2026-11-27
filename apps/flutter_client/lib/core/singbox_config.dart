@@ -604,24 +604,52 @@ static SingboxConfigResult build(
             },
         ],
         'outbounds': outbounds,
-        // route：注意这里故意不写 `auto_detect_interface` /
-        // `default_interface` / 出站 `bind_interface`（2026-11-26
-        // 二轮修复，上游 sing-box 1.14.4 源码核实）：
-        // - `NewNetworkManager`（route/network.go）里这三项只要写了
-        //   就会在 Android 上直接报错（"only supported on Linux,
-        //   Windows and macOS"），核心起不来——文档 `auto_route`
-        //   一节的三选一在 Android 上全是死路；
-        // - 同一处源码还说明：出站拨号挂 `ProtectFunc()`（调
-        //   `autoDetectInterfaceControl` 即 `protect(fd)`）只在
-        //   `AutoDetectInterface()` 为真时才发生，Android 上恒为
-        //   假——所以插件里 `protect(fd)` 那行代码在 Android 上
-        //   根本不会被核心拨号走，之前“代码里有 protect 就安全”
-        //   的判断不成立；
-        // - Android 上真正的硬隔离在插件层
-        //   `VPNService.openTun`：`addDisallowedApplication(自家包名)`
-        //   让核心（与 App 同 UID 的 :remote 进程）发出的 socket
-        //   直接绕过 TUN，不依赖 protect() 是否被调、是否成功。
+        // route：0.1.9 只加 `auto_detect_interface: true`（单变量，
+        // 其余一行不动：不加 `default_interface` /
+        // `override_android_vpn` / 出站 `bind_interface`，不改
+        // sniff/DNS/MTU/栈、不加回 QUIC 阻断、不动 HY2 出站）。
+        //
+        // 为什么加（2026-11-27，016 机制报告已证，0.1.8 真机又把
+        // Brutal 与节点双双脱罪，TUN 环路黑断成头号嫌疑）：
+        // - `route/network.go:73-74` 的 guard 是
+        //   `options.AutoDetectInterface && !(C.IsLinux || C.IsDarwin
+        //   || C.IsWindows)`，而 `constant/os.go:23` 规定
+        //   `IsLinux = goos.IsLinux == 1 || goos.IsAndroid == 1`——
+        //   Android 上 `C.IsLinux` 为真，guard 不触发，写了不报错。
+        //   2026-11-26 二轮修复的注释把 `goos.IsLinux`（Android 上
+        //   为 0）与 `constant.IsLinux`（Android 上为真）混为一谈，
+        //   “Android 上开就会报错”是错的，本次一并纠正。
+        // - 写上后 `NewNetworkManager` 挂载 `ProtectFunc()`：拨号走
+        //   `protect(fd)` 绕过 TUN（`common/dialer/default.go:105-127`，
+        //   只在 `AutoDetectInterface()` 为真时挂载；Kotlin 侧
+        //   `PlatformInterfaceWrapper.usePlatformAutoDetectInterfaceControl()
+        //   = true`，`VPNService.autoDetectInterfaceControl` 即
+        //   `protect(fd)`）。`addDisallowedApplication` 仍保留作
+        //   插件层隔离，两道隔离并存。
+        //
+        // 残余风险（已复核，任务书原说法有误，此处以源码为准）：
+        // - libbox 侧 `platformInterfaceWrapper
+        //   .UsePlatformDefaultInterfaceMonitor()` 恒为 true
+        //   （`experimental/libbox/service.go:107`），所以
+        //   `NewNetworkManager` 走平台监视器分支
+        //   （`platformDefaultInterfaceMonitor`，`monitor.go`），
+        //   不走 `tun.NewNetworkUpdateMonitor` →
+        //   `NewDefaultInterfaceMonitor` 分支——任务书说的“插件侧未实现”
+        //   不成立；那条分支只在非 libbox 的独立 sing-box 上才走，
+        //   且 `sing-tun` 的 `NewDefaultInterfaceMonitor`
+        //   （`monitor_shared.go:58`）本身恒返回成功，不会报
+        //   `auto_detect_interface unsupported on current platform`。
+        // - 真正的残余风险在平台分支：`platformDefaultInterfaceMonitor
+        //   .Start()` 调 Kotlin 的 `StartDefaultInterfaceMonitor`，
+        //   若该回调在真机上建不起来/不回调，核心启动即失败——
+        //   `sing-box check` 验不到这一层（check 不启动监视器），
+        //   真机启动才是最终裁决；0.1.9 的采样时序会把它记下来
+        //   （核心起不来 → 无采样、诊断包印“无”）。
+        // - 另：`NewNetworkUpdateMonitor` 在 Android 上若被走到，
+        //   netlink 被禁会直接报 `ErrNetlinkBanned`；libbox 路径下
+        //   走不到它，记在这里防以后有人换路径时踩坑。
         'route': {
+          'auto_detect_interface': true,
           'rules': routeRules,
           'final': routeFinal,
           'default_domain_resolver': 'dns-direct',

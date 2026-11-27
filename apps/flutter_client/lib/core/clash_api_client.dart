@@ -40,7 +40,42 @@ class ProxySelectResult {
   final int? statusCode;
 }
 
-/// 测速失败的原因（调用方写进节点的失败原因，不要只标失败不写原因）。
+/// 一条实时连接的完整条目（`GET /connections` 的原始字段）。
+///
+/// `chains` 是路由追踪的出站链（叶子出站在首位，如
+/// `['测试机-hy2-443-A', '测试机', 'Proxy']`）；`upload` /
+/// `download` 是该连接累计的上下行字节（不是速率）。
+class ConnectionEntry {
+  const ConnectionEntry({
+    required this.chains,
+    required this.upload,
+    required this.download,
+  });
+
+  /// 出站链（叶子在前）；空链的条目由 [ClashApiClient.getConnectionEntries]
+  /// 直接丢掉，不进采样聚合。
+  final List<String> chains;
+
+  /// 该连接累计上行字节。
+  final int upload;
+
+  /// 该连接累计下行字节。
+  final int download;
+}
+
+/// 一次 DNS 探针的结果（Clash API `GET /dns/query`）。
+class DnsQueryResult {
+  const DnsQueryResult({required this.ok, this.latencyMs, this.error});
+
+  /// 是否查到（HTTP 200 且 DNS Rcode 为 0）。
+  final bool ok;
+
+  /// 往返耗时（毫秒）；失败时为 null。
+  final int? latencyMs;
+
+  /// 失败原因（人话，采样行直接用）；成功时为 null。
+  final String? error;
+}
 enum ProxyDelayFailure {
   /// 连不上 Clash API（核心没起、端口没监听、请求超时）。
   apiUnreachable,
@@ -253,11 +288,10 @@ class ClashApiClient {
     }
   }
 
-  /// 实时连接的 chain 列表（`GET /connections`，2026-11-26 0.1.2
-  /// P0-4 诊断可见性）：每条连接一条字符串，chain 用 ` → ` 拼起来
-  ///（如 `Proxy → 直连节点 → direct`）；核心没跑、接口不通或
-  /// 回包解析失败时返回空列表，不抛异常。
-  Future<List<String>> getConnections() async {
+  /// 实时连接的完整条目（`GET /connections`，2026-11-27 0.1.9
+  /// 采样时序）：每条含 chain、累计上下行字节；核心没跑、接口不通或
+  /// 回包解析失败时返回空列表，不抛异常。空 chain 的条目直接丢掉。
+  Future<List<ConnectionEntry>> getConnectionEntries() async {
     final client = _httpClientFactory();
     try {
       final uri = Uri.parse('$_baseUrl/connections');
@@ -273,20 +307,87 @@ class ClashApiClient {
       if (parsed is! Map<String, dynamic>) return const [];
       final connections = parsed['connections'];
       if (connections is! List) return const [];
-      final chains = <String>[];
+      final entries = <ConnectionEntry>[];
       for (final entry in connections) {
         if (entry is! Map<String, dynamic>) continue;
         final chain = entry['chains'];
-        if (chain is List && chain.isNotEmpty) {
-          chains.add(chain.map((e) => e.toString()).join(' → '));
-        }
+        if (chain is! List || chain.isEmpty) continue;
+        entries.add(
+          ConnectionEntry(
+            chains: chain.map((e) => e.toString()).toList(),
+            upload: (entry['upload'] as num?)?.toInt() ?? 0,
+            download: (entry['download'] as num?)?.toInt() ?? 0,
+          ),
+        );
       }
-      return chains;
+      return entries;
     } catch (_) {
       return const [];
     } finally {
       client.close();
     }
+  }
+
+  /// DNS 探针（2026-11-27 0.1.9 采样时序）：`GET /dns/query?name=…&type=A`，
+  /// 走核心的 DNS 规则选服务器（不经过 Dart 侧 DNS）。
+  ///
+  /// Dart 侧超时 15 秒，大于服务端 `DNSTimeout = 10s`
+  ///（`constant/timeout.go:11`）：服务端预算一到先回 500，Dart 必须
+  /// 等到那个响应；Dart 先超时会把“服务端已判失败”误报成“连不上”。
+  /// 成功只认 HTTP 200 且回包 `Status`（DNS Rcode）为 0；其余一律
+  /// 失败（原因写进 [DnsQueryResult.error]），不抛异常。
+  Future<DnsQueryResult> queryDns(
+    String name, {
+    String type = 'A',
+  }) async {
+    final stopwatch = Stopwatch()..start();
+    final client = _httpClientFactory();
+    try {
+      final uri = Uri.parse(
+        '$_baseUrl/dns/query?name=${Uri.encodeQueryComponent(name)}'
+        '&type=${Uri.encodeQueryComponent(type)}',
+      );
+      const timeout = Duration(seconds: 15);
+      final request = await client.getUrl(uri).timeout(timeout);
+      final response = await request.close().timeout(timeout);
+      final body = await response.transform(utf8.decoder).join();
+      stopwatch.stop();
+      if (response.statusCode != HttpStatus.ok) {
+        return DnsQueryResult(
+          ok: false,
+          error: 'HTTP ${response.statusCode}',
+        );
+      }
+      final parsed = jsonDecode(body);
+      if (parsed is! Map<String, dynamic>) {
+        return const DnsQueryResult(ok: false, error: '回包不是 JSON');
+      }
+      final status = parsed['Status'];
+      if (status is num && status != 0) {
+        return DnsQueryResult(ok: false, error: 'DNS Rcode $status');
+      }
+      if (status is! num) {
+        return const DnsQueryResult(ok: false, error: '回包无 Status 字段');
+      }
+      return DnsQueryResult(ok: true, latencyMs: stopwatch.elapsedMilliseconds);
+    } catch (e) {
+      stopwatch.stop();
+      if (e is TimeoutException) {
+        return const DnsQueryResult(ok: false, error: '15 秒超时');
+      }
+      return const DnsQueryResult(ok: false, error: '控制接口无响应');
+    } finally {
+      client.close();
+    }
+  }
+
+  /// 实时连接的 chain 列表（`GET /connections`，2026-11-26 0.1.2
+  /// P0-4 诊断可见性）：每条连接一条字符串，chain 用 ` → ` 拼起来
+  ///（如 `Proxy → 直连节点 → direct`）；核心没跑、接口不通或
+  /// 回包解析失败时返回空列表，不抛异常。
+  Future<List<String>> getConnections() async {
+    final entries = await getConnectionEntries();
+    return entries.map((e) => e.chains.join(' → ')).toList();
   }
 
   /// 读 selector 组 [groupName] 当前选中的出站名（`now` 字段）；

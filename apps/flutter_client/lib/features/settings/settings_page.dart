@@ -157,6 +157,11 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
         nodesErrorMessage: nodesState.errorMessage,
         configSnapshot: configSnapshot,
         connectionChains: connectionChains,
+        // 0.1.9 采样时序＋黑断时刻＋核心日志尾巴（CoreService 的
+        // 内存环形缓冲；核心停即清空，导出时没跑就是空，不编造）。
+        timeline: core.samplingTimeline,
+        blackoutAt: core.blackoutAt,
+        coreLogTail: core.coreLogTail,
       ),
     );
     if (!mounted) return;

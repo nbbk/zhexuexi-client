@@ -16,12 +16,18 @@ import 'package:zhexuexi_client/core/singbox_core.dart';
 /// 插件 fake：只记调用、不碰平台通道，状态由测试手动推。
 class _FakePlugin extends FlutterSingBox {
   final _stateController = StreamController<ProxyState>.broadcast();
+  final _logController = StreamController<List<ClientLog>>.broadcast();
   int startCalls = 0;
   int stopCalls = 0;
   int reloadCalls = 0;
 
   @override
   Stream<ProxyState> get proxyStateStream => _stateController.stream;
+
+  // 0.1.9：日志流也桩掉——真实现的 logStream 走 EventChannel，
+  // 纯 test() 里 ServicesBinding 未初始化，listen 会抛错。
+  @override
+  Stream<List<ClientLog>> get logStream => _logController.stream;
 
   @override
   Future<void> init() async {}
@@ -49,7 +55,12 @@ class _FakePlugin extends FlutterSingBox {
 
   void emit(ProxyState state) => _stateController.add(state);
 
-  Future<void> close() => _stateController.close();
+  void emitLogs(List<ClientLog> logs) => _logController.add(logs);
+
+  Future<void> close() async {
+    await _stateController.close();
+    await _logController.close();
+  }
 }
 
 /// 校验器 fake：按开关返回通过或固定错误。
@@ -64,6 +75,9 @@ class _FakeValidator implements ConfigValidator {
 /// proxyDelayDetailed 默认测通（123ms），按需改成失败；
 /// [delayQueue] 非空时按顺序出队（模拟“首次超时、重试后通过”），
 /// 空了回落到 [delayResult]（模拟“两次都失败”时重试也失败）。
+/// 0.1.9 采样：[connectionEntries] 与两路 DNS 结果可注入；
+/// [proxyDnsQueue] 非空时代理路 DNS 按顺序出队（模拟“通过→失败”
+/// 的黑断翻转）。
 class _FakeClashApi extends ClashApiClient {
   Object? error;
   ProxyDelayResult delayResult = const ProxyDelayResult(delay: 123);
@@ -71,6 +85,29 @@ class _FakeClashApi extends ClashApiClient {
   int delayCalls = 0;
   final List<String> delayTags = [];
   Duration? lastDelayTimeout;
+  List<ConnectionEntry> connectionEntries = const [];
+  DnsQueryResult directDnsResult = const DnsQueryResult(
+    ok: true,
+    latencyMs: 120,
+  );
+  DnsQueryResult proxyDnsResult = const DnsQueryResult(
+    ok: true,
+    latencyMs: 45,
+  );
+  final List<DnsQueryResult> proxyDnsQueue = [];
+
+  @override
+  Future<List<ConnectionEntry>> getConnectionEntries() async =>
+      connectionEntries;
+
+  @override
+  Future<DnsQueryResult> queryDns(String name, {String type = 'A'}) async {
+    if (name.contains('youtube')) {
+      if (proxyDnsQueue.isNotEmpty) return proxyDnsQueue.removeAt(0);
+      return proxyDnsResult;
+    }
+    return directDnsResult;
+  }
 
   @override
   Future<TrafficSample> trafficSample({
@@ -142,6 +179,7 @@ void main() {
     Duration probeWarmup = Duration.zero,
     Duration probeRetryDelay = Duration.zero,
     Future<bool> Function()? realTrafficProbe,
+    Duration sampleInterval = const Duration(seconds: 20),
   }) => CoreService(
     plugin: plugin,
     validator: validator,
@@ -153,6 +191,7 @@ void main() {
     probeWarmup: probeWarmup,
     probeRetryDelay: probeRetryDelay,
     realTrafficProbe: realTrafficProbe ?? () async => true,
+    sampleInterval: sampleInterval,
   );
 
   group('applyNodes', () {
@@ -626,6 +665,124 @@ void main() {
       expect(service.probeFailed, isTrue);
       expect(service.lastProbeError, contains('真实流量不通'));
       expect(service.lastProbeError, contains('DNS 或路由可能有问题'));
+      service.dispose();
+    });
+  });
+
+  group('0.1.9：采样时序', () {
+    test('启动后按间隔采样：行含相对秒数、两路 DNS、出站聚合', () async {
+      fakeApi.connectionEntries = const [
+        ConnectionEntry(
+          chains: ['美国01-hy2-443-A', '美国01', 'Proxy'],
+          upload: 1000,
+          download: 2000,
+        ),
+        ConnectionEntry(
+          chains: ['美国01-hy2-443-A', '美国01', 'Proxy'],
+          upload: 500,
+          download: 700,
+        ),
+        ConnectionEntry(chains: ['direct'], upload: 10, download: 20),
+      ];
+      final service = makeService(
+        sampleInterval: const Duration(milliseconds: 100),
+      );
+      await service.init();
+      plugin.emit(const ProxyStarted());
+      await _pumpEvents();
+      await Future<void>.delayed(const Duration(milliseconds: 350));
+      expect(service.samplingTimeline.length, greaterThanOrEqualTo(2));
+      final row = service.samplingTimeline.first;
+      expect(row, startsWith('+'));
+      expect(row, contains('直连DNS 通过 120ms'));
+      expect(row, contains('代理DNS 通过 45ms'));
+      expect(row, contains('连接 3条'));
+      expect(row, contains('美国01-hy2-443-A：2条'));
+      expect(row, contains('direct：1条'));
+      expect(service.blackoutAt, isNull);
+      service.dispose();
+    });
+
+    test('代理路 DNS 通过变失败的那次采样标疑似黑断，之后不再重复标', () async {
+      fakeApi.connectionEntries = const [];
+      // 前两轮通过，第三轮起失败。
+      fakeApi.proxyDnsQueue.addAll([
+        const DnsQueryResult(ok: true, latencyMs: 40),
+        const DnsQueryResult(ok: true, latencyMs: 42),
+        const DnsQueryResult(ok: false, error: 'DNS Rcode 2'),
+        const DnsQueryResult(ok: false, error: 'DNS Rcode 2'),
+      ]);
+      final service = makeService(
+        sampleInterval: const Duration(milliseconds: 100),
+      );
+      await service.init();
+      plugin.emit(const ProxyStarted());
+      await _pumpEvents();
+      await Future<void>.delayed(const Duration(milliseconds: 550));
+      final marked = service.samplingTimeline
+          .where((row) => row.contains('疑似黑断'))
+          .toList();
+      expect(marked.length, 1);
+      expect(marked.first, contains('代理DNS 失败'));
+      expect(service.blackoutAt, isNotNull);
+      service.dispose();
+    });
+
+    test('代理路 DNS 从没通过过：失败不标黑断', () async {
+      fakeApi.connectionEntries = const [];
+      fakeApi.proxyDnsResult = const DnsQueryResult(
+        ok: false,
+        error: 'DNS Rcode 2',
+      );
+      final service = makeService(
+        sampleInterval: const Duration(milliseconds: 100),
+      );
+      await service.init();
+      plugin.emit(const ProxyStarted());
+      await _pumpEvents();
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+      expect(service.samplingTimeline, isNotEmpty);
+      expect(
+        service.samplingTimeline.any((row) => row.contains('疑似黑断')),
+        isFalse,
+      );
+      expect(service.blackoutAt, isNull);
+      service.dispose();
+    });
+
+    test('核心停即清空时序与黑断标记', () async {
+      fakeApi.connectionEntries = const [];
+      final service = makeService(
+        sampleInterval: const Duration(milliseconds: 100),
+      );
+      await service.init();
+      plugin.emit(const ProxyStarted());
+      await _pumpEvents();
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+      expect(service.samplingTimeline, isNotEmpty);
+      plugin.emit(const ProxyStopped());
+      await _pumpEvents();
+      expect(service.samplingTimeline, isEmpty);
+      expect(service.blackoutAt, isNull);
+      service.dispose();
+    });
+
+    test('核心日志尾巴：logStream 的行进内存环，核心停即清空', () async {
+      final service = makeService();
+      await service.init();
+      plugin.emitLogs(const [
+        ClientLog(level: 4, message: 'inbound connection to 203.0.113.1:443'),
+        ClientLog(level: 2, message: 'blocked packet connection'),
+      ]);
+      await _pumpEvents();
+      expect(service.coreLogTail, [
+        '[Info] inbound connection to 203.0.113.1:443',
+        '[Error] blocked packet connection',
+      ]);
+      plugin.emit(const ProxyStarted());
+      await _pumpEvents();
+      // 新一轮启动清掉上一轮的日志尾巴（与时序同规则）。
+      expect(service.coreLogTail, isEmpty);
       service.dispose();
     });
   });

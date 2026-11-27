@@ -191,4 +191,54 @@ void main() {
       expect(bad.detail, contains('连不上'));
     });
   });
+
+  group('0.1.9：采样时序与核心日志尾巴', () {
+    DiagnosticsReportInput inputWithTimeline({
+      List<String>? timeline,
+      DateTime? blackoutAt,
+      List<String>? coreLogTail,
+    }) => DiagnosticsReportInput(
+      appVersion: '0.1.9',
+      coreVersion: '1.14.4-patched',
+      coreStatusText: '已连接',
+      modeLabel: '规则模式',
+      hasBinding: true,
+      nodeCount: 3,
+      currentNodeName: '美国01-hy2-443-A',
+      tunEnabled: true,
+      customRulesCount: 0,
+      autoUpdateEnabled: true,
+      probeAt: DateTime(2026, 11, 27, 10, 0, 0),
+      timeline: timeline,
+      blackoutAt: blackoutAt,
+      coreLogTail: coreLogTail,
+    );
+
+    test('有采样时印行与黑断时刻；有日志尾巴时印行', () {
+      final report = buildDiagnosticsReport(
+        inputWithTimeline(
+          timeline: [
+            '+0s 直连DNS 通过 120ms | 代理DNS 通过 45ms | 连接 2条 | 美国01-hy2-443-A：2条 ↑1.0KB ↓2.7KB',
+            '+20s 直连DNS 通过 130ms | 代理DNS 失败（DNS Rcode 2） | 连接 0条 | 无连接 ｜ 疑似黑断 10:00:20',
+          ],
+          blackoutAt: DateTime(2026, 11, 27, 10, 0, 20),
+          coreLogTail: ['[Info] inbound connection to 203.0.113.1:443'],
+        ),
+      );
+      expect(report, contains('采样时序（开开关后每 20 秒采一次）：'));
+      expect(report, contains('直连DNS 通过 120ms'));
+      expect(report, contains('代理DNS 失败（DNS Rcode 2）'));
+      expect(report, contains('疑似黑断 10:00:20'));
+      expect(report, contains('疑似黑断时刻：2026-11-27 10:00:20'));
+      expect(report, contains('核心日志尾巴（最近 1 行）：'));
+      expect(report, contains('inbound connection to 203.0.113.1:443'));
+    });
+
+    test('无采样时印“无”，绝不编造；无日志行时如实写暂无', () {
+      final report = buildDiagnosticsReport(inputWithTimeline());
+      expect(report, contains('采样时序：无（核心未启动或尚未采样）'));
+      expect(report, isNot(contains('疑似黑断')));
+      expect(report, contains('核心日志：暂无日志行（核心未启动或尚未产生日志）'));
+    });
+  });
 }

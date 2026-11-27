@@ -866,19 +866,20 @@ void main() {
       expect(tun['mtu'], 1500);
     });
 
-    test('route 不写 auto_detect_interface / default_interface'
-        '（2026-11-26 二轮修复）', () {
-      // 上游 1.14.4 route/network.go：这三项在 Android 上写了就
-      // 启动报错（"only supported on Linux, Windows and macOS"），
-      // 文档 auto_route 一节的三选一在 Android 上全是死路；
-      // 环路隔离在插件层 VPNService.openTun 做
-      //（addDisallowedApplication 自家包名），不在配置里。
+    test('route 写 auto_detect_interface，不写 default_interface / '
+        'override_android_vpn / bind_interface（0.1.9）', () {
+      // 0.1.9：route 写 `auto_detect_interface: true`（016 已证
+      // guard 在 Android 上不触发：`C.IsLinux` 为真；写上后拨号
+      // 挂 ProtectFunc() 走 protect(fd) 绕过 TUN）。2026-11-26
+      // 的旧说法（“Android 上写了就启动报错”）是把 goos.IsLinux
+      // 与 constant.IsLinux 混为一谈，已纠正，见 singbox_config.dart
+      // 的 route 注释；其余三项仍不写。
       final on = SingboxConfigBuilder.build(
         [ruleNode('甲-直连', NodeSource.direct)],
         tunEnabled: true,
       );
       final route = on.config['route'] as Map<String, dynamic>;
-      expect(route.containsKey('auto_detect_interface'), isFalse);
+      expect(route['auto_detect_interface'], isTrue);
       expect(route.containsKey('default_interface'), isFalse);
       expect(route.containsKey('override_android_vpn'), isFalse);
       final outbounds = on.config['outbounds'] as List;

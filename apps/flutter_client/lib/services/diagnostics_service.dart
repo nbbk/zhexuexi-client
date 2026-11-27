@@ -33,6 +33,9 @@ class DiagnosticsReportInput {
     this.nodesErrorMessage,
     this.configSnapshot,
     this.connectionChains,
+    this.timeline,
+    this.blackoutAt,
+    this.coreLogTail,
   });
 
   /// 客户端版本（如 `0.1.0`）。
@@ -99,6 +102,18 @@ class DiagnosticsReportInput {
   /// 实时连接的 chain 列表（`GET /connections` 的 chain 拼串；
   /// 核心没跑或拿不到时为空，不在报告里占行）。
   final List<String>? connectionChains;
+
+  /// 采样时序（0.1.9：开开关后每 20 秒采一次，格式化好的行；核心
+  /// 没跑或尚未采样时为空/为 null，报告里印“无”，绝不编造）。
+  final List<String>? timeline;
+
+  /// 疑似黑断时刻（代理路 DNS 探针从通过变失败的那一次采样）；
+  /// 没标过时为 null。
+  final DateTime? blackoutAt;
+
+  /// 核心日志尾巴（0.1.9：Dart 侧 `FlutterSingBox.logStream`
+  /// 取到的最近若干行；没取到行时为空/为 null）。
+  final List<String>? coreLogTail;
 }
 
 /// 生成诊断包文本（纯函数，可单测）。
@@ -151,6 +166,25 @@ String buildDiagnosticsReport(DiagnosticsReportInput input) {
       '启动探活：失败（${input.probeError ?? '未知原因'}；最近结果：${timeOrDash(input.probeAt)}）'
     else
       '启动探活：通过（最近结果：${timeOrDash(input.probeAt)}）',
+    // 0.1.9 采样时序：每行含自开开关起的相对秒数、两路 DNS 各自成败
+    // 与延迟、各出站连接数与流量、黑断标记（有时才有）。无采样时印
+    // “无”，绝不编造；黑断时刻另单列一行，方便一眼看到。
+    if (input.timeline == null || input.timeline!.isEmpty)
+      '采样时序：无（核心未启动或尚未采样）'
+    else ...[
+      '采样时序（开开关后每 20 秒采一次）：',
+      ...input.timeline!,
+      if (input.blackoutAt != null)
+        '疑似黑断时刻：${input.blackoutAt}',
+    ],
+    // 0.1.9 核心日志尾巴：Dart 侧经插件 logStream 取到才印行；
+    // 没取到行时如实写“暂无日志行”，不要编造、不要留空让人以为有。
+    if (input.coreLogTail == null || input.coreLogTail!.isEmpty)
+      '核心日志：暂无日志行（核心未启动或尚未产生日志）'
+    else ...[
+      '核心日志尾巴（最近 ${input.coreLogTail!.length} 行）：',
+      ...input.coreLogTail!,
+    ],
   ];
   return lines.join('\n');
 }

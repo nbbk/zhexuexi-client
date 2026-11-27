@@ -942,3 +942,48 @@
 - **再验速度**：在美国01-hy2-443-A 上，YouTube 首屏/首帧/播放持续、微信、百度，规则与全局各测 3 次取中位，与 0.1.6 的“有网但慢”对照；关开关基线也要测一次。
 - **定罪判定**：美国01上恢复到 0.1.6 水平 → Brutal 定罪，进 0.1.9 重调数值；仍死 → 节点定罪，查美国01侧。切回测试机节点是否恢复，是对照实验的关键一问。
 - 0.1.2/0.1.3/0.1.4 的待真机验证项仍有效（规则模式 YouTube、夜晚模式、公告栏、开关新图案、登录页域名栏隐藏、远程配置）。
+
+## 2026-11-27：0.1.9——抓证据（采样时序＋核心日志）＋单变量修法 auto_detect_interface（未推仓，未发版）
+
+背景：0.1.8 真机结论——全局与规则都让整机没网、连国内直连都没有；关掉开关手机网马上回来；0.1.8 配置与 0.1.6 相同、表现却不同（0.1.6 有网但慢），所以不是配置问题；Brutal 已脱罪（删了还死）、节点已脱罪（国内直连不走节点也死）；故障是客户端本机、分钟级渐进全黑、两模式都死，头号嫌疑是 TUN 环路黑断（核心出站 socket 没绕过 TUN 被抓回去再路由）。本版抓证据＋修法同版：诊断包加采样时序与核心日志尾巴，修法只加 `auto_detect_interface: true` 这一处。
+
+### 证据设计（任务 1：诊断包加采样时序）
+
+- 采样器在 `CoreService`：核心成功启动（`ProxyStarted`）后起 `Timer.periodic`（每 20 秒），核心停（`ProxyStopped`）即停并清空；内存环形缓冲只留最近 90 条（≈30 分钟），不写盘；核心没跑时不采样；每轮全部 try/catch，失败只记一行、不抛、不崩；启动探活在跑（`_verifying`）时跳过本轮，不与探活抢跑；上一轮没跑完时跳过，不重叠。
+- 每轮采三样：① 实时连接快照——`ClashApiClient.getConnectionEntries()`（新增，`GET /connections` 完整条目：chains＋累计 upload/download；现有的 `getConnections()` 不动，改成由它拼串），按 chain 首元（叶子出站）聚合每出站的连接数与累计上下行字节，同时记总连接数；② 两路 DNS 探针——新增 `queryDns(name)`（`GET /dns/query?name=<域名>&type=A`，Dart 侧超时 15 秒，大于服务端 `DNSTimeout = 10s`），直连路 `www.baidu.com`（.cn 规则→dns-direct）、代理路 `www.youtube.com`（流媒体规则→dns-proxy），各记成功/失败与延迟毫秒（成功只认 HTTP 200 且回包 `Status`＝0）；③ 黑断标记——代理路 DNS 探针从通过变失败的那一次采样，行内标 `疑似黑断 HH:MM:SS`（之前至少通过过一次才标，之后每次失败不再重复标）。
+- 行格式（每行必含）：`+<相对秒数>s 直连DNS <通过 Xms/失败（原因）> | 代理DNS <…> | 连接 N条 | <出站>：n条 ↑x ↓y；… [｜ 疑似黑断 HH:MM:SS]`。
+- 诊断包接线：`DiagnosticsReportInput` 加 `timeline`（List<String>）、`blackoutAt`（DateTime?）、`coreLogTail`（List<String>）；`buildDiagnosticsReport` 末尾加“采样时序（开开关后每 20 秒采一次）”一节，无采样时印 `采样时序：无（核心未启动或尚未采样）`，绝不编造；黑断时刻另单列一行；设置页 `_exportDiagnostics` 把核心的采样时序、黑断时刻、日志尾巴传进去。
+- 核心日志尾巴（已核实可取，不是“不可取”）：插件 `FlutterSingBox.logStream`（EventChannel `log_event`，原生侧 `SingBoxConnector.LogClient.appendLogs` 按批推，`ClientLog` 含 level/message）Dart 侧能取到，`CoreService.init` 订阅后记内存环（最近 50 行，核心停即清空）；诊断包印“核心日志尾巴（最近 N 行）”，没取到行时印 `核心日志：暂无日志行（核心未启动或尚未产生日志）`，不编造。订阅包在 `runZonedGuarded` 里（平台通道未接时 listen 会在 zone 回调里抛错、逃出普通 try/catch）；7 个测试替身插件各桩了 `logStream`（空流或可控流），否则 widget 测试会被 `log_event` 的 MissingPluginException 记失败。
+
+### 修法（任务 2：单变量，只加这一处）
+
+- `lib/core/singbox_config.dart` 的 `route` 里加 `'auto_detect_interface': true`，其余一行不动（不加 `default_interface` / `override_android_vpn` / 出站 `bind_interface`，不改 sniff/DNS/MTU/栈、不加回 QUIC 阻断、不动 HY2 出站）。
+- `:607-630` 那段错注释整个重写：写明 0.1.9 为什么加（016 已证 guard 在 Android 上不触发、`C.IsLinux` 为真；`ProtectFunc()` 挂载后核心拨号走 `protect(fd)` 绕过 TUN），`addDisallowedApplication` 仍保留作插件层隔离，两道并存。
+- 残余风险（已复核，任务书原说法有误，此处以源码为准）：libbox 侧 `platformInterfaceWrapper.UsePlatformDefaultInterfaceMonitor()` 恒为 true（`experimental/libbox/service.go:107`），`NewNetworkManager` 走平台监视器分支（`platformDefaultInterfaceMonitor`，`monitor.go`，`Start()` 调 Kotlin 的 `StartDefaultInterfaceMonitor`），不走 `tun.NewNetworkUpdateMonitor` → `NewDefaultInterfaceMonitor` 分支——“插件侧未实现”不成立；那条分支只在非 libbox 的独立 sing-box 上才走，且 sing-tun 的 `NewDefaultInterfaceMonitor`（`monitor_shared.go:58`）本身恒返回成功，不会报 `auto_detect_interface unsupported on current platform`。真正的残余风险在平台分支：`StartDefaultInterfaceMonitor` 在真机上建不起来/不回调，核心启动即失败——`sing-box check` 验不到这一层（check 不启动监视器），真机启动才是最终裁决，采样时序会把它记下来（核心起不来 → 无采样、诊断包印“无”）。另：`NewNetworkUpdateMonitor` 在 Android 上若被走到，netlink 被禁会直接报 `ErrNetlinkBanned`；libbox 路径下走不到它。
+- `VPNService.kt` 三处错认知注释只改注释、不动 Kotlin 代码：companion 的 protect 计数注释（0.1.9 起拨号会走这条路，计数非 0 是修法生效的证据）、`autoDetectInterfaceControl` 旁的注释、openTun 里 `addDisallowedApplication` 的注释（两道隔离并存）。
+- 测试同步：`test/singbox_config_test.dart` 的 route 断言改成断言 `auto_detect_interface == true`，其余三项仍断言不写，测试里的错注释一并改掉。
+
+### 版本（任务 3）
+
+- pubspec `0.1.9+10`；`lib/brand/remote_config.dart` 的 `appVersion` → `'0.1.9'`；`test/settings_page_test.dart` 4 处 `0.1.8` 断言（＋1 处同行注释）→ `0.1.9`；其余 `0.1.8` 字面量（代码与测试里的历史注释）不动。
+
+### 测试（任务 4，全过）
+
+- `flutter analyze`：零问题。
+- `flutter test` 全量（`--concurrency=1`）：**591/591 通过**（基线 582；新增 9 项：clash_api_client 2——`getConnectionEntries` 聚合字段与空 chain 丢弃、`queryDns` 通过/Rcode 失败/HTTP 失败/连不上；diagnostics 2——有时序＋黑断＋日志尾巴、无采样时印“无”；core_service 5——采样行格式与出站聚合、黑断只标一次、从没通过过不标黑断、核心停即清空、核心日志尾巴进环且新一轮启动清空；7 个测试替身插件桩 `logStream`）。
+- 真 sing-box `check`：`~/workspace/019-invest/check-019.sh`，临时导出测试 `test/dump_config_019_test.dart`（跑完即删，不进套件）把 builder 的规则/全局配置打到 `cfg/builder-019-{rule,global}.json`；断言 route 首条 sniff、私网旁路、无 QUIC 阻断、HY2 无 up/down、`route['auto_detect_interface'] == true`（另断言无 default_interface/override_android_vpn/bind_interface），上游与补丁版各跑一遍，**4 项全 rc=0**（日志 `runs/check-019-*.log`）。插件内置 schema 也接受该字段：`config_validator_test` 的“生成器产出的配置通过 schema”一项在新配置下照常通过；插件模型 `route_options.dart` 有 `autoDetectInterface` 字段，schema `singbox_schema.json:15139` 也有该字段。
+- REALITY 握手对照未重跑（核心与补丁未动）。
+
+### sing-tun 评估（只评估，不下定论）
+
+- libbox 路径不走 sing-tun 的监视器：`route/network.go:120-141`，`usePlatformDefaultInterfaceMonitor` 为真时直接 `nm.interfaceMonitor = nm.platformInterface.CreateDefaultInterfaceMonitor(logger)`，即 `platformDefaultInterfaceMonitor`（`experimental/libbox/monitor.go`）；它的 `Start()` 只在 Darwin 上建 DNS watcher，其余直接调 Kotlin `iif.StartDefaultInterfaceMonitor(m)`，再由 Kotlin 的 ConnectivityManager 回调推默认接口（`UpdateDefaultInterface` → `networkManager.UpdateInterfaces()`）。能否建起来取决于 Kotlin 侧 `StartDefaultInterfaceMonitor` 的实现与系统回调是否触发——Go 层看不到失败面，真机启动才是裁决。
+- 备用分支（非 libbox 才走）：`tun.NewNetworkUpdateMonitor`（`monitor_linux.go:42`）在 Android 上先试开 netlink socket，被禁即报 `ErrNetlinkBanned`（“use the root or system (ADB) user … or switch to the sing-box Android graphical interface client”）；`route/network.go:123-136` 里 `enforceInterfaceMonitor = options.AutoDetectInterface` 为真时该错误不被吞掉（`!((err != nil && !enforce) || errors.Is(err, os.ErrInvalid))`），即开着 `auto_detect_interface` 时 netlink 被禁会直接让 `NewNetworkManager` 失败；`NewDefaultInterfaceMonitor`（`monitor_shared.go:58`）本身只是构造结构体、恒成功。结论：libbox 路径下 sing-tun 这条备用分支不参与，真机风险集中在 Kotlin 回调一侧，不在 sing-tun。
+
+### Release
+
+- **Release id：未建。** 未推仓，未发版（按任务，只做代码＋验证）。
+
+### 待真机验证（用户怎么导出才有效）
+
+- 开开关等至少 40 秒（采到 2 行以上）后、**不要关开关**，立刻在设置页导出诊断包：先看核心三行（已连接、1.14.4-patched、探活带真实时间），再看采样时序节——每 20 秒一行，直连/代理 DNS 各自成败与延迟、各出站连接数与流量；若黑断复现，代理 DNS 应先通过后失败、行内有 `疑似黑断 HH:MM:SS`、另单列“疑似黑断时刻”；核心日志尾巴看有无 `blocked … to <节点 IP>:443` / `inbound … to <节点 IP>:443` 行（016 §8 的定罪行）。核心没起来时诊断包印“采样时序：无”，本身就是“启动失败”的证据，不要等、不要重导覆盖。
+- 修法判定：0.1.9 上整机不断、YouTube/微信/百度通、采样里 HY2 出站有流量 → 环路修法生效；仍全黑且采样里代理 DNS 通过变失败、日志尾巴有 inbound/blocked 行 → protect 没拦住环路（看 logcat 的 `autoDetectInterfaceControl` 计数与 `addDisallowedApplication` 那行）；核心起不来 → 平台监视器分支失败，见上残余风险。

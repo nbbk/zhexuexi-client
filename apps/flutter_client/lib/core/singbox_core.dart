@@ -94,6 +94,12 @@ class CoreService {
     this.probeWarmup = const Duration(seconds: 2),
     this.probeRetryDelay = const Duration(seconds: 2),
     Future<bool> Function()? realTrafficProbe,
+    // 0.1.9 采样时序（见 [_startSampling] 的注释）：默认每 20 秒
+    // 采一次、环形缓冲只留最近 90 条（≈30 分钟），测试可传短间隔。
+    this.sampleInterval = const Duration(seconds: 20),
+    this.sampleMaxEntries = 90,
+    // 核心日志尾巴：内存里只留最近 50 行，不写盘。
+    this.coreLogMaxLines = 50,
   }) : _plugin = plugin ?? FlutterSingBox(),
        _validator = validator ?? SingBoxSchemaConfigValidator(),
        _usingConfigPath =
@@ -194,6 +200,30 @@ class CoreService {
   /// 磁盘配置本身读不到（文件不存在/读失败）才不影响启动。
   Future<void> init() async {
     await _plugin.init();
+    // 0.1.9 核心日志尾巴：Dart 侧能取到核心日志——插件
+    // `FlutterSingBox.logStream`（EventChannel `log_event`，原生侧
+    // `SingBoxConnector.LogClient.appendLogs` 按批推，`ClientLog`
+    // 含 level/message）。订阅包在 runZonedGuarded 里：平台通道
+    // 未初始化/未接时，`EventChannel.receiveBroadcastStream` 的
+    // listen 会在 zone 回调里抛错、逃出普通 try/catch（纯 test()
+    // 里 ServicesBinding 未初始化时即如此），zone 兜底吞掉；
+    // 订阅失败只记一行 debugPrint，诊断包里尾巴为空即表示
+    // “没取到行”，不编造。
+    runZonedGuarded(() {
+      _logSubscription = _plugin.logStream.listen(
+        (batch) {
+          for (final log in batch) {
+            _coreLogTail.add('[${_logLevelName(log.level)}] ${log.message}');
+            while (_coreLogTail.length > coreLogMaxLines) {
+              _coreLogTail.removeAt(0);
+            }
+          }
+        },
+        onError: (_) {},
+      );
+    }, (Object e, StackTrace _) {
+      debugPrint('[CoreService] 订阅核心日志流失败 $e');
+    });
     _pluginSubscription = _plugin.proxyStateStream.listen((state) {
       _status = switch (state) {
         ProxyStarted() => CoreStatus.started,
@@ -211,8 +241,10 @@ class CoreService {
       if (state is ProxyStarted) {
         _lastError = null;
         _setProbe(const ProbeState(failed: false));
+        _startSampling();
       } else if (state is ProxyStopped) {
         _setProbe(const ProbeState(failed: false));
+        _stopSampling();
       }
       _statusController.add(_status);
       // Started 只说明 :remote 里的 commandServer 起来了，不等于代理
@@ -536,6 +568,49 @@ class CoreService {
     }
   }
 
+  /// 采样间隔（默认 20 秒，见 [_startSampling]）。
+  final Duration sampleInterval;
+
+  /// 采样环形缓冲上限（默认 90 条 ≈ 30 分钟）。
+  final int sampleMaxEntries;
+
+  /// 核心日志尾巴上限（默认最近 50 行）。
+  final int coreLogMaxLines;
+
+  /// 采样时序环形缓冲（内存，核心停即清空，不写盘）。
+  final List<String> _timeline = [];
+
+  /// 采样计时起点（自开开关起的相对秒数由此算）。
+  DateTime? _sampleStartedAt;
+
+  /// 疑似黑断时刻（代理路 DNS 探针从通过变失败的那一次采样）；
+  /// 之前至少通过过一次才标，之后每次失败不再重复标。
+  DateTime? _blackoutAt;
+
+  /// 代理路 DNS 是否曾经通过过（黑断标记的前提）。
+  bool _proxyDnsEverOk = false;
+
+  /// 采样定时器（核心成功启动后起，核心停即停）。
+  Timer? _sampleTimer;
+
+  /// 本轮采样是否正在跑（上一轮没跑完时跳过本轮，不重叠、不排队）。
+  bool _sampling = false;
+
+  /// 核心日志尾巴（内存，核心停即清空，不写盘）。
+  final List<String> _coreLogTail = [];
+
+  /// 核心日志流的订阅（init 时建，dispose 时取消）。
+  StreamSubscription<List<ClientLog>>? _logSubscription;
+
+  /// 采样时序（格式化好的行；诊断包直接用）。
+  List<String> get samplingTimeline => List.unmodifiable(_timeline);
+
+  /// 疑似黑断时刻；没标过时为 null。
+  DateTime? get blackoutAt => _blackoutAt;
+
+  /// 核心日志尾巴（最近若干行；没有时为空列表）。
+  List<String> get coreLogTail => List.unmodifiable(_coreLogTail);
+
   /// 拨测失败原因的人话（界面直接显示这句）。
   ///
   /// 超时是重试都失败后的结论：写明已重试、节点响应慢或不通，并给
@@ -572,10 +647,138 @@ class CoreService {
   /// 释放流控制器与插件状态流的订阅（订阅不取消时，dispose 后插件再推
   /// 状态会往已关闭的控制器里写，直接抛错）。
   void dispose() {
+    _sampleTimer?.cancel();
+    _sampleTimer = null;
+    unawaited(_logSubscription?.cancel());
+    _logSubscription = null;
     _pluginSubscription?.cancel();
     _statusController.close();
     _probeController.close();
   }
+
+  /// 0.1.9 采样时序：核心成功启动后起 `Timer.periodic`，核心停即停。
+  ///
+  /// 每轮采三样（全部 try/catch，失败只记一行、不抛、不崩）：
+  /// - 实时连接快照（`GET /connections` 完整条目，按 chain 首元＝叶子
+  ///   出站聚合：每出站的连接数与累计上下行字节）；
+  /// - 两路 DNS 探针：直连路 `www.baidu.com`（.cn 规则→dns-direct）、
+  ///   代理路 `www.youtube.com`（流媒体规则→dns-proxy），各记成败与延迟；
+  /// - 黑断标记：代理路 DNS 从通过变失败的那一次采样行内标
+  ///   `疑似黑断 HH:MM:SS`（之前至少通过过一次才标，之后不再重复标）。
+  /// 探活在跑（`_verifying`）时跳过本轮，不与启动探活抢跑；核心没跑
+  /// 时不采样。行格式：相对秒数、两路 DNS 成败与延迟、各出站连接数
+  /// 与流量、黑断标记（有时才有）。
+  void _startSampling() {
+    _stopSampling();
+    _sampleStartedAt = DateTime.now();
+    _blackoutAt = null;
+    _proxyDnsEverOk = false;
+    _timeline.clear();
+    _coreLogTail.clear();
+    _sampleTimer = Timer.periodic(sampleInterval, (_) {
+      unawaited(_sampleOnce());
+    });
+  }
+
+  void _stopSampling() {
+    _sampleTimer?.cancel();
+    _sampleTimer = null;
+    _timeline.clear();
+    _sampleStartedAt = null;
+    _blackoutAt = null;
+    _proxyDnsEverOk = false;
+  }
+
+  Future<void> _sampleOnce() async {
+    if (_status != CoreStatus.started) return;
+    if (_verifying) return;
+    if (_sampling) return;
+    if (_sampleStartedAt == null) return;
+    _sampling = true;
+    try {
+      final rel = DateTime.now().difference(_sampleStartedAt!).inSeconds;
+      final results = await Future.wait([
+        _clashApi.queryDns('www.baidu.com'),
+        _clashApi.queryDns('www.youtube.com'),
+        _clashApi.getConnectionEntries(),
+      ]);
+      final directDns = results[0] as DnsQueryResult;
+      final proxyDns = results[1] as DnsQueryResult;
+      final entries = results[2] as List<ConnectionEntry>;
+      String? blackoutMark;
+      if (proxyDns.ok) {
+        _proxyDnsEverOk = true;
+      } else if (_proxyDnsEverOk && _blackoutAt == null) {
+        _blackoutAt = DateTime.now();
+        blackoutMark =
+            '疑似黑断 ${_blackoutAt!.hour.toString().padLeft(2, '0')}:'
+            '${_blackoutAt!.minute.toString().padLeft(2, '0')}:'
+            '${_blackoutAt!.second.toString().padLeft(2, '0')}';
+      }
+      // 按 chain 首元（叶子出站）聚合连接数与累计流量。
+      final byOutbound = <String, _OutboundAggregate>{};
+      for (final entry in entries) {
+        final leaf = entry.chains.first;
+        final agg = byOutbound.putIfAbsent(
+          leaf,
+          () => _OutboundAggregate(),
+        );
+        agg.count++;
+        agg.upload += entry.upload;
+        agg.download += entry.download;
+      }
+      final outboundText = byOutbound.isEmpty
+          ? '无连接'
+          : byOutbound.entries
+                .map(
+                  (e) =>
+                      '${e.key}：${e.value.count}条 '
+                      '↑${_formatBytes(e.value.upload)} '
+                      '↓${_formatBytes(e.value.download)}',
+                )
+                .join('；');
+      final row =
+          '+${rel}s 直连DNS ${_dnsText(directDns)} '
+          '| 代理DNS ${_dnsText(proxyDns)} '
+          '| 连接 ${entries.length}条 '
+          '| $outboundText'
+          '${blackoutMark == null ? '' : ' ｜ $blackoutMark'}';
+      _timeline.add(row);
+      while (_timeline.length > sampleMaxEntries) {
+        _timeline.removeAt(0);
+      }
+    } catch (e) {
+      final rel = _sampleStartedAt == null
+          ? '?'
+          : DateTime.now().difference(_sampleStartedAt!).inSeconds.toString();
+      _timeline.add('+${rel}s 采样失败：$e');
+      while (_timeline.length > sampleMaxEntries) {
+        _timeline.removeAt(0);
+      }
+    } finally {
+      _sampling = false;
+    }
+  }
+
+  static String _dnsText(DnsQueryResult result) =>
+      result.ok ? '通过 ${result.latencyMs}ms' : '失败（${result.error}）';
+
+  static String _formatBytes(int bytes) {
+    if (bytes < 1024) return '${bytes}B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)}KB';
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)}MB';
+  }
+
+  static String _logLevelName(int level) => switch (level) {
+    0 => 'Panic',
+    1 => 'Fatal',
+    2 => 'Error',
+    3 => 'Warn',
+    4 => 'Info',
+    5 => 'Debug',
+    6 => 'Trace',
+    _ => 'L$level',
+  };
 
   /// 原子写盘：先写同目录临时文件，再改名覆盖（Windows 上改名覆盖会
   /// 失败，失败时删旧文件再改名）。
@@ -621,4 +824,11 @@ class CoreService {
     storage.updateProfile(profile);
     storage.setSelectedProfile(id);
   }
+}
+
+/// 采样聚合：一个叶子出站的连接数与累计上下行字节（0.1.9 采样时序）。
+class _OutboundAggregate {
+  int count = 0;
+  int upload = 0;
+  int download = 0;
 }

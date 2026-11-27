@@ -25,6 +25,12 @@ class _FakePlugin extends FlutterSingBox {
   @override
   Stream<ProxyState> get proxyStateStream => _stateController.stream;
 
+  // 0.1.9：日志流也桩掉——真实现走 EventChannel `log_event`，
+  // 测试里无原生实现，listen 会报 MissingPluginException。
+  @override
+  Stream<List<ClientLog>> get logStream =>
+      Stream<List<ClientLog>>.empty();
+
   @override
   Future<void> init() async {}
 

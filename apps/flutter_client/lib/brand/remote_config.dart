@@ -7,7 +7,7 @@ import 'remote_config_keys.dart';
 
 /// 客户端版本号（与 pubspec.yaml 的 version 同步）。
 /// 远程配置的 `min_app_version` 低于它时，`forceUpdateRequired` 为真。
-const String appVersion = '0.1.8';
+const String appVersion = '0.1.9';
 
 /// 远程配置（切片 7：远程配置中心＋品牌远程替换）。
 ///

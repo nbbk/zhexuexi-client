@@ -420,4 +420,88 @@ void main() {
       expect(await down.getConnections(), isEmpty);
     });
   });
+
+  group('0.1.9：getConnectionEntries / queryDns（采样时序）', () {
+    test('getConnectionEntries：chain＋累计上下行；空 chain 丢掉', () async {
+      server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      server.listen((request) async {
+        try {
+          final response = request.response;
+          response.headers.contentType = ContentType.json;
+          if (request.uri.path == '/connections') {
+            response.write(
+              '{"connections": ['
+              '{"chains": ["美国01-hy2-443-A", "美国01", "Proxy"], "upload": 1000, "download": 2000}, '
+              '{"chains": ["美国01-hy2-443-A", "美国01", "Proxy"], "upload": 500, "download": 700}, '
+              '{"chains": ["direct"], "upload": 10, "download": 20}, '
+              '{"upload": 1, "download": 1}'
+              ']}',
+            );
+          } else {
+            response.statusCode = HttpStatus.notFound;
+          }
+          await response.close();
+        } catch (_) {}
+      });
+      final client = ClashApiClient(
+        baseUrl: 'http://127.0.0.1:${server.port}',
+      );
+      final entries = await client.getConnectionEntries();
+      expect(entries.length, 3);
+      expect(entries[0].chains.first, '美国01-hy2-443-A');
+      expect(entries[0].upload, 1000);
+      expect(entries[0].download, 2000);
+      expect(entries[2].chains, ['direct']);
+      // getConnections 仍是 chain 拼串（兼容 0.1.2）。
+      expect(await client.getConnections(), [
+        '美国01-hy2-443-A → 美国01 → Proxy',
+        '美国01-hy2-443-A → 美国01 → Proxy',
+        'direct',
+      ]);
+    });
+
+    test('queryDns：200 且 Status 0 算通过并记延迟；Rcode 非 0/500 算失败', () async {
+      server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      server.listen((request) async {
+        try {
+          final response = request.response;
+          response.headers.contentType = ContentType.json;
+          final name = request.uri.queryParameters['name'];
+          if (request.uri.path != '/dns/query') {
+            response.statusCode = HttpStatus.notFound;
+          } else if (name == 'www.baidu.com') {
+            response.write(
+              '{"Status": 0, "Answer": [{"name": "www.baidu.com.", "type": 1, "TTL": 60, "data": "203.0.113.1"}]}',
+            );
+          } else if (name == 'www.youtube.com') {
+            response.write('{"Status": 2}');
+          } else {
+            response.statusCode = HttpStatus.internalServerError;
+            response.write('{"message": "dns timeout"}');
+          }
+          await response.close();
+        } catch (_) {}
+      });
+      final client = ClashApiClient(
+        baseUrl: 'http://127.0.0.1:${server.port}',
+      );
+      final direct = await client.queryDns('www.baidu.com');
+      expect(direct.ok, isTrue);
+      expect(direct.latencyMs, isNotNull);
+      expect(direct.latencyMs, greaterThanOrEqualTo(0));
+      final proxy = await client.queryDns('www.youtube.com');
+      expect(proxy.ok, isFalse);
+      expect(proxy.error, contains('Rcode 2'));
+      final other = await client.queryDns('www.example.com');
+      expect(other.ok, isFalse);
+      expect(other.error, contains('HTTP 500'));
+      // 连不上：失败不抛错。
+      final probe = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final port = probe.port;
+      await probe.close();
+      final down = ClashApiClient(baseUrl: 'http://127.0.0.1:$port');
+      final downResult = await down.queryDns('www.baidu.com');
+      expect(downResult.ok, isFalse);
+    });
+  });
 }
