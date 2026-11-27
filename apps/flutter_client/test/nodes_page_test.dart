@@ -5,6 +5,8 @@
 // 选中态只看边框＋背景。
 //
 // 不碰真面板：nodesProvider 用桩 notifier 覆盖，状态直接给定。
+import 'dart:async';
+
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -36,6 +38,44 @@ class _StubNodesNotifier extends NodesNotifier {
   @override
   Future<bool> testAllSpeeds() async {
     calls.add('test');
+    return true;
+  }
+
+  /// testGroupSpeeds 被调了几次，以及最后一次测的组 key 与节点
+  /// （0.1.15 组头测速测试用）。
+  int testGroupCalls = 0;
+  String? lastGroupKey;
+  List<Node> lastGroupNodes = [];
+
+  /// testGroupSpeeds 测到后给该组节点写的延迟。
+  int groupLatencyMs = 77;
+
+  /// testGroupSpeeds 的门：设了就等它完成才回（测“测速中…”用），
+  /// 不设就立即完成。
+  Completer<bool>? testGroupGate;
+
+  @override
+  Future<bool> testGroupSpeeds(String groupKey, List<Node> groupNodes) async {
+    testGroupCalls++;
+    lastGroupKey = groupKey;
+    lastGroupNodes = groupNodes;
+    state = state.copyWith(testingSpeed: true, testingGroupKey: groupKey);
+    if (testGroupGate != null) {
+      final ok = await testGroupGate!.future;
+      state = state.copyWith(testingSpeed: false, testingGroupKey: null);
+      if (!ok) return false;
+    }
+    final nodes = state.nodes;
+    for (final node in groupNodes) {
+      node.latencyMs = groupLatencyMs;
+      node.latencyFailed = false;
+      node.latencyFailureReason = null;
+    }
+    state = state.copyWith(
+      nodes: List.of(nodes),
+      testingSpeed: false,
+      testingGroupKey: null,
+    );
     return true;
   }
 
@@ -714,6 +754,100 @@ void main() {
         find.byType(TextField).last,
       );
       expect(field.controller?.text, nodeLink);
+    });
+
+    // 0.1.15：节点页组头“测速”按钮（照抄首页节点弹窗组头的做法）。
+    group('组头测速', () {
+      /// 两组：订阅 A（2 个节点）＋订阅 B（1 个节点）。
+      NodesState twoGroupsState() => NodesState(
+        nodes: [
+          _node(
+            'A1',
+            NodeSource.direct,
+            subscriptionId: 'sub-a',
+            subscriptionName: '订阅A',
+          ),
+          _node(
+            'A2',
+            NodeSource.direct,
+            subscriptionId: 'sub-a',
+            subscriptionName: '订阅A',
+          ),
+          _node(
+            'B1',
+            NodeSource.direct,
+            subscriptionId: 'sub-b',
+            subscriptionName: '订阅B',
+          ),
+        ],
+        status: NodesStatus.loaded,
+      );
+
+      testWidgets('组头有“测速”按钮：每组一个，点后只测该组', (tester) async {
+        final stub = await _pumpPage(tester, twoGroupsState());
+        expect(find.text('测速'), findsNWidgets(2));
+
+        // 点第一组（订阅 A）的“测速”：只调该组，另一组不动。
+        await tester.tap(find.text('测速').first);
+        await tester.pumpAndSettle();
+        expect(stub.testGroupCalls, 1);
+        expect(stub.lastGroupKey, 'sub-a');
+        expect(stub.lastGroupNodes.map((n) => n.name), ['A1', 'A2']);
+
+        // A 组节点出了延迟，B 组还是“未测速”。
+        await _expandGroup(tester, '订阅A（2）');
+        expect(find.text('77ms'), findsNWidgets(2));
+        await _expandGroup(tester, '订阅B（1）');
+        expect(find.text('未测速'), findsOneWidget);
+      });
+
+      testWidgets('点组头“测速”不触发展开/收起', (tester) async {
+        final stub = await _pumpPage(tester, twoGroupsState());
+        await tester.tap(find.text('测速').first);
+        await tester.pumpAndSettle();
+        expect(stub.testGroupCalls, 1);
+        // 两组都还是折叠的：节点行没渲染出来。
+        expect(find.text('A1'), findsNothing);
+        expect(find.text('B1'), findsNothing);
+      });
+
+      testWidgets('组测速进行中：该组按钮变“测速中…”，另一组按钮禁用', (
+        tester,
+      ) async {
+        final stub = await _pumpPage(tester, twoGroupsState());
+        stub.testGroupGate = Completer<bool>();
+        await tester.tap(find.text('测速').first);
+        await tester.pump();
+        await tester.pump();
+        expect(find.text('测速中…'), findsOneWidget);
+        // 剩下那个“测速”是 B 组的（已禁用）：再点不重复测。
+        expect(find.text('测速'), findsOneWidget);
+        await tester.tap(find.text('测速'));
+        await tester.pump();
+        expect(stub.testGroupCalls, 1);
+
+        stub.testGroupGate!.complete(true);
+        await tester.pumpAndSettle();
+        expect(find.text('测速'), findsNWidgets(2));
+        expect(find.text('测速中…'), findsNothing);
+      });
+
+      testWidgets('一键测速进行中时组头“测速”禁用，不重复测', (tester) async {
+        final state = twoGroupsState();
+        final stub = await _pumpPage(
+          tester,
+          state.copyWith(testingSpeed: true),
+        );
+        await tester.tap(find.text('测速').first);
+        await tester.pump();
+        expect(stub.testGroupCalls, 0);
+        // 点禁用的“测速”不会重复测，但手势会落到外层 InkWell 上把
+        // 组展开（与首页节点弹窗组头同一做法：按钮在 InkWell 里，
+        // 禁用时不吃手势）；行入场动画的延时要跑完，末尾 pumpAndSettle
+        // 清掉，否则测试框架报 Timer 挂起。
+        expect(find.text('A1'), findsOneWidget);
+        await tester.pumpAndSettle();
+      });
     });
   });
 }

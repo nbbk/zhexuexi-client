@@ -32,6 +32,12 @@ import 'subscriptions_page.dart';
 /// 分组折叠（2026-11-26）：每组默认折叠，点组头展开/收起；
 /// 折叠状态只记在页面 State 里（[_expandedGroups]），不持久化。
 ///
+/// 组头测速（0.1.15，照抄首页节点弹窗组头的做法）：每组组头右侧
+/// 有个小的“测速”按钮，只测该组内的节点（[NodesNotifier.testGroupSpeeds]，
+/// 复用一键测速的同一套逻辑），其他组不动；测速中该组按钮变“测速中…”、
+/// 其他测速入口禁用时它也禁用；点它不触发展开/收起。
+/// 组头的测速态由组头自己 select（见 [_GroupHeader]），不经过整页重建。
+///
 /// 性能（UI 优化）：页面只监听结构性数据（状态、节点集合、选中、
 /// 失败数、测速进度、提示文案），单个节点的延迟变化不触发整页重建——
 /// 延迟由行自己 select（见 [_NodeRow]），只重建该行。
@@ -318,6 +324,22 @@ class _NodesPageState extends ConsumerState<NodesPage> {
   void _showSnack(String message) {
     ScaffoldMessenger.of(context)
         .showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  /// 只测一订阅组（组头“测速”入口，见 [_GroupHeader]）：只测该组
+  /// 内的节点，其他组不动；测速中该组头按钮变“测速中…”、其他测速
+  /// 入口按一键测速的规则禁用（照抄首页节点弹窗 `_testGroup` 的做法）。
+  /// 失败原因用 SnackBar 提示（整轮没跑起来才提示，单节点失败只标该行）。
+  Future<void> _testGroup(String groupKey, List<Node> groupNodes) async {
+    final state = ref.read(nodesProvider);
+    if (state.testingSpeed || state.testingSingleNodeKey != null) return;
+    final ok = await ref
+        .read(nodesProvider.notifier)
+        .testGroupSpeeds(groupKey, groupNodes);
+    if (!ok && mounted) {
+      final error = ref.read(nodesProvider).speedTestError;
+      if (error != null) _showSnack(error);
+    }
   }
 
   /// 测速口径提示文案：没测过时讲清两种口径的区别；测过后写明上次
@@ -754,6 +776,7 @@ class _NodesPageState extends ConsumerState<NodesPage> {
   /// （不重排——选中节点也不置顶，只变选中态）。
   /// 组头一直可见，点组头展开/收起；默认全部折叠（见 [_expandedGroups]）。
   /// 折叠时整组节点 sliver 不渲染。
+  /// 组头右侧有个“测速”小按钮（见 [_GroupHeader]）：只测该组。
   /// 分组顺序按订阅在列表里首次出现的顺序；直连/中转（A/B 后缀）
   /// 不再单独成组，只是节点名的后缀区分。
   List<Widget> _buildSubscriptionSlivers(List<Node> nodes) {
@@ -819,7 +842,11 @@ class _NodesPageState extends ConsumerState<NodesPage> {
     final expanded = _expandedGroups.contains(groupKey);
     return [
       SliverToBoxAdapter(
-        child: InkWell(
+        child: _GroupHeader(
+          groupKey: groupKey,
+          title: title,
+          count: nodes.length,
+          expanded: expanded,
           onTap: () => setState(() {
             if (expanded) {
               _expandedGroups.remove(groupKey);
@@ -827,31 +854,7 @@ class _NodesPageState extends ConsumerState<NodesPage> {
               _expandedGroups.add(groupKey);
             }
           }),
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(
-              AppTokens.spacingMd,
-              AppTokens.spacingSm,
-              AppTokens.spacingMd,
-              4,
-            ),
-            child: Row(
-              children: [
-                // 折叠时箭头朝右，展开时朝下（chevronRight 转 90°）。
-                Transform.rotate(
-                  angle: expanded ? math.pi / 2 : 0,
-                  child: const AppIcon(
-                    icon: AppIcons.chevronRight,
-                    size: AppIconSize.sm,
-                  ),
-                ),
-                const SizedBox(width: 4),
-                Text(
-                  '$title（${nodes.length}）',
-                  style: const TextStyle(fontWeight: FontWeight.bold),
-                ),
-              ],
-            ),
-          ),
+          onTestGroup: () => _testGroup(groupKey, nodes),
         ),
       ),
       if (expanded)
@@ -885,6 +888,95 @@ class _NodesPageState extends ConsumerState<NodesPage> {
     final h = time.hour.toString().padLeft(2, '0');
     final m = time.minute.toString().padLeft(2, '0');
     return '$h:$m';
+  }
+}
+
+/// 订阅分组的组头：点一下展开/收起该组（箭头跟着转）。
+/// 标题是订阅名＋节点数（`$title（$count）`，与原来内联组头同一文案）。
+/// 右侧有个“测速”小按钮：只测该组内的节点（0.1.15，照抄首页节点
+/// 弹窗组头的做法）；测速中变“测速中…”、其他测速入口禁用时它也
+/// 禁用；点它不触发展开/收起（按钮自己吃掉点击）。
+/// 测速态自己 select（只读 testingGroupKey／testingSpeed／
+/// testingSingleNodeKey 三个字段）：一键测速与组测速进行中时
+/// testingSpeed 为真，组头按钮禁用；正在测这一组时 testingGroupKey
+/// 是本组 key，按钮变“测速中…”；不经过整页重建（见文件头注释）。
+class _GroupHeader extends ConsumerWidget {
+  const _GroupHeader({
+    required this.groupKey,
+    required this.title,
+    required this.count,
+    required this.expanded,
+    required this.onTap,
+    required this.onTestGroup,
+  });
+
+  final String groupKey;
+  final String title;
+  final int count;
+  final bool expanded;
+  final VoidCallback onTap;
+
+  /// 点“测速”只测这一组。
+  final VoidCallback onTestGroup;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final testing = ref.watch(
+      nodesProvider.select(
+        (s) => (
+          groupKey: s.testingGroupKey,
+          speed: s.testingSpeed,
+          singleKey: s.testingSingleNodeKey,
+        ),
+      ),
+    );
+    // 正在测这一组（按钮变“测速中…”）。
+    final testingGroup = testing.groupKey == groupKey;
+    // 任何一轮测速进行中（按钮禁用）。
+    final testingAny =
+        testing.speed ||
+        testing.singleKey != null ||
+        testing.groupKey != null;
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(
+          AppTokens.spacingMd,
+          AppTokens.spacingSm,
+          AppTokens.spacingMd,
+          4,
+        ),
+        child: Row(
+          children: [
+            // 折叠时箭头朝右，展开时朝下（chevronRight 转 90°）。
+            Transform.rotate(
+              angle: expanded ? math.pi / 2 : 0,
+              child: const AppIcon(
+                icon: AppIcons.chevronRight,
+                size: AppIconSize.sm,
+              ),
+            ),
+            const SizedBox(width: 4),
+            Expanded(
+              child: Text(
+                '$title（$count）',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              ),
+            ),
+            TextButton(
+              onPressed: testingAny ? null : onTestGroup,
+              style: TextButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+              child: Text(testingGroup ? '测速中…' : '测速'),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 
