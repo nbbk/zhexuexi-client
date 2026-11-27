@@ -1,6 +1,7 @@
 import 'package:dio/dio.dart';
 
 import 'semver.dart';
+import 'update_http.dart';
 import 'update_source.dart';
 
 /// GitHub 通道：调公开仓最新 Release 取 arm64 APK。
@@ -21,9 +22,15 @@ import 'update_source.dart';
 /// 发版时须把 `app-arm64-v8a-release.apk` 与同名 `.sha256` 挂到
 /// Release 上（见 docs/release-checklist.md §2）。
 class GitHubUpdateSource implements UpdateSource {
-  GitHubUpdateSource({Dio? dio}) : _dio = dio ?? Dio();
+  /// [http] 不给时用 [dio] 当直连 Dio（核心没开、或测试注入 fake
+  /// Dio 时走这条；生产由 provider 传配好代理的 [UpdateHttp]）。
+  /// 查版与 .sha256 拉取都走 [UpdateHttp]：核心开着先走本机
+  /// 127.0.0.1:2080 代理，代理不通回落直连（见 [UpdateHttp]）。
+  GitHubUpdateSource({UpdateHttp? http, Dio? dio})
+      : _http = http ??
+            UpdateHttp(coreRunning: () => false, directDio: dio);
 
-  final Dio _dio;
+  final UpdateHttp _http;
 
   static const String repoOwner = 'nbbk';
   static const String repoName = 'zhexuexi-client';
@@ -40,7 +47,7 @@ class GitHubUpdateSource implements UpdateSource {
   Future<UpdateReleaseInfo> checkLatest() async {
     final Map<String, dynamic> json;
     try {
-      final response = await _dio.get<Map<String, dynamic>>(
+      final response = await _http.get<Map<String, dynamic>>(
         'https://api.github.com/repos/$repoOwner/$repoName/releases/latest',
         options: Options(
           headers: {
@@ -94,7 +101,7 @@ class GitHubUpdateSource implements UpdateSource {
 
   Future<String?> _fetchSha256(String url) async {
     try {
-      final response = await _dio.get<String>(
+      final response = await _http.get<String>(
         url,
         options: Options(
           responseType: ResponseType.plain,

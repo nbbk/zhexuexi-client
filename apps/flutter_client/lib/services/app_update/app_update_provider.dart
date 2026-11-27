@@ -1,25 +1,44 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/core_provider.dart';
+import '../../core/singbox_core.dart';
+import '../lan_proxy_notifier.dart';
 import '../remote_config_notifier.dart';
 import 'app_updater.dart';
 import 'github_update_source.dart';
 import 'self_hosted_update_source.dart';
+import 'update_http.dart';
 import 'update_source.dart';
 
 /// 更新器（可注入 fake 做测试）：主通道 GitHub，备通道自托管。
 /// 自托管的两个配置位读远程配置（见 `RemoteConfig` 的
 /// `updateServerBaseUrl` / `updateVersionPath`）；远程配置更新后
 /// 更新器跟着重建，不用重启客户端。
+///
+/// 更新下载走代理（0.1.16）：GitHub 查版与 APK 下载共用一个
+/// [UpdateHttp]——核心开着先走本机 127.0.0.1:2080 代理，代理不通
+/// 回落直连，核心没开直接直连。端口与鉴权从局域网代理设置取
+/// （端口可改；鉴权开着时 mixed 入站要账号密码），设置变了更新
+/// 器跟着重建。备通道自托管不走这个（它的服务器地址是运营方配
+/// 的，不一定在公网），仍直连。
 final appUpdaterProvider = Provider<AppUpdater>((ref) {
   final config = ref.watch(remoteConfigProvider).config;
+  final lan = ref.watch(lanProxyProvider);
+  final http = UpdateHttp(
+    coreRunning: () =>
+        ref.read(coreServiceProvider).status == CoreStatus.started,
+    proxyPort: lan.port,
+    proxyCredentials: lan.authCredentials,
+  );
   return AppUpdater(
     sources: [
-      GitHubUpdateSource(),
+      GitHubUpdateSource(http: http),
       SelfHostedUpdateSource(
         baseUrl: config.updateServerBaseUrl,
         versionPath: config.updateVersionPath,
       ),
     ],
+    http: http,
   );
 });
 

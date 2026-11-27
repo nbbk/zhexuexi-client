@@ -7,6 +7,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../../services/app_version.dart';
 import 'semver.dart';
+import 'update_http.dart';
 import 'update_source.dart';
 
 /// 一次查版的结果。
@@ -107,20 +108,27 @@ class OpenFilexAppInstaller implements AppInstaller {
 /// 下一个；只有失败（无网络 / 没找到 / 未启用 / 解析失败）才走
 /// 下一个通道；全部失败时把每条通道的原因都带上，不静默失败。
 class AppUpdater {
+  /// [http] 不给时用 [dio] 当直连 Dio（核心没开、或测试注入 fake
+  /// Dio 时走这条；生产由 provider 传配好代理的 [UpdateHttp]）。
+  /// APK 下载走 [UpdateHttp]：核心开着先走本机 127.0.0.1:2080
+  /// 代理，代理不通回落直连（见 [UpdateHttp]）；SHA-256 校验
+  /// 不变，下载完照旧核对。
   AppUpdater({
     required this.sources,
     Dio? dio,
+    UpdateHttp? http,
     AppInstaller? installer,
     Future<String> Function()? currentVersionReader,
     Future<Directory> Function()? downloadDir,
-  })  : _dio = dio ?? Dio(),
+  })  : _http = http ??
+            UpdateHttp(coreRunning: () => false, directDio: dio),
         _installer = installer ?? OpenFilexAppInstaller(),
         _currentVersionReader =
             currentVersionReader ?? _readPackageVersion,
         _downloadDir = downloadDir ?? _defaultDownloadDir;
 
   final List<UpdateSource> sources;
-  final Dio _dio;
+  final UpdateHttp _http;
   final AppInstaller _installer;
   final Future<String> Function() _currentVersionReader;
   final Future<Directory> Function() _downloadDir;
@@ -182,7 +190,7 @@ class AppUpdater {
         : 'app-arm64-v8a-release.apk';
     final file = File('${dir.path}/$safeName');
     try {
-      await _dio.download(
+      await _http.download(
         info.downloadUrl,
         file.path,
         onReceiveProgress: (received, total) {

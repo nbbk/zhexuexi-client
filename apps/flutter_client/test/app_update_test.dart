@@ -11,6 +11,7 @@ import 'package:zhexuexi_client/services/app_update/app_updater.dart';
 import 'package:zhexuexi_client/services/app_update/github_update_source.dart';
 import 'package:zhexuexi_client/services/app_update/self_hosted_update_source.dart';
 import 'package:zhexuexi_client/services/app_update/semver.dart';
+import 'package:zhexuexi_client/services/app_update/update_http.dart';
 import 'package:zhexuexi_client/services/app_update/update_source.dart';
 
 /// APK 测试字节（内容固定，SHA-256 用系统 sha256sum 算好写死，
@@ -103,6 +104,87 @@ Map<String, dynamic> _releaseJson({
     });
   }
   return {'tag_name': tag, 'body': body, 'assets': assets};
+}
+
+/// 记数的 fake Dio：onRequest 里数一次，按 [failWith] 拒绝或按
+/// [resolveData] 回包。用来断言一次请求走了代理 Dio 还是直连 Dio。
+/// [failStatusCode] 非空时拒绝带上该状态码的 Response（407/404 等）。
+class _CountingDio {
+  _CountingDio({
+    this.failWith,
+    this.failStatusCode,
+    this.resolveData,
+  }) {
+    dio = Dio();
+    dio.interceptors.add(
+      InterceptorsWrapper(
+        onRequest: (options, handler) {
+          calls++;
+          if (failWith != null) {
+            handler.reject(
+              DioException(
+                requestOptions: options,
+                type: failWith!,
+                response: failStatusCode == null
+                    ? null
+                    : Response(
+                        requestOptions: options,
+                        statusCode: failStatusCode,
+                      ),
+              ),
+            );
+            return;
+          }
+          handler.resolve(
+            Response(
+              requestOptions: options,
+              statusCode: 200,
+              data: resolveData,
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  final DioExceptionType? failWith;
+  final int? failStatusCode;
+  final Object? resolveData;
+  late final Dio dio;
+  int calls = 0;
+}
+
+/// 最小 HTTP 转发代理（只给真代理端到端测试用）：收绝对形式
+/// 的请求行，原样转发给目标地址再把响应搬回来；只支持 HTTP，
+/// 不做 CONNECT 隧道。收到请求就数一次。
+class _ForwardProxy {
+  late HttpServer server;
+  int requests = 0;
+
+  Future<void> start() async {
+    server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    server.listen((request) async {
+      requests++;
+      final target = request.requestedUri;
+      final client = HttpClient();
+      try {
+        final fwd = await client.getUrl(target);
+        final resp = await fwd.close();
+        request.response.statusCode = resp.statusCode;
+        request.response.headers.contentType = ContentType.text;
+        await request.response.addStream(resp);
+      } catch (_) {
+        request.response.statusCode = 502;
+      } finally {
+        client.close();
+        await request.response.close();
+      }
+    });
+  }
+
+  int get port => server.port;
+
+  Future<void> stop() => server.close(force: true);
 }
 
 void main() {
@@ -495,6 +577,222 @@ void main() {
       await upToDate.read(appUpdateProvider.notifier).checkQuiet();
       // 安静规则：已是最新时不留“有新版”状态，也不留失败状态。
       expect(upToDate.read(appUpdateProvider).status, AppUpdateStatus.idle);
+    });
+  });
+
+  group('更新下载走代理（0.1.16：代理优先、失败回落直连）', () {
+    test('核心开着 → 走代理，不走直连', () async {
+      final proxy = _CountingDio(resolveData: {'ok': true});
+      final direct = _CountingDio(resolveData: {'ok': false});
+      final http = UpdateHttp(
+        coreRunning: () => true,
+        proxiedDio: proxy.dio,
+        directDio: direct.dio,
+      );
+      final resp =
+          await http.get<Map<String, dynamic>>('https://example.com/x');
+      expect(resp.data, {'ok': true});
+      expect(proxy.calls, 1);
+      expect(direct.calls, 0);
+    });
+
+    test('核心开着、代理连不上 → 同一请求重试一次直连', () async {
+      final proxy =
+          _CountingDio(failWith: DioExceptionType.connectionError);
+      final direct = _CountingDio(resolveData: {'ok': true});
+      final http = UpdateHttp(
+        coreRunning: () => true,
+        proxiedDio: proxy.dio,
+        directDio: direct.dio,
+      );
+      final resp =
+          await http.get<Map<String, dynamic>>('https://example.com/x');
+      expect(resp.data, {'ok': true});
+      expect(proxy.calls, 1);
+      expect(direct.calls, 1);
+    });
+
+    test('核心关着 → 直接直连，不碰代理', () async {
+      final proxy = _CountingDio(resolveData: {'ok': false});
+      final direct = _CountingDio(resolveData: {'ok': true});
+      final http = UpdateHttp(
+        coreRunning: () => false,
+        proxiedDio: proxy.dio,
+        directDio: direct.dio,
+      );
+      final resp =
+          await http.get<Map<String, dynamic>>('https://example.com/x');
+      expect(resp.data, {'ok': true});
+      expect(proxy.calls, 0);
+      expect(direct.calls, 1);
+    });
+
+    test('代理通但服务器回 404 → 不回落，直接抛错', () async {
+      final proxy = _CountingDio(
+        failWith: DioExceptionType.badResponse,
+        failStatusCode: 404,
+      );
+      final direct = _CountingDio(resolveData: {'ok': true});
+      final http = UpdateHttp(
+        coreRunning: () => true,
+        proxiedDio: proxy.dio,
+        directDio: direct.dio,
+      );
+      await expectLater(
+        http.get<Map<String, dynamic>>('https://example.com/x'),
+        throwsA(isA<DioException>()),
+      );
+      expect(direct.calls, 0);
+    });
+
+    test('代理要鉴权（407）→ 回落直连', () async {
+      final proxy = _CountingDio(
+        failWith: DioExceptionType.badResponse,
+        failStatusCode: 407,
+      );
+      final direct = _CountingDio(resolveData: {'ok': true});
+      final http = UpdateHttp(
+        coreRunning: () => true,
+        proxiedDio: proxy.dio,
+        directDio: direct.dio,
+      );
+      final resp =
+          await http.get<Map<String, dynamic>>('https://example.com/x');
+      expect(resp.data, {'ok': true});
+      expect(proxy.calls, 1);
+      expect(direct.calls, 1);
+    });
+
+    test('GitHub 查版走代理：核心开着时 releases/latest 走代理 Dio', () async {
+      final proxy =
+          _CountingDio(resolveData: _releaseJson(withSha256: false));
+      final direct = _CountingDio(resolveData: <String, dynamic>{});
+      final source = GitHubUpdateSource(
+        http: UpdateHttp(
+          coreRunning: () => true,
+          proxiedDio: proxy.dio,
+          directDio: direct.dio,
+        ),
+      );
+      final info = await source.checkLatest();
+      expect(info.version, '1.2.3');
+      expect(proxy.calls, 1);
+      expect(direct.calls, 0);
+    });
+
+    test('GitHub 查版代理失败 → 回落直连，照样查到版', () async {
+      final proxy =
+          _CountingDio(failWith: DioExceptionType.connectionError);
+      final direct =
+          _CountingDio(resolveData: _releaseJson(withSha256: false));
+      final source = GitHubUpdateSource(
+        http: UpdateHttp(
+          coreRunning: () => true,
+          proxiedDio: proxy.dio,
+          directDio: direct.dio,
+        ),
+      );
+      final info = await source.checkLatest();
+      expect(info.version, '1.2.3');
+      expect(proxy.calls, 1);
+      expect(direct.calls, 1);
+    });
+  });
+
+  group('更新下载走代理：下载回落（本机回环服务器）', () {
+    late HttpServer server;
+    late Directory tmpDir;
+
+    setUp(() async {
+      tmpDir = await Directory.systemTemp.createTemp('app-update-proxy-test-');
+      server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      server.listen((request) async {
+        request.response.headers.contentType =
+            ContentType('application', 'octet-stream');
+        request.response.add(_apkBytes);
+        await request.response.close();
+      });
+    });
+
+    tearDown(() async {
+      await server.close(force: true);
+      if (await tmpDir.exists()) await tmpDir.delete(recursive: true);
+    });
+
+    test('核心开着、代理下载连不上 → 回落直连下完，SHA 照旧核对', () async {
+      final proxy =
+          _CountingDio(failWith: DioExceptionType.connectionError);
+      final apkUrl = 'http://127.0.0.1:${server.port}/app.apk';
+      final updater = AppUpdater(
+        sources: const [],
+        http: UpdateHttp(
+          coreRunning: () => true,
+          proxiedDio: proxy.dio,
+          directDio: Dio(),
+        ),
+        currentVersionReader: () async => '1.0.0',
+        downloadDir: () async => tmpDir,
+      );
+      final apk = await updater.download(
+        UpdateReleaseInfo(
+          version: '1.2.3',
+          downloadUrl: apkUrl,
+          sha256: _apkSha256,
+          sourceName: 'GitHub',
+        ),
+      );
+      expect(apk.sha256Verified, isTrue);
+      expect(await apk.file.readAsBytes(), _apkBytes);
+      expect(proxy.calls, 1);
+    });
+  });
+
+  group('更新下载走代理：真代理端到端（本机转发代理）', () {
+    late HttpServer target;
+    late _ForwardProxy proxyServer;
+
+    setUp(() async {
+      target = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      target.listen((request) async {
+        request.response.headers.contentType = ContentType.text;
+        request.response.write('pong');
+        await request.response.close();
+      });
+      proxyServer = _ForwardProxy();
+      await proxyServer.start();
+    });
+
+    tearDown(() async {
+      await proxyServer.stop();
+      await target.close(force: true);
+    });
+
+    test('核心开着 → 真走 127.0.0.1 代理，请求经过转发代理', () async {
+      final http = UpdateHttp(
+        coreRunning: () => true,
+        proxyPort: proxyServer.port,
+      );
+      final resp = await http.get<String>(
+        'http://127.0.0.1:${target.port}/ping',
+        options: Options(responseType: ResponseType.plain),
+      );
+      expect(resp.data, 'pong');
+      expect(proxyServer.requests, 1);
+    });
+
+    test('代理端口没人听 → 回落直连，照样拿到响应', () async {
+      final closed = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final deadPort = closed.port;
+      await closed.close(force: true);
+      final http = UpdateHttp(
+        coreRunning: () => true,
+        proxyPort: deadPort,
+      );
+      final resp = await http.get<String>(
+        'http://127.0.0.1:${target.port}/ping',
+        options: Options(responseType: ResponseType.plain),
+      );
+      expect(resp.data, 'pong');
     });
   });
 }
