@@ -1,3 +1,5 @@
+import 'package:material_ui/material_ui.dart';
+
 /// 全端共用的设计 token：圆角、间距、图标尺寸档、导航断点、
 /// 列表性能常量。页面与共用组件只读这里的数值，不写死数字。
 ///
@@ -30,6 +32,15 @@ class AppTokens {
 
   /// 节点列表缓存区：可视区外多留 500px，减少滚动白屏。
   static const double listCacheExtent = 500;
+
+  /// 延迟数字的绿色（成功态）：主题 token 里没有绿色，这里按亮度各取
+  /// 一个两端都可读的绿——白天 #157347（白底约 5.9:1），夜晚
+  /// #4ADE80（深色底约 11:1）；首页节点弹窗与节点页延迟芯片共用，
+  /// 别各写一对（会漂移）。
+  static Color latencyOkColor(Brightness brightness) =>
+      brightness == Brightness.dark
+          ? const Color(0xFF4ADE80)
+          : const Color(0xFF157347);
 }
 
 /// 图标尺寸档（Lucide 24px 网格、2px 线、圆角端点）。

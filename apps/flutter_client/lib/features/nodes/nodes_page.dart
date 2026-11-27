@@ -1106,14 +1106,11 @@ class _LatencyChip extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    // 延迟数字本身的绿色（问题 4）：主题 token 里没有成功/绿色
-    //（app_theme.dart 只有深蓝/金色等 token），这里按亮度各取一个
-    // 两端都可读的绿——白天 #157347（白底对比度约 5.9:1），夜晚
-    // #4ADE80（墨蓝黑底对比度约 11:1）；不要写死只在白天可读的深绿。
-    // 首页节点弹窗里的延迟数字用同一对绿（见 home_page.dart）。
-    final latencyOkColor = Theme.of(context).brightness == Brightness.dark
-        ? const Color(0xFF4ADE80)
-        : const Color(0xFF157347);
+    // 延迟数字本身的绿色（问题 4）：主题 token 里没有成功/绿色，
+    // 走 AppTokens.latencyOkColor（首页节点弹窗共用同一对，别各写各的）。
+    final latencyOkColor = AppTokens.latencyOkColor(
+      Theme.of(context).brightness,
+    );
     final content = testingThis
         ? const SizedBox(
             width: 14,
@@ -1157,7 +1154,7 @@ class _LatencyChip extends ConsumerWidget {
     return Tooltip(
       message: tooltip,
       child: InkWell(
-        borderRadius: BorderRadius.circular(4),
+        borderRadius: BorderRadius.circular(AppTokens.radiusSmall),
         onTap: (testingThis || testingAll)
             ? null
             : () async {

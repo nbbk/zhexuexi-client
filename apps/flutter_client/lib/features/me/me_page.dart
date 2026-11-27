@@ -266,7 +266,10 @@ class _MePageState extends ConsumerState<MePage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('我的订阅', style: TextStyle(fontSize: 16)),
+                Text(
+                  '我的订阅',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
                 const SizedBox(height: AppTokens.spacingSm),
                 if (!bound) ...[
                   const Text('未绑定订阅'),
@@ -330,7 +333,10 @@ class _MePageState extends ConsumerState<MePage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('订阅更新', style: TextStyle(fontSize: 16)),
+                Text(
+                  '订阅更新',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
                 const SizedBox(height: AppTokens.spacingXs),
                 Text(
                   '上次更新：${nodesState.lastUpdated == null ? '尚未更新' : formatDateTime(nodesState.lastUpdated!)}',

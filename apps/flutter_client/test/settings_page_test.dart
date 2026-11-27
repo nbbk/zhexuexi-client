@@ -476,31 +476,34 @@ void main() {
     expect(state.speedTestAt, isNull);
   });
 
-  testWidgets('主题切换：白天/夜晚分段选，切换后持久化', (tester) async {
+  testWidgets('主题切换：列表一行一个，切换后持久化', (tester) async {
     SharedPreferences.setMockInitialValues({});
     await pumpSettings(tester);
     expect(find.text('主题'), findsOneWidget);
     expect(find.text('白天'), findsOneWidget);
     expect(find.text('夜晚'), findsOneWidget);
-    // 设置页有两个 SegmentedButton（分流模式＋主题）：
-    // 按段值认主题那组（含 'night' 段）。
-    SegmentedButton<String> themeSegmented() {
-      final all = tester.widgetList<SegmentedButton<String>>(
-        find.byType(SegmentedButton<String>),
-      );
-      return all.firstWhere(
-        (s) => s.segments.any((seg) => seg.value == 'night'),
-      );
-    }
+    // 十个主题都在列表里（五套皮肤 × 白天/夜晚）。
+    expect(find.text('曜石黑金 · 夜晚'), findsOneWidget);
+    expect(find.text('青瓷月白 · 白天'), findsOneWidget);
+    expect(find.text('落樱粉 · 白天'), findsOneWidget);
+    expect(find.text('星野紫 · 夜晚'), findsOneWidget);
+    // 当前选中只有对应那行打勾（分流模式那组 SegmentedButton 选中段
+    // 也自带一个 check 图标，所以只在主题行里找，不全局数）。
+    Finder themeRowCheck(String name) => find.descendant(
+      of: find.widgetWithText(ListTile, name),
+      matching: find.byIcon(Icons.check),
+    );
+    expect(themeRowCheck('白天'), findsOneWidget);
+    expect(themeRowCheck('曜石黑金 · 夜晚'), findsNothing);
 
-    expect(themeSegmented().selected, {'day'});
-    await tapAsync(tester, find.text('夜晚'));
-    expect(themeSegmented().selected, {'night'});
+    await tapAsync(tester, find.text('曜石黑金 · 夜晚'));
     final prefs = await SharedPreferences.getInstance();
-    expect(prefs.getString('app_theme_id'), 'night');
+    expect(prefs.getString('app_theme_id'), 'obsidian-night');
+    expect(themeRowCheck('曜石黑金 · 夜晚'), findsOneWidget);
+    expect(themeRowCheck('白天'), findsNothing);
     await tapAsync(tester, find.text('白天'));
-    expect(themeSegmented().selected, {'day'});
     expect(prefs.getString('app_theme_id'), 'day');
+    expect(themeRowCheck('白天'), findsOneWidget);
   });
 
   testWidgets('检查应用更新：已是最新时报当前版本，不弹更新弹窗', (tester) async {

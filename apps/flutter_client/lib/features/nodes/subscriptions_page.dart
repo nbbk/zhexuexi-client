@@ -347,13 +347,21 @@ class _SubscriptionsPageState extends ConsumerState<SubscriptionsPage> {
                   decoration: BoxDecoration(
                     color: appThemeTokensOf(context).gold
                         .withValues(alpha: 0.18),
-                    borderRadius: BorderRadius.circular(4),
+                    borderRadius: BorderRadius.circular(
+                      AppTokens.radiusSmall,
+                    ),
                   ),
                   child: Text(
                     '主订阅',
                     style: TextStyle(
                       fontSize: 12,
-                      color: appThemeTokensOf(context).deepBlue,
+                      // 夜晚主色在深色底上只有 1.45:1 看不清，夜晚改走
+                      // 点缀色（各皮肤夜晚都在 7.5:1 以上）；白天主色
+                      // 在浅金底上可读，保持原样。
+                      color:
+                          Theme.of(context).brightness == Brightness.dark
+                              ? appThemeTokensOf(context).gold
+                              : appThemeTokensOf(context).deepBlue,
                     ),
                   ),
                 ),

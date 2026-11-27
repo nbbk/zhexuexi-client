@@ -404,27 +404,44 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
           onChanged: (value) =>
               ref.read(settingsProvider.notifier).setNotifications(value),
         ),
-        // 外观主题：可切换的注册表（现在白天/夜晚两档，后面再加更多
-        // 风格主题时只在 AppThemes 里加定义，不用改页面）；
-        // 切换后全端生效，存在本地偏好里，重启后还保持。
-        const ListTile(title: Text('主题'), subtitle: Text('白天 / 夜晚，后面还会加更多风格')),
-        SegmentedButton<String>(
-          style: SegmentedButton.styleFrom(
-            selectedBackgroundColor: appThemeTokensOf(context)
-                .segmentedSelectedBackground,
-            selectedForegroundColor: appThemeTokensOf(context)
-                .segmentedSelectedForeground,
-          ),
-          segments: [
-            for (final theme in AppThemes.all)
-              ButtonSegment(value: theme.id, label: Text(theme.name)),
-          ],
-          selected: {ref.watch(appThemeProvider)},
-          onSelectionChanged: (selected) {
-            if (selected.isEmpty) return;
-            ref.read(appThemeProvider.notifier).setTheme(selected.first);
-          },
+        // 外观主题：可切换的注册表（加风格主题时只在 AppThemes 里
+        // 加定义，不用改页面）；切换后全端生效，存在本地偏好里，
+        // 重启后还保持。十个主题分段选放不下，改用列表一行一个，
+        // 每行带该主题自己的开关渐变色样。
+        const ListTile(
+          title: Text('主题'),
+          subtitle: Text('五套皮肤，各有白天 / 夜晚'),
         ),
+        for (final theme in AppThemes.all)
+          ListTile(
+            leading: Container(
+              width: 36,
+              height: 36,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                gradient: LinearGradient(
+                  colors: theme.tokens.powerGradient,
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
+                border: Border.all(
+                  color: theme.tokens.gold,
+                  width: 2,
+                ),
+              ),
+            ),
+            title: Text(theme.name),
+            trailing: ref.watch(appThemeProvider) == theme.id
+                ? Icon(
+                    Icons.check,
+                    color: appThemeTokensOf(
+                      context,
+                    ).segmentedSelectedBackground,
+                  )
+                : null,
+            onTap: () =>
+                ref.read(appThemeProvider.notifier).setTheme(theme.id),
+          ),
         const ListTile(
           title: Text('语言'),
           subtitle: Text('暂只支持简体中文'),

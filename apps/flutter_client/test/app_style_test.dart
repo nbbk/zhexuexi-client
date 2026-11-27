@@ -3,20 +3,53 @@
 // 不碰真机与真偏好文件：SharedPreferences 用 mock；
 // 呼吸动画只在“开”时转，关态下 pumpAndSettle 不会被无限动画卡住，
 // 开态测试用手动 pump。
+import 'dart:math' as math;
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:zhexuexi_client/core/app_motion.dart';
 import 'package:zhexuexi_client/core/app_theme.dart';
+import 'package:zhexuexi_client/core/app_tokens.dart';
 import 'package:zhexuexi_client/services/theme_notifier.dart';
 import 'package:zhexuexi_client/widgets/glass_card.dart';
 import 'package:zhexuexi_client/widgets/power_button.dart';
 
+/// WCAG 相对亮度（0–1）。
+double _relativeLuminance(Color c) {
+  double channel(double v) =>
+      v <= 0.04045 ? v / 12.92 : math.pow((v + 0.055) / 1.055, 2.4).toDouble();
+  return 0.2126 * channel(c.r) +
+      0.7152 * channel(c.g) +
+      0.0722 * channel(c.b);
+}
+
+/// WCAG 对比度（1–21）；正文 4.5:1、非文字图形 3:1。
+double _contrast(Color a, Color b) {
+  final la = _relativeLuminance(a);
+  final lb = _relativeLuminance(b);
+  return (math.max(la, lb) + 0.05) / (math.min(la, lb) + 0.05);
+}
+
 void main() {
   group('主题注册表', () {
-    test('注册了白天/夜晚两档，默认白天，id 不存在回落默认', () {
-      expect(AppThemes.all.map((t) => t.id).toList(), ['day', 'night']);
+    test('注册了五套皮肤 × 白天/夜晚两档，默认白天，id 不存在回落默认', () {
+      expect(
+        AppThemes.all.map((t) => t.id).toList(),
+        [
+          'day',
+          'night',
+          'obsidian-day',
+          'obsidian-night',
+          'celadon-day',
+          'celadon-night',
+          'sakura-day',
+          'sakura-night',
+          'violet-day',
+          'violet-night',
+        ],
+      );
       expect(AppThemes.defaultId, 'day');
       expect(AppThemes.byId('night').name, '夜晚');
       expect(AppThemes.byId('nope').id, 'day');
@@ -100,6 +133,162 @@ void main() {
       expect(
         AppThemes.night.themeData.appBarTheme.foregroundColor,
         Colors.white,
+      );
+    });
+
+    test('新皮肤：四套 × 白天/夜晚的 token 是定好的色值', () {
+      // 曜石黑金。
+      var t = AppThemes.obsidianDay.tokens;
+      expect(t.deepBlue, const Color(0xFF0B0B10));
+      expect(t.deepBlueLight, const Color(0xFF1C1C26));
+      expect(t.gold, const Color(0xFFD4AF37));
+      expect(t.background, const Color(0xFFF5F3EE));
+      expect(t.powerGradient, [
+        const Color(0xFF0B0B10),
+        const Color(0xFF2A2A35),
+      ]);
+      expect(AppThemes.obsidianNight.tokens.background, const Color(0xFF050508));
+      expect(AppThemes.obsidianNight.brightness, Brightness.dark);
+      // 青瓷月白。
+      t = AppThemes.celadonDay.tokens;
+      expect(t.deepBlue, const Color(0xFF1F5C4D));
+      expect(t.deepBlueLight, const Color(0xFF3E8A76));
+      expect(t.gold, const Color(0xFFC9A86A));
+      expect(t.background, const Color(0xFFF7F6F1));
+      expect(t.secondaryText, const Color(0xFF4E6A61));
+      expect(AppThemes.celadonNight.tokens.background, const Color(0xFF0A1F1A));
+      expect(AppThemes.celadonNight.tokens.segmentedSelectedForeground,
+          const Color(0xFF0A1F1A));
+      // 落樱粉。
+      t = AppThemes.sakuraDay.tokens;
+      expect(t.deepBlue, const Color(0xFF9E3D5E));
+      expect(t.deepBlueLight, const Color(0xFFC96A8C));
+      expect(t.gold, const Color(0xFFF0B8C8));
+      expect(t.background, const Color(0xFFFFF8F9));
+      expect(t.secondaryText, const Color(0xFF7E5F6B));
+      expect(AppThemes.sakuraNight.tokens.background, const Color(0xFF1E0E14));
+      expect(AppThemes.sakuraNight.tokens.segmentedSelectedForeground,
+          const Color(0xFF1E0E14));
+      // 星野紫。
+      t = AppThemes.violetDay.tokens;
+      expect(t.deepBlue, const Color(0xFF4C2A85));
+      expect(t.deepBlueLight, const Color(0xFF7B5EA7));
+      expect(t.gold, const Color(0xFFEEC362));
+      expect(t.background, const Color(0xFFF7F5FB));
+      expect(AppThemes.violetNight.tokens.background, const Color(0xFF120A24));
+      expect(AppThemes.violetNight.brightness, Brightness.dark);
+      // 墨蓝两档原样不动。
+      expect(AppThemes.day.tokens.deepBlue, const Color(0xFF082E63));
+      expect(AppThemes.night.tokens.background, const Color(0xFF070F1C));
+    });
+
+    test('新皮肤：文字对比度都达标（白天主色字、夜晚点缀字、次要文字、'
+        '三段选中、开关白图标）', () {
+      const defs = [
+        AppThemes.obsidianDay,
+        AppThemes.obsidianNight,
+        AppThemes.celadonDay,
+        AppThemes.celadonNight,
+        AppThemes.sakuraDay,
+        AppThemes.sakuraNight,
+        AppThemes.violetDay,
+        AppThemes.violetNight,
+      ];
+      for (final def in defs) {
+        final t = def.tokens;
+        final bg = t.background;
+        // 顶栏：白字在主色上（白天夜晚都走这对）。
+        expect(_contrast(Colors.white, t.deepBlue), greaterThanOrEqualTo(4.5),
+            reason: '${def.id} 顶栏白字');
+        // 白天主色字在底色上；夜晚点缀字在底色上（主色夜晚只作装饰）。
+        if (def.brightness == Brightness.light) {
+          expect(_contrast(t.deepBlue, bg), greaterThanOrEqualTo(4.5),
+              reason: '${def.id} 主色字');
+        } else {
+          expect(_contrast(t.gold, bg), greaterThanOrEqualTo(4.5),
+              reason: '${def.id} 点缀字');
+        }
+        expect(_contrast(t.secondaryText, bg), greaterThanOrEqualTo(4.5),
+            reason: '${def.id} 次要文字');
+        expect(
+          _contrast(
+            t.segmentedSelectedForeground,
+            t.segmentedSelectedBackground,
+          ),
+          greaterThanOrEqualTo(4.5),
+          reason: '${def.id} 三段选中',
+        );
+        // 开关上的白色信号弧是非文字图形，3:1 即可。
+        for (final g in t.powerGradient) {
+          expect(_contrast(Colors.white, g), greaterThanOrEqualTo(3.0),
+              reason: '${def.id} 开关图标');
+        }
+      }
+    });
+
+    test('新皮肤：ThemeData 能编出来，底色与兜底色跟 token 走', () {
+      for (final def in [
+        AppThemes.obsidianDay,
+        AppThemes.obsidianNight,
+        AppThemes.celadonDay,
+        AppThemes.celadonNight,
+        AppThemes.sakuraDay,
+        AppThemes.sakuraNight,
+        AppThemes.violetDay,
+        AppThemes.violetNight,
+      ]) {
+        final data = def.themeData;
+        expect(data.brightness, def.brightness);
+        expect(data.scaffoldBackgroundColor, def.tokens.background);
+        expect(data.extension<AppThemeTokens>(), isNotNull);
+        expect(data.appBarTheme.backgroundColor, def.tokens.deepBlue);
+        expect(data.appBarTheme.foregroundColor, Colors.white);
+        if (def.brightness == Brightness.light) {
+          expect(
+            data.dialogTheme.backgroundColor,
+            def.tokens.background,
+          );
+          expect(
+            data.cardTheme.color,
+            def.tokens.background.withValues(alpha: 0.6),
+          );
+        } else {
+          expect(data.dialogTheme.backgroundColor, def.tokens.deepBlue);
+          expect(data.cardTheme.color, Colors.white.withValues(alpha: 0.08));
+        }
+      }
+    });
+
+    test('ThemeNotifier：新皮肤 id 切换持久化，重建读回', () async {
+      SharedPreferences.setMockInitialValues({});
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      await container
+          .read(appThemeProvider.notifier)
+          .setTheme('sakura-night');
+      expect(container.read(appThemeProvider), 'sakura-night');
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getString('app_theme_id'), 'sakura-night');
+      final container2 = ProviderContainer();
+      addTearDown(container2.dispose);
+      for (
+        var i = 0;
+        i < 50 && container2.read(appThemeProvider) != 'sakura-night';
+        i++
+      ) {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+      expect(container2.read(appThemeProvider), 'sakura-night');
+    });
+
+    test('AppTokens.latencyOkColor：白天夜晚各一支绿，两处共用', () {
+      expect(
+        AppTokens.latencyOkColor(Brightness.light),
+        const Color(0xFF157347),
+      );
+      expect(
+        AppTokens.latencyOkColor(Brightness.dark),
+        const Color(0xFF4ADE80),
       );
     });
 

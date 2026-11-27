@@ -552,7 +552,9 @@ class _HomePageState extends ConsumerState<HomePage> {
                     ),
                   ),
                   child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: AppTokens.spacingMd,
+                    ),
                     child: Row(
                       children: [
                         const AppIcon(icon: AppIcons.megaphone),
@@ -890,8 +892,7 @@ class _NodePickerDialogState extends ConsumerState<_NodePickerDialog> {
 
   /// 弹窗里的延迟文案：与节点页延迟芯片同一口径——测到的数字本身绿色，
   /// 失败只显示红色圆点＋原因（不写“测速失败”四个字当标题），没测过灰字。
-  /// 绿色与 nodes_page.dart 的 _LatencyChip 是同一对（白天 #157347 /
-  /// 夜晚 #4ADE80），主题 token 里没有成功/绿色，见那里的注释。
+  /// 绿色走 [AppTokens.latencyOkColor]（两处共用一对，别各写各的）。
   Widget _latencyLabel(Node node, bool testingThis) {
     final theme = Theme.of(context);
     // 测速中该行转圈（复用节点页 _LatencyChip 的做法），其他行不动。
@@ -903,9 +904,7 @@ class _NodePickerDialogState extends ConsumerState<_NodePickerDialog> {
       );
     }
     if (node.latencyMs != null) {
-      final okColor = theme.brightness == Brightness.dark
-          ? const Color(0xFF4ADE80)
-          : const Color(0xFF157347);
+      final okColor = AppTokens.latencyOkColor(theme.brightness);
       return Text(
         '${node.latencyMs}ms',
         style: TextStyle(color: okColor),
@@ -1125,7 +1124,7 @@ class _NodeRow extends StatelessWidget {
             ? '正在测速…'
             : '点一下只测这一个节点',
         child: InkWell(
-          borderRadius: BorderRadius.circular(4),
+          borderRadius: BorderRadius.circular(AppTokens.radiusSmall),
           onTap: canTestSingle ? onTestSingle : null,
           child: Padding(
             padding: const EdgeInsets.symmetric(vertical: 4),

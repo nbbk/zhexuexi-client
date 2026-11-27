@@ -69,7 +69,9 @@ class AnnouncementListPage extends ConsumerWidget {
                                     vertical: 2,
                                   ),
                                   decoration: BoxDecoration(
-                                    borderRadius: BorderRadius.circular(4),
+                                    borderRadius: BorderRadius.circular(
+                                      AppTokens.radiusSmall,
+                                    ),
                                     border: Border.all(
                                       color: Theme.of(
                                         context,

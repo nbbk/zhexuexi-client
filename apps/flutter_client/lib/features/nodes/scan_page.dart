@@ -1,6 +1,7 @@
 import 'package:material_ui/material_ui.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 
+import '../../core/app_tokens.dart';
 import '../../widgets/app_icon.dart';
 
 /// 扫码页（第 6、7 项）：扫订阅链接或节点链接的二维码。
@@ -46,7 +47,9 @@ class _ScanPageState extends State<ScanPage> {
         error.errorCode == MobileScannerErrorCode.permissionDenied;
     return Center(
       child: Padding(
-        padding: const EdgeInsets.all(24),
+        padding: const EdgeInsets.all(
+          AppTokens.spacingMd + AppTokens.spacingXs,
+        ),
         child: Text(
           denied
               ? '相机权限未开启：请在系统设置里允许“哲学系”使用相机，然后重新扫码。'
@@ -81,7 +84,7 @@ class _ScanPageState extends State<ScanPage> {
             ),
           ),
           const Padding(
-            padding: EdgeInsets.all(16),
+            padding: EdgeInsets.all(AppTokens.spacingMd),
             child: Text(
               '把订阅链接或节点链接的二维码放进框里',
               textAlign: TextAlign.center,
