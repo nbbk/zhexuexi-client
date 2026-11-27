@@ -114,6 +114,7 @@ TunInbound _$TunInboundFromJson(Map<String, dynamic> json) =>
           (json['auto_redirect_iproute2_fallback_rule_index'] as num?)?.toInt()
       ..excludeMptcp = json['exclude_mptcp'] as bool?
       ..loopbackAddress = json['loopback_address']
+      ..stack = json['stack'] as String?
       ..strictRoute = json['strict_route'] as bool?
       ..routeAddress = json['route_address']
       ..routeAddressSet = json['route_address_set']
@@ -183,6 +184,7 @@ Map<String, dynamic> _$TunInboundToJson(TunInbound instance) =>
           ?instance.autoRedirectIproute2FallbackRuleIndex,
       'exclude_mptcp': ?instance.excludeMptcp,
       'loopback_address': ?instance.loopbackAddress,
+      'stack': ?instance.stack,
       'strict_route': ?instance.strictRoute,
       'route_address': ?instance.routeAddress,
       'route_address_set': ?instance.routeAddressSet,

@@ -8361,6 +8361,14 @@
                 }
               ]
             },
+            "stack": {
+              "type": "string",
+              "enum": [
+                "system",
+                "gvisor",
+                "mixed"
+              ]
+            },
             "strict_route": {
               "type": "boolean"
             },

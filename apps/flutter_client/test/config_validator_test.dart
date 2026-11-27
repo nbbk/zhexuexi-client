@@ -110,11 +110,12 @@ void main() {
     });
 
     test('TUN 开着的配置通过 schema（2026-11-26 根因回归）', () async {
-      // TUN 默认开之后每份配置都带 tun 入站；上一轮写的
+      // TUN 默认开之后每份配置都带 tun 入站；2026-11-26 那轮写的
       // `"stack": "gvisor"` 被插件内置 schema 以
       // "Additional property stack is not allowed" 拒绝，
       // applyNodes 每次都 ok:false、开关与模式切换一起卡死。
-      // 修后不写 stack，TUN 开着的配置必须 0 报错。
+      // 0.1.10 已把 stack 补进本地 schema 快照并重生成模型，
+      // 写 stack 的 TUN 配置必须 0 报错。
       final body = await _fixture('singbox_137.json');
       final nodes = parseSingboxJson(body).nodes;
       final validator = SingBoxSchemaConfigValidator();

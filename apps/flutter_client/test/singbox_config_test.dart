@@ -837,21 +837,25 @@ void main() {
       expect(tun['auto_route'], isTrue);
     });
 
-    test('tun 入站不写 stack（2026-11-26 根因回归）', () {
-      // 插件内置 schema 的 tun 分支没有 stack 属性、且
-      // additionalProperties: false，写了 stack 校验就拒整份配置，
-      // TUN 默认开之后点开关、切模式全卡在 applyNodes；不写 stack
-      // 时 sing-box 用默认栈（带 gvisor 编译时 mixed，否则 system）。
+    test('tun 入站写 stack: gvisor（0.1.10，TUN 回包修法）', () {
+      // 0.1.10：TUN 栈从默认（mixed）改成 gvisor——system 栈的 TCP
+      // 回包链（内核监听器→内核路由进 tun0→NAT LookupBack→写回）
+      // 在死态真机上断了，gvisor 把 TCP 全收进用户态 netstack、
+      // 响应直接写回 TUN fd，整条脆弱链一次绕过。2026-11-26 的
+      // “不写 stack”禁令已解除：上游 option/tun.go:52 的 Stack
+      // 字段（enum system,gvisor,mixed）已补进本地 schema 快照，
+      // gen_models.dart 重生成了 TunInbound 模型，校验放行。
       final on = SingboxConfigBuilder.build(
         [ruleNode('甲-直连', NodeSource.direct)],
         tunEnabled: true,
       );
       final tun =
           (on.config['inbounds'] as List)[1] as Map<String, dynamic>;
-      expect(tun.containsKey('stack'), isFalse);
+      expect(tun['stack'], 'gvisor');
       // 其余 tun 字段不动：地址仍是裸字符串（schema 的 Listable 认）。
       expect(tun['address'], '172.19.0.1/30');
       expect(tun['strict_route'], isTrue);
+      expect(tun['mtu'], 1500);
     });
 
     test('TUN MTU 是 1500，不写 9000（2026-11-26 二轮修复）', () {

@@ -661,6 +661,8 @@ class CoreService {
   /// 每轮采三样（全部 try/catch，失败只记一行、不抛、不崩）：
   /// - 实时连接快照（`GET /connections` 完整条目，按 chain 首元＝叶子
   ///   出站聚合：每出站的连接数与累计上下行字节）；
+  /// - TUN 证据（0.1.10）：入站类型 tun 的流按 tcp/udp 分上下行，
+  ///   再数只发不收的流（upload>0 且 download==0），死态定罪用；
   /// - 两路 DNS 探针：直连路 `www.baidu.com`（.cn 规则→dns-direct）、
   ///   代理路 `www.youtube.com`（流媒体规则→dns-proxy），各记成败与延迟；
   /// - 黑断标记：代理路 DNS 从通过变失败的那一次采样行内标
@@ -737,11 +739,44 @@ class CoreService {
                       '↓${_formatBytes(e.value.download)}',
                 )
                 .join('；');
+      // 0.1.10 TUN 证据：只看入站类型 tun 的流（App 经 TUN 来的
+      // 流量；mixed 入站是本机探针/本地流量，不算进来），按 tcp/udp
+      // 分上下行，再数“只发不收”的流（upload>0 且 download==0——
+      // 包发到核心、响应没回来，正是 0.1.9 死态的特征）。下一份
+      // 死态诊断包凭这三个数直接定罪：tcp 只发不收、udp 有下行
+      // → TCP 回包断；两者都只发不收 → TUN 回包全断；两者都有
+      // 下行 → 回包是通的，黑断在别处。
+      final tunTcp = _OutboundAggregate();
+      final tunUdp = _OutboundAggregate();
+      var tunUploadOnly = 0;
+      for (final entry in entries) {
+        if (entry.inboundType != 'tun') continue;
+        if (entry.network == 'tcp') {
+          tunTcp.count++;
+          tunTcp.upload += entry.upload;
+          tunTcp.download += entry.download;
+        } else if (entry.network == 'udp') {
+          tunUdp.count++;
+          tunUdp.upload += entry.upload;
+          tunUdp.download += entry.download;
+        }
+        if (entry.upload > 0 && entry.download == 0) tunUploadOnly++;
+      }
+      final tunText = tunTcp.count + tunUdp.count == 0
+          ? 'TUN 无连接'
+          : 'TUN tcp：${tunTcp.count}条 '
+              '↑${_formatBytes(tunTcp.upload)} '
+              '↓${_formatBytes(tunTcp.download)}'
+              '；udp：${tunUdp.count}条 '
+              '↑${_formatBytes(tunUdp.upload)} '
+              '↓${_formatBytes(tunUdp.download)}'
+              '；只发不收：$tunUploadOnly条';
       final row =
           '+${rel}s 直连DNS ${_dnsText(directDns)} '
           '| 代理DNS ${_dnsText(proxyDns)} '
           '| 连接 ${entries.length}条 '
           '| $outboundText'
+          '| $tunText'
           '${blackoutMark == null ? '' : ' ｜ $blackoutMark'}';
       _timeline.add(row);
       while (_timeline.length > sampleMaxEntries) {

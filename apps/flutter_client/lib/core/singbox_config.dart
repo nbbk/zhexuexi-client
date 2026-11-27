@@ -213,8 +213,8 @@ class SingboxConfigBuilder {
 /// 不进配置（没有 `Proxy` 组可指），直连的照常进。
 ///
 /// [tunEnabled]（切片 6）：为 true 时加一条 `tun` 入站（系统级
-/// TUN 接管流量，默认栈 + 自动路由）；为 false 时不写 tun 入站。
-/// TUN 只改入站，不改出站与规则。
+/// TUN 接管流量，gvisor 栈 + 自动路由，0.1.10 起写 `stack: gvisor`）；
+/// 为 false 时不写 tun 入站。TUN 只改入站，不改出站与规则。
 ///
 /// 同节点多入站 fallback 组（切片 10）：备注名 `<节点名>-<入站 tag>`
 /// 归组，≥2 个入站的组出一个 urltest 组（组名就是节点名，成员是该
@@ -572,17 +572,30 @@ static SingboxConfigResult build(
           // 注意 run 冒烟只跑 tun 关闭的配置：tun 入站启动时要建
           // TUN 设备，没权限的机器上会失败，真机再验。
           //
-          // 这里不写 `stack`（2026-11-26 根因修复）：真 sing-box
-          // 1.14.4 `check` 接受 `"stack": "gvisor"`，但插件内置的
-          // 官方 schema 里 tun 分支没有 `stack` 这个属性、且
-          // `additionalProperties: false`，Dart 校验每次都以
-          // "Additional property stack is not allowed" 拒绝整份配置
-          // ——TUN 默认开（0367f0df）之后每次点开关、切模式都卡在
-          // applyNodes 的校验上。不写 stack 时 sing-box 用默认栈
-          // （带 gvisor 编译时是 mixed，否则 system，官方默认/推荐），
-          // 与插件自带 SingBoxTunOptions 的默认一致。
-          // `address` 裸字符串不用改：schema 的 address 是 Listable，
-          // 单串与数组都认（消融实测：只去 stack 就 0 报错）。
+          // 0.1.10：TUN 栈改成 `gvisor`（单变量，TUN 路径只改这一处）。
+          // 0.1.9 死态诊断包已定案：核心是好的（DNS 两路通、探活通、
+          // 微信/QQ 的包已到核心），死的是 TUN 到 App 的回包——App
+          // 的包到了核心但响应回不来（全局与规则都整机没网、关开关
+          // 马上恢复）。system 栈（默认 mixed 的 TCP 一半）的回包链
+          // 是：内核 TCP 监听器发包 → 内核路由进 tun0 → sing-tun
+          // NAT LookupBack 改写 → 写回 TUN fd → 内核本地投递给
+          // App；这条链全程依赖内核路由与 NAT 会话，在这台小米上
+          // 断了（0.1.6 同配置能跑、0.1.8/0.1.9 不能，状态相关）。
+          // gvisor 栈把 TCP 全收进用户态 netstack 处理：没有内核
+          // 监听器、没有 NAT 改写，响应直接由 sing-tun 写回 TUN
+          // fd，整条脆弱链一次绕过。UDP 本来就走 gvisor（mixed
+          // 的 UDP 一半），且 libbox 以 with_gvisor 编译（三种栈
+          // 都已编进二进制，不用重编）。
+          //
+          // 为什么现在能写 stack（2026-11-26 的禁令已解除）：
+          // 插件内置 schema 的 tun 分支本来就没有 `stack` 属性且
+          // `additionalProperties: false`，写了就被 Dart 校验以
+          // "Additional property stack is not allowed" 拒掉；0.1.10
+          // 把上游 option/tun.go:52 的 Stack 字段（enum
+          // system,gvisor,mixed）补进本地 schema 快照
+          // （singbox_schema.json），再用 gen_models.dart 重生成
+          // TunInbound 模型（+ build_runner 重生成 .g.dart），
+          // 校验放行后 builder 才能写。只动这三件套，不动别的。
           if (tunEnabled)
             {
               'type': 'tun',
@@ -593,6 +606,7 @@ static SingboxConfigResult build(
               // TUN 所以它不是拨测全灭的主因，只是叠加因素，顺手修）。
               'mtu': 1500,
               'address': '172.19.0.1/30',
+              'stack': 'gvisor',
               'auto_route': true,
               'strict_route': true,
               // 0.1.3（D 路第 1 步）：原来这里写 'dns_mode': 'hijack'

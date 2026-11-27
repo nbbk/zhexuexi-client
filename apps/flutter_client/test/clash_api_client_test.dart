@@ -460,6 +460,44 @@ void main() {
       ]);
     });
 
+    test('0.1.10：getConnectionEntries 解析 metadata.network / type', () async {
+      // TUN 证据的输入：`metadata.network`（tcp/udp）与
+      // `metadata.type`（tun/mixed）要进 ConnectionEntry；没有
+      // metadata 的条目不丢，两字段为 null（采样器当“未知”）。
+      server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      server.listen((request) async {
+        try {
+          final response = request.response;
+          response.headers.contentType = ContentType.json;
+          if (request.uri.path == '/connections') {
+            response.write(
+              '{"connections": ['
+              '{"metadata": {"network": "tcp", "type": "tun"}, "chains": ["Proxy"], "upload": 100, "download": 0}, '
+              '{"metadata": {"network": "udp", "type": "tun"}, "chains": ["direct"], "upload": 50, "download": 200}, '
+              '{"metadata": {"network": "tcp", "type": "mixed"}, "chains": ["direct"], "upload": 1, "download": 2}, '
+              '{"chains": ["direct"], "upload": 3, "download": 4}'
+              ']}',
+            );
+          } else {
+            response.statusCode = HttpStatus.notFound;
+          }
+          await response.close();
+        } catch (_) {}
+      });
+      final client = ClashApiClient(
+        baseUrl: 'http://127.0.0.1:${server.port}',
+      );
+      final entries = await client.getConnectionEntries();
+      expect(entries.length, 4);
+      expect(entries[0].network, 'tcp');
+      expect(entries[0].inboundType, 'tun');
+      expect(entries[1].network, 'udp');
+      expect(entries[1].inboundType, 'tun');
+      expect(entries[2].inboundType, 'mixed');
+      expect(entries[3].network, isNull);
+      expect(entries[3].inboundType, isNull);
+    });
+
     test('queryDns：200 且 Status 0 算通过并记延迟；Rcode 非 0/500 算失败', () async {
       server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       server.listen((request) async {

@@ -297,10 +297,12 @@ void main() {
       // 0.1.3 D 路第 1 步：TUN 入站不写 dns_mode（劫持对一起去掉，
       // 不写即默认，恢复 0.1.1 行为）。
       expect(tun.containsKey('dns_mode'), isFalse);
-      // 回归（2026-11-26）：tun 入站不能写 `stack`——插件内置 schema
-      // 的 tun 分支 additionalProperties 为 false、属性表里没有 stack，
-      // 写了校验恒失败、开关与模式切换全卡死；不写时走 sing-box 默认栈。
-      expect(tun.containsKey('stack'), isFalse);
+      // 0.1.10：tun 入站写 `stack: gvisor`（TUN 回包修法）。
+      // 2026-11-26 的“不能写 stack”回归已解除：上游 option/tun.go:52
+      // 的 Stack 字段已补进本地 schema 快照，gen_models.dart 重生成
+      // 了 TunInbound 模型，校验放行；不写时走 sing-box 默认栈（mixed）
+      // 正是 0.1.9 死态的故障链，写 gvisor 才绕过它。
+      expect(tun['stack'], 'gvisor');
       // TUN 只改入站，出站与 route.final 不变。
       expect((on.config['route'] as Map)['final'], 'direct');
     });

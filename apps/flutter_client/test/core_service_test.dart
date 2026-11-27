@@ -786,4 +786,75 @@ void main() {
       service.dispose();
     });
   });
+
+  group('0.1.10：采样 TUN 证据', () {
+    test('TUN 流按 tcp/udp 分上下行，只发不收单独计数', () async {
+      // 0.1.9 死态的特征：Proxy 流 ↑4.9KB ↓0B（只发不收）。
+      // 采样行要直接印出来：tcp 只发不收、udp 有下行 → TCP 回包断；
+      // 两者都只发不收 → TUN 回包全断；两者都有下行 → 回包通。
+      fakeApi.connectionEntries = const [
+        ConnectionEntry(
+          chains: ['美国01-reality-443-A', '美国01', 'Proxy'],
+          upload: 4900,
+          download: 0,
+          network: 'tcp',
+          inboundType: 'tun',
+        ),
+        ConnectionEntry(
+          chains: ['direct'],
+          upload: 100,
+          download: 397000,
+          network: 'tcp',
+          inboundType: 'tun',
+        ),
+        ConnectionEntry(
+          chains: ['direct'],
+          upload: 50,
+          download: 200,
+          network: 'udp',
+          inboundType: 'tun',
+        ),
+        // mixed 入站是本机探针，不算进 TUN 段。
+        ConnectionEntry(
+          chains: ['direct'],
+          upload: 10,
+          download: 20,
+          network: 'tcp',
+          inboundType: 'mixed',
+        ),
+      ];
+      final service = makeService(
+        sampleInterval: const Duration(milliseconds: 100),
+      );
+      await service.init();
+      plugin.emit(const ProxyStarted());
+      await _pumpEvents();
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+      expect(service.samplingTimeline, isNotEmpty);
+      final row = service.samplingTimeline.first;
+      expect(row, contains('TUN tcp：2条'));
+      expect(row, contains('↓387.7KB'));
+      expect(row, contains('udp：1条'));
+      expect(row, contains('只发不收：1条'));
+      service.dispose();
+    });
+
+    test('无 TUN 流时印 TUN 无连接，不影响出站聚合', () async {
+      fakeApi.connectionEntries = const [
+        ConnectionEntry(chains: ['direct'], upload: 10, download: 20),
+      ];
+      final service = makeService(
+        sampleInterval: const Duration(milliseconds: 100),
+      );
+      await service.init();
+      plugin.emit(const ProxyStarted());
+      await _pumpEvents();
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+      expect(service.samplingTimeline, isNotEmpty);
+      final row = service.samplingTimeline.first;
+      expect(row, contains('TUN 无连接'));
+      expect(row, contains('direct：1条'));
+      service.dispose();
+    });
+  });
 }

@@ -199,8 +199,8 @@ void main() {
     expect(find.text('规则模式'), findsOneWidget);
     expect(find.text('订阅自动更新'), findsOneWidget);
     expect(find.text('客户端版本'), findsOneWidget);
-    // 关于行显示的客户端版本与 pubspec / appVersion 常量一致（0.1.9）。
-    expect(find.text('0.1.9'), findsOneWidget);
+    // 关于行显示的客户端版本与 pubspec / appVersion 常量一致（0.1.10）。
+    expect(find.text('0.1.10'), findsOneWidget);
     // 高级默认折叠：TUN、DNS、诊断都在折叠里，不可见。
     expect(find.text('TUN 模式'), findsNothing);
     expect(find.text('导出诊断包'), findsNothing);
@@ -369,7 +369,7 @@ void main() {
       ],
     );
     await tapAsync(tester, find.text('检查更新'));
-    expect(find.textContaining('当前版本 0.1.9'), findsOneWidget);
+    expect(find.textContaining('当前版本 0.1.10'), findsOneWidget);
     expect(find.textContaining('检查失败，请检查网络后重试'), findsOneWidget);
   });
 
@@ -406,7 +406,7 @@ void main() {
       ],
     );
     await tapAsync(tester, find.text('检查更新'));
-    expect(find.textContaining('当前版本 0.1.9'), findsOneWidget);
+    expect(find.textContaining('当前版本 0.1.10'), findsOneWidget);
     expect(find.textContaining('远程配置暂未发布'), findsOneWidget);
     expect(find.textContaining('请检查网络后重试'), findsNothing);
   });
@@ -447,7 +447,7 @@ void main() {
       ],
     );
     await tapAsync(tester, find.text('检查更新'));
-    expect(find.textContaining('当前版本 0.1.9'), findsOneWidget);
+    expect(find.textContaining('当前版本 0.1.10'), findsOneWidget);
     expect(find.textContaining('已更新到配置 v1'), findsOneWidget);
   });
 

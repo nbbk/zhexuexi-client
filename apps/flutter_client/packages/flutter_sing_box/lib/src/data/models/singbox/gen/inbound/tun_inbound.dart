@@ -59,6 +59,8 @@ class TunInbound extends Inbound with ListenFields, DialerFields {
   /// 对应 JSON 键 `loopback_address`，可空（null 不参与序列化）。
   @JsonKey(name: 'loopback_address')
   Object? loopbackAddress;
+  /// 对应 JSON 键 `stack`，可空（null 不参与序列化）。
+  String? stack;
   /// 对应 JSON 键 `strict_route`，可空（null 不参与序列化）。
   @JsonKey(name: 'strict_route')
   bool? strictRoute;

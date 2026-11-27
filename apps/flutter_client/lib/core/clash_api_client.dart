@@ -50,6 +50,12 @@ class ConnectionEntry {
     required this.chains,
     required this.upload,
     required this.download,
+    // 0.1.10 TUN 证据：`GET /connections` 原始条目 `metadata`
+    // 里的 `network`（tcp/udp）与 `type`（入站类型，如 tun /
+    // mixed）。不填时为 null（旧调用点与无 metadata 的条目），
+    // 采样器把 null 当“未知”——不算 TUN、也不算 TCP/UDP。
+    this.network,
+    this.inboundType,
   });
 
   /// 出站链（叶子在前）；空链的条目由 [ClashApiClient.getConnectionEntries]
@@ -61,6 +67,12 @@ class ConnectionEntry {
 
   /// 该连接累计下行字节。
   final int download;
+
+  /// 网络类型（`metadata.network`：tcp / udp；无 metadata 时 null）。
+  final String? network;
+
+  /// 入站类型（`metadata.type`：tun / mixed 等；无 metadata 时 null）。
+  final String? inboundType;
 }
 
 /// 一次 DNS 探针的结果（Clash API `GET /dns/query`）。
@@ -291,6 +303,9 @@ class ClashApiClient {
   /// 实时连接的完整条目（`GET /connections`，2026-11-27 0.1.9
   /// 采样时序）：每条含 chain、累计上下行字节；核心没跑、接口不通或
   /// 回包解析失败时返回空列表，不抛异常。空 chain 的条目直接丢掉。
+  /// 0.1.10：同时解析 `metadata.network`（tcp/udp）与
+  /// `metadata.type`（入站类型 tun/mixed，供采样器分 TUN 流与
+  /// mixed 探针流）；没有 metadata 时两字段为 null，不丢条目。
   Future<List<ConnectionEntry>> getConnectionEntries() async {
     final client = _httpClientFactory();
     try {
@@ -312,11 +327,20 @@ class ClashApiClient {
         if (entry is! Map<String, dynamic>) continue;
         final chain = entry['chains'];
         if (chain is! List || chain.isEmpty) continue;
+        final metadata = entry['metadata'];
+        final network = metadata is Map<String, dynamic>
+            ? metadata['network']?.toString()
+            : null;
+        final inboundType = metadata is Map<String, dynamic>
+            ? metadata['type']?.toString()
+            : null;
         entries.add(
           ConnectionEntry(
             chains: chain.map((e) => e.toString()).toList(),
             upload: (entry['upload'] as num?)?.toInt() ?? 0,
             download: (entry['download'] as num?)?.toInt() ?? 0,
+            network: network,
+            inboundType: inboundType,
           ),
         );
       }

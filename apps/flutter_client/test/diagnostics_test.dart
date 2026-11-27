@@ -198,7 +198,7 @@ void main() {
       DateTime? blackoutAt,
       List<String>? coreLogTail,
     }) => DiagnosticsReportInput(
-      appVersion: '0.1.9',
+      appVersion: '0.1.10',
       coreVersion: '1.14.4-patched',
       coreStatusText: '已连接',
       modeLabel: '规则模式',
