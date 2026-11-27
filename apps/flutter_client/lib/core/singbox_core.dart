@@ -282,12 +282,20 @@ class CoreService {
   /// 没给时按默认规则（第一个直连节点，没有时第一个）。
   /// [customRules]（切片 6）：已启用的自定义规则，插在内置规则前面。
   /// [tunEnabled]（切片 6）：为 true 时配置里加一条 tun 入站。
+  /// [lanProxy]（0.1.14）：为 true 时 mixed 入站监听 0.0.0.0；
+  /// [lanProxyPort] 是 mixed 入站的端口；[lanProxyUsername] /
+  /// [lanProxyPassword] 非空时写鉴权 `users`（见
+  /// [SingboxConfigBuilder.build]）。
   Future<ConfigApplyResult> applyNodes(
     List<Node> nodes, {
     RoutingMode mode = RoutingMode.rule,
     String? selectedNodeName,
     List<CustomRule> customRules = const [],
     bool tunEnabled = false,
+    bool lanProxy = false,
+    int lanProxyPort = SingboxConfigBuilder.mixedPort,
+    String? lanProxyUsername,
+    String? lanProxyPassword,
   }) async {
     final built = SingboxConfigBuilder.build(
       nodes,
@@ -295,6 +303,10 @@ class CoreService {
       selectedNodeName: selectedNodeName,
       customRules: customRules,
       tunEnabled: tunEnabled,
+      lanProxy: lanProxy,
+      lanProxyPort: lanProxyPort,
+      lanProxyUsername: lanProxyUsername,
+      lanProxyPassword: lanProxyPassword,
     );
     final errors = await _validator.validate(built.config);
     if (errors.isNotEmpty) {

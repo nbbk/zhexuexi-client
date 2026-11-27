@@ -7,6 +7,7 @@ import 'package:material_ui/material_ui.dart';
 
 import '../../brand/remote_config.dart';
 import '../../core/app_motion.dart';
+import '../../services/app_version.dart';
 import '../../widgets/app_icon.dart';
 import '../../core/app_tokens.dart';
 
@@ -17,11 +18,16 @@ import '../../core/routing_mode.dart';
 import '../../core/singbox_config.dart';
 import '../../core/singbox_core.dart';
 import '../../features/update/app_update_dialog.dart';
+import '../../features/per_app_proxy/per_app_proxy_page.dart';
 import '../../services/app_update/app_update_provider.dart';
 import '../../services/app_update/app_updater.dart';
+import '../../services/config_rebuild.dart';
 import '../../services/custom_rules_notifier.dart';
 import '../../services/diagnostics_service.dart';
+import '../../services/lan_address.dart';
+import '../../services/lan_proxy_notifier.dart';
 import '../../services/nodes_notifier.dart';
+import '../../services/per_app_proxy_notifier.dart';
 import '../../services/remote_config_notifier.dart';
 import '../../services/remote_config_service.dart';
 import '../../services/routing_mode_notifier.dart';
@@ -35,7 +41,8 @@ import '../../widgets/glass_card.dart';
 ///   订阅自动更新、通知、语言（暂只简体中文，置灰）、开机自启
 ///   （Windows 才显示）/ 后台保活（Android 才显示）；
 /// - 高级（默认折叠）：TUN 开关、DNS 配置查看（防泄漏已开启、不可
-///   关闭）、自定义规则、分应用代理（Android 专属，后续版本，置灰）、
+///   关闭）、自定义规则、分应用代理（Android 专属，仅选中应用走代理）、
+///   局域网代理（开关＋端口＋鉴权＋风险提示，与首页格子同一份状态）、
 ///   诊断（导出诊断包、连接检测）、清除缓存；
 /// - 关于：客户端版本、sing-box 核心版本、面板版本要求、远程配置版本、
 ///   检查更新（切片 7 接远程配置中心：拉到新版就换品牌与订阅地址）。
@@ -53,10 +60,25 @@ class SettingsPage extends ConsumerStatefulWidget {
 class _SettingsPageState extends ConsumerState<SettingsPage> {
   String _coreVersion = '—';
 
+  /// 真实安装版本（PackageInfo 读到的 versionName，与 pubspec 同步；
+  /// 读不到时回退到 appVersion 常量）。0.1.10–0.1.13 的教训：
+  /// 关于页直接用常量，pubspec 升了常量没升，装上的明明是 0.1.13，
+  /// 显示的却是 0.1.10。
+  String _appVersion = appVersion;
+
+  /// 密码行是否明文显示密码（默认打码）。
+  bool _showLanPassword = false;
+
   @override
   void initState() {
     super.initState();
     _loadCoreVersion();
+    _loadAppVersion();
+  }
+
+  Future<void> _loadAppVersion() async {
+    final version = await resolveAppVersion();
+    if (mounted) setState(() => _appVersion = version);
   }
 
   Future<void> _loadCoreVersion() async {
@@ -100,11 +122,188 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       selectedNodeName: nodesState.selectedNodeName,
       customRules: ref.read(customRulesProvider.notifier).activeRules,
       tunEnabled: value,
+      // 局域网代理跟着 TUN 一起进配置：切 TUN 不能悄悄关了它。
+      lanProxy: ref.read(lanProxyProvider).enabled,
+      lanProxyPort: ref.read(lanProxyProvider).port,
+      lanProxyUsername: ref.read(lanProxyProvider).authCredentials?.username,
+      lanProxyPassword: ref.read(lanProxyProvider).authCredentials?.password,
     );
     if (!result.ok && mounted) {
       await settings.setTun(prev);
       _showSnack('TUN 切换失败，已保持原设置');
     }
+  }
+
+  /// 局域网代理开关：先记偏好，再把新值写进配置（有节点时；没节点时
+  /// 只记偏好，下次生成配置时生效）。核心在跑时换配置会重载（短暂断开，
+  /// 与 TUN 切换同一行为）。写配置失败时把开关拨回去。
+  Future<void> _onLanProxyChanged(bool value) async {
+    final notifier = ref.read(lanProxyProvider.notifier);
+    final prev = ref.read(lanProxyProvider).enabled;
+    if (value == prev) return;
+    await notifier.setEnabled(value);
+    final ok = await rebuildConfigWithCurrentSettings(ref);
+    if (!mounted) return;
+    if (!ok) {
+      await notifier.setEnabled(prev);
+      _showSnack('局域网代理切换失败，已保持原设置');
+      return;
+    }
+    if (ref.read(nodesProvider).nodes.isEmpty) {
+      _showSnack(
+        value ? '局域网代理已开启，下次启动核心时生效' : '局域网代理已关闭，下次启动核心时生效',
+      );
+    }
+  }
+
+  /// 局域网代理的端口/鉴权/账号改动：先记偏好（[persist] 返回 false
+  /// 表示没存上，直接停）；代理开着时重建配置让它生效，关着时只记
+  /// 偏好（下次开开关时生效，不为此断一次网）。写配置失败时把改动
+  /// 拨回去（[revert]）。
+  Future<void> _onLanFieldChanged({
+    required Future<bool> Function() persist,
+    required Future<void> Function() revert,
+  }) async {
+    final saved = await persist();
+    if (!saved) return;
+    if (!ref.read(lanProxyProvider).enabled) return;
+    final ok = await rebuildConfigWithCurrentSettings(ref);
+    if (!ok && mounted) {
+      await revert();
+      _showSnack('保存失败，已保持原设置');
+    }
+  }
+
+  Future<void> _onLanAuthChanged(bool value) async {
+    final prev = ref.read(lanProxyProvider).authEnabled;
+    await _onLanFieldChanged(
+      persist: () async {
+        await ref.read(lanProxyProvider.notifier).setAuthEnabled(value);
+        return true;
+      },
+      revert: () =>
+          ref.read(lanProxyProvider.notifier).setAuthEnabled(prev),
+    );
+  }
+
+  Future<void> _saveLanPort(int port) async {
+    final prev = ref.read(lanProxyProvider).port;
+    await _onLanFieldChanged(
+      persist: () async {
+        await ref.read(lanProxyProvider.notifier).setPort(port);
+        return true;
+      },
+      revert: () => ref.read(lanProxyProvider.notifier).setPort(prev),
+    );
+  }
+
+  Future<void> _saveLanUsername(String username) async {
+    final prev = ref.read(lanProxyProvider).username;
+    await _onLanFieldChanged(
+      persist: () =>
+          ref.read(lanProxyProvider.notifier).setUsername(username),
+      revert: () => ref.read(lanProxyProvider.notifier).setUsername(prev),
+    );
+  }
+
+  Future<void> _saveLanPassword(String password) async {
+    final prev = ref.read(lanProxyProvider).password;
+    await _onLanFieldChanged(
+      persist: () =>
+          ref.read(lanProxyProvider.notifier).setPassword(password),
+      revert: () => ref.read(lanProxyProvider.notifier).setPassword(prev),
+    );
+  }
+
+  /// 局域网代理的文本编辑弹窗（端口/用户名/密码共用）：输入框＋保存；
+  /// 校验不过在弹窗里提示，不关弹窗。密码弹窗多一个“随机生成”按钮。
+  Future<void> _showLanEditDialog({
+    required String title,
+    required String initialValue,
+    required TextInputType keyboardType,
+    bool showGenerate = false,
+    String? Function(String value)? validator,
+    required Future<void> Function(String value) onSave,
+  }) async {
+    final controller = TextEditingController(text: initialValue);
+    final formKey = GlobalKey<FormState>();
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(title),
+        content: Form(
+          key: formKey,
+          child: TextFormField(
+            controller: controller,
+            keyboardType: keyboardType,
+            autofocus: true,
+            validator: (value) => validator?.call(value ?? ''),
+            decoration: const InputDecoration(border: OutlineInputBorder()),
+          ),
+        ),
+        actions: [
+          if (showGenerate)
+            TextButton(
+              onPressed: () {
+                controller.text = LanProxyNotifier.generatePassword();
+              },
+              child: const Text('随机生成'),
+            ),
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () async {
+              if (!(formKey.currentState?.validate() ?? false)) return;
+              await onSave(controller.text);
+              if (dialogContext.mounted) {
+                Navigator.of(dialogContext).pop();
+              }
+            },
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _showLanPortDialog() async {
+    final lan = ref.read(lanProxyProvider);
+    await _showLanEditDialog(
+      title: '端口',
+      initialValue: '${lan.port}',
+      keyboardType: TextInputType.number,
+      validator: (value) {
+        final port = int.tryParse(value.trim());
+        if (port == null || port < 1 || port > 65535) return '端口须是 1–65535';
+        return null;
+      },
+      onSave: (value) => _saveLanPort(int.parse(value.trim())),
+    );
+  }
+
+  Future<void> _showLanUsernameDialog() async {
+    final lan = ref.read(lanProxyProvider);
+    await _showLanEditDialog(
+      title: '用户名',
+      initialValue: lan.username,
+      keyboardType: TextInputType.text,
+      validator: (value) => value.trim().isEmpty ? '用户名不能为空' : null,
+      onSave: _saveLanUsername,
+    );
+  }
+
+  Future<void> _showLanPasswordDialog() async {
+    final lan = ref.read(lanProxyProvider);
+    await _showLanEditDialog(
+      title: '密码',
+      initialValue: lan.password,
+      keyboardType: TextInputType.text,
+      showGenerate: true,
+      validator: (value) => value.isEmpty ? '密码不能为空' : null,
+      onSave: _saveLanPassword,
+    );
   }
 
   /// 导出诊断包：生成报告文本，放弹窗里给用户看与复制。
@@ -125,6 +324,11 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       selectedNodeName: nodesState.selectedNodeName,
       customRules: ref.read(customRulesProvider.notifier).activeRules,
       tunEnabled: settings.tun,
+      // 诊断快照要忠实于当前生成配置，局域网代理也带上。
+      lanProxy: ref.read(lanProxyProvider).enabled,
+      lanProxyPort: ref.read(lanProxyProvider).port,
+      lanProxyUsername: ref.read(lanProxyProvider).authCredentials?.username,
+      lanProxyPassword: ref.read(lanProxyProvider).authCredentials?.password,
     );
     final configSnapshot = jsonEncode({
       'route': configResult.config['route'],
@@ -135,7 +339,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
         .getConnections();
     final report = buildDiagnosticsReport(
       DiagnosticsReportInput(
-        appVersion: appVersion,
+        appVersion: _appVersion,
         coreVersion: _coreVersion,
         coreStatusText: _coreStatusText(core),
         modeLabel: modeState.mode.label,
@@ -279,7 +483,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('检查更新'),
-        content: Text('当前版本 $appVersion。\n$message'),
+        content: Text('当前版本 $_appVersion。\n$message'),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(),
@@ -364,6 +568,8 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     final modeState = ref.watch(routingModeProvider);
     final rules = ref.watch(customRulesProvider);
     final remoteState = ref.watch(remoteConfigProvider);
+    final lan = ref.watch(lanProxyProvider);
+    final lanIp = ref.watch(lanIpProvider).valueOrNull;
 
     // 夜晚模式（0.1.2）：包一层 GlassBackground，与首页/节点页同款
     // 渐变底（#070F1C→#082E63→#0B3D84），不再露 Scaffold 纯色底。
@@ -406,42 +612,47 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
         ),
         // 外观主题：可切换的注册表（加风格主题时只在 AppThemes 里
         // 加定义，不用改页面）；切换后全端生效，存在本地偏好里，
-        // 重启后还保持。十个主题分段选放不下，改用列表一行一个，
-        // 每行带该主题自己的开关渐变色样。
-        const ListTile(
-          title: Text('主题'),
-          subtitle: Text('五套皮肤，各有白天 / 夜晚'),
-        ),
-        for (final theme in AppThemes.all)
-          ListTile(
-            leading: Container(
-              width: 36,
-              height: 36,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                gradient: LinearGradient(
-                  colors: theme.tokens.powerGradient,
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                ),
-                border: Border.all(
-                  color: theme.tokens.gold,
-                  width: 2,
-                ),
-              ),
-            ),
-            title: Text(theme.name),
-            trailing: ref.watch(appThemeProvider) == theme.id
-                ? Icon(
-                    Icons.check,
-                    color: appThemeTokensOf(
-                      context,
-                    ).segmentedSelectedBackground,
-                  )
-                : null,
-            onTap: () =>
-                ref.read(appThemeProvider.notifier).setTheme(theme.id),
+        // 重启后还保持。十个主题全展开放不下，默认折叠，点开再选
+        //（与“高级设置”同一折叠模式）。
+        ExpansionTile(
+          title: const Text('主题'),
+          subtitle: Text(
+            '五套皮肤，各有白天 / 夜晚 · 当前：'
+            '${AppThemes.byId(ref.watch(appThemeProvider)).name}',
           ),
+          children: [
+            for (final theme in AppThemes.all)
+              ListTile(
+                leading: Container(
+                  width: 36,
+                  height: 36,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    gradient: LinearGradient(
+                      colors: theme.tokens.powerGradient,
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                    ),
+                    border: Border.all(
+                      color: theme.tokens.gold,
+                      width: 2,
+                    ),
+                  ),
+                ),
+                title: Text(theme.name),
+                trailing: ref.watch(appThemeProvider) == theme.id
+                    ? Icon(
+                        Icons.check,
+                        color: appThemeTokensOf(
+                          context,
+                        ).segmentedSelectedBackground,
+                      )
+                    : null,
+                onTap: () =>
+                    ref.read(appThemeProvider.notifier).setTheme(theme.id),
+              ),
+          ],
+        ),
         const ListTile(
           title: Text('语言'),
           subtitle: Text('暂只支持简体中文'),
@@ -525,10 +736,79 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
               leading: const AppIcon(icon: AppIcons.plus),
               onTap: () => _showAddRuleDialog(),
             ),
-            const ListTile(
-              title: Text('分应用代理'),
-              subtitle: Text('Android 专属，后续版本'),
-              enabled: false,
+            if (Platform.isAndroid)
+              ListTile(
+                title: const Text('分应用代理'),
+                subtitle: Text(
+                  ref.watch(perAppProxyProvider).enabled
+                      ? '仅 ${ref.watch(perAppProxyProvider).selected.length} 个应用走代理'
+                      : '全部应用走代理',
+                ),
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => const PerAppProxyPage(),
+                  ),
+                ),
+              ),
+            // 局域网代理（0.1.14）：开关＋端口＋鉴权＋风险提示。
+            // 与首页统计格里的格子是同一份状态（lanProxyProvider），
+            // 两处互相实时同步。
+            SwitchListTile(
+              title: const Text('局域网代理'),
+              subtitle: Text(
+                !lan.enabled
+                    ? '同一 Wi-Fi 下的其他设备可用手机做代理'
+                    : lanIp == null
+                        ? '已开启'
+                        : '已开启 · $lanIp:${lan.port}',
+              ),
+              value: lan.enabled,
+              onChanged: lan.switching ? null : _onLanProxyChanged,
+            ),
+            const Padding(
+              padding: EdgeInsets.fromLTRB(16, 0, 16, 8),
+              child: Text(
+                '家里 Wi-Fi 可用，公共 Wi-Fi 有风险：同一 Wi-Fi 下任何人都能连这个代理、走你的流量；建议保持鉴权开启。',
+              ),
+            ),
+            ListTile(
+              title: const Text('端口'),
+              subtitle: const Text('混合代理（HTTP+SOCKS5）监听端口'),
+              trailing: Text('${lan.port}'),
+              onTap: _showLanPortDialog,
+            ),
+            SwitchListTile(
+              title: const Text('用户名密码鉴权'),
+              subtitle: const Text('开启后连接代理须输用户名和密码'),
+              value: lan.authEnabled,
+              onChanged: _onLanAuthChanged,
+            ),
+            ListTile(
+              title: const Text('用户名'),
+              trailing: Text(lan.username),
+              onTap: _showLanUsernameDialog,
+            ),
+            ListTile(
+              title: const Text('密码'),
+              subtitle: const Text('连接代理时用，点一下查看或修改'),
+              trailing: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(_showLanPassword ? lan.password : '••••••••'),
+                  IconButton(
+                    icon: AppIcon(
+                      icon: _showLanPassword
+                          ? AppIcons.eyeOff
+                          : AppIcons.eye,
+                    ),
+                    tooltip: _showLanPassword ? '隐藏密码' : '显示密码',
+                    onPressed: () => setState(
+                      () => _showLanPassword = !_showLanPassword,
+                    ),
+                  ),
+                ],
+              ),
+              onTap: _showLanPasswordDialog,
             ),
             ListTile(
               title: const Text('导出诊断包'),
@@ -553,7 +833,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
         const SizedBox(height: AppTokens.spacingMd),
         const Text('关于', style: TextStyle(fontSize: 16)),
         const SizedBox(height: AppTokens.spacingXs),
-        ListTile(title: const Text('客户端版本'), trailing: Text(appVersion)),
+        ListTile(title: const Text('客户端版本'), trailing: Text(_appVersion)),
         ListTile(
           title: const Text('sing-box 核心版本'),
           trailing: Text(_coreVersion),

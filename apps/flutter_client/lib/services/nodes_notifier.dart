@@ -70,6 +70,7 @@ class NodesState {
     this.addressNotice,
     this.subscriptionSummaries = const [],
     this.testingSingleNodeKey,
+    this.testingGroupKey,
   });
 
   /// 节点列表。
@@ -148,6 +149,11 @@ class NodesState {
   /// 测速中芯片转圈用；一键测速进行中、或已有单节点在测时再点直接返回。
   final String? testingSingleNodeKey;
 
+  /// 正在组测速的订阅组 key（弹窗 `_groupOf` 的 key 同源：订阅 id 或
+  /// 订阅名；null 表示没有在测的组）。组头按钮变“测速中…”靠它认是
+  /// 哪一组；一键/单节点/组测速三者互斥（见 [testGroupSpeeds]）。
+  final String? testingGroupKey;
+
   /// 中转节点（名字以 -中转 或 -B 结尾，见 subscription_parser.dart）。
   List<Node> get relayNodes =>
       nodes.where((n) => n.source == NodeSource.relay).toList();
@@ -195,6 +201,7 @@ class NodesState {
     Object? addressNotice = _unset,
     List<SubscriptionSummary>? subscriptionSummaries,
     Object? testingSingleNodeKey = _unset,
+    Object? testingGroupKey = _unset,
   }) {
     return NodesState(
       nodes: nodes ?? this.nodes,
@@ -232,6 +239,9 @@ class NodesState {
       testingSingleNodeKey: testingSingleNodeKey == _unset
           ? this.testingSingleNodeKey
           : testingSingleNodeKey as String?,
+      testingGroupKey: testingGroupKey == _unset
+          ? this.testingGroupKey
+          : testingGroupKey as String?,
     );
   }
 }
@@ -925,7 +935,11 @@ class NodesNotifier extends Notifier<NodesState> {
   /// （超时不可达 vs 其他连接失败），不丢节点。
   /// 正在测速时再点直接返回，不开第二轮。
   Future<bool> testAllSpeeds() async {
-    if (state.nodes.isEmpty || state.testingSpeed) return false;
+    if (state.nodes.isEmpty ||
+        state.testingSpeed ||
+        state.testingGroupKey != null) {
+      return false;
+    }
     final (direct, fallbackNotice) = _speedTestMode();
     _ensureRetestTimer();
     final nodes = state.nodes;
@@ -943,7 +957,68 @@ class NodesNotifier extends Notifier<NodesState> {
       speedTestDirect: direct,
       speedTestDirectFallback: fallbackNotice != null,
     );
-    var tested = 0;
+    await _testNodeBatch(nodes, nodes, direct: direct);
+    state = state.copyWith(
+      testingSpeed: false,
+      speedTestAt: DateTime.now(),
+    );
+    return true;
+  }
+
+  /// 只测一订阅组的节点（首页节点弹窗组头的“测速”入口）。
+  ///
+  /// 复用 [_testNodeBatch] 与一键测速同一套逻辑、超时与预热：只清
+  /// 这一组的延迟标记、只测这一组，不碰其他组、不重排列表。
+  /// 进行中按一键测速的规则禁用其他测速入口（[testingSpeed] 为真，
+  /// 组头按钮变“测速中…”靠 [testingGroupKey] 认是哪一组）。
+  /// 一键测速进行中、已有单节点或别的组在测时直接返回 false；
+  /// 后台重测定时器不由组测速启动（只跟一键测速）。
+  Future<bool> testGroupSpeeds(
+    String groupKey,
+    List<Node> groupNodes,
+  ) async {
+    if (state.nodes.isEmpty ||
+        groupNodes.isEmpty ||
+        state.testingSpeed ||
+        state.testingSingleNodeKey != null ||
+        state.testingGroupKey != null) {
+      return false;
+    }
+    final (direct, fallbackNotice) = _speedTestMode();
+    final nodes = state.nodes;
+    for (final node in groupNodes) {
+      node.latencyMs = null;
+      node.latencyFailed = false;
+      node.latencyFailureReason = null;
+    }
+    state = state.copyWith(
+      nodes: List.of(nodes),
+      testingSpeed: true,
+      testingGroupKey: groupKey,
+      speedTestedCount: 0,
+      speedTestTotal: groupNodes.length,
+      speedTestError: fallbackNotice,
+      speedTestDirect: direct,
+      speedTestDirectFallback: fallbackNotice != null,
+    );
+    await _testNodeBatch(groupNodes, nodes, direct: direct);
+    state = state.copyWith(
+      testingSpeed: false,
+      testingGroupKey: null,
+      speedTestAt: DateTime.now(),
+    );
+    return true;
+  }
+
+  /// 批量测一批节点（testAllSpeeds 与 testGroupSpeeds 共用）：
+  /// 走代理口径时先预热一次默认出站，再按 [_speedTestConcurrency]
+  /// 并发逐个测，测完一个进度 +1。调用方负责清延迟标记与
+  /// testingSpeed / speedTestTotal 的首尾状态。
+  Future<void> _testNodeBatch(
+    List<Node> targets,
+    List<Node> allNodes, {
+    required bool direct,
+  }) async {
     // 预热（2026-11-26 0.1.2 根因 B）：开批前先对当前默认出站
     // （selector `Proxy`）做一次拨测，把冷拨号的首次握手＋落地
     // 解析＋TLS 提前暖起来，后面的单节点测速就不用全走冷链路。
@@ -959,24 +1034,20 @@ class NodesNotifier extends Notifier<NodesState> {
         'failure=${warmup.failure}',
       );
     }
-    for (var i = 0; i < nodes.length; i += _speedTestConcurrency) {
-      final batch = nodes.skip(i).take(_speedTestConcurrency).toList();
+    var tested = 0;
+    for (var i = 0; i < targets.length; i += _speedTestConcurrency) {
+      final batch = targets.skip(i).take(_speedTestConcurrency).toList();
       await Future.wait(
         batch.map((node) async {
-          await _testOneNode(node, nodes, direct: direct);
+          await _testOneNode(node, allNodes, direct: direct);
           tested++;
           state = state.copyWith(
-            nodes: List.of(nodes),
+            nodes: List.of(allNodes),
             speedTestedCount: tested,
           );
         }),
       );
     }
-    state = state.copyWith(
-      testingSpeed: false,
-      speedTestAt: DateTime.now(),
-    );
-    return true;
   }
 
   /// 只测一个节点（节点行延迟芯片点一下触发）。
@@ -991,6 +1062,7 @@ class NodesNotifier extends Notifier<NodesState> {
   Future<bool> testSingleSpeed(Node node) async {
     if (state.nodes.isEmpty ||
         state.testingSpeed ||
+        state.testingGroupKey != null ||
         state.testingSingleNodeKey != null) {
       return false;
     }

@@ -21,6 +21,7 @@ import 'package:zhexuexi_client/core/userinfo.dart';
 import 'package:zhexuexi_client/features/home/home_page.dart';
 import 'package:zhexuexi_client/services/announcement_service.dart';
 import 'package:zhexuexi_client/widgets/announcement_marquee.dart';
+import 'package:zhexuexi_client/services/lan_address.dart';
 import 'package:zhexuexi_client/services/nodes_notifier.dart';
 import 'package:zhexuexi_client/services/remote_config_notifier.dart';
 import 'package:zhexuexi_client/services/settings_notifier.dart';
@@ -164,6 +165,17 @@ class _PickerStubNodesNotifier extends _StubNodesNotifier {
   /// 不设就立即完成。
   Completer<bool>? testAllGate;
 
+  /// testGroupSpeeds 被调了几次，以及最后一次测的组 key。
+  int testGroupCalls = 0;
+  String? lastGroupKey;
+
+  /// testGroupSpeeds 测到后给该组节点写的延迟。
+  int groupLatencyMs = 77;
+
+  /// testGroupSpeeds 的门：设了就等它完成才回（测“测速中…”用），
+  /// 不设就立即完成。
+  Completer<bool>? testGroupGate;
+
   @override
   Future<bool> selectNode(
     Node node, {
@@ -211,6 +223,30 @@ class _PickerStubNodesNotifier extends _StubNodesNotifier {
       node.latencyFailureReason = null;
     }
     state = state.copyWith(nodes: List.of(nodes));
+    return true;
+  }
+
+  @override
+  Future<bool> testGroupSpeeds(String groupKey, List<Node> groupNodes) async {
+    testGroupCalls++;
+    lastGroupKey = groupKey;
+    state = state.copyWith(testingSpeed: true, testingGroupKey: groupKey);
+    if (testGroupGate != null) {
+      final ok = await testGroupGate!.future;
+      state = state.copyWith(testingSpeed: false, testingGroupKey: null);
+      if (!ok) return false;
+    }
+    final nodes = state.nodes;
+    for (final node in groupNodes) {
+      node.latencyMs = groupLatencyMs;
+      node.latencyFailed = false;
+      node.latencyFailureReason = null;
+    }
+    state = state.copyWith(
+      nodes: List.of(nodes),
+      testingSpeed: false,
+      testingGroupKey: null,
+    );
     return true;
   }
 }
@@ -340,6 +376,7 @@ void main() {
     NodesNotifier? nodesOverride,
     SettingsNotifier? settingsOverride,
     List<Announcement>? announcements,
+    List<Override> extraOverrides = const [],
   }) async {
     // 公告默认一条（0.1.2：有公告才显示卡片；默认不断言它，
     // 卡片尺寸测试用它当 72 高锚点）。
@@ -382,6 +419,7 @@ void main() {
           if (settingsOverride != null)
             settingsProvider.overrideWith(() => settingsOverride),
           announcementsProvider.overrideWith((ref) async => announcements!),
+          ...extraOverrides,
         ],
         child: MaterialApp(
           home: Scaffold(
@@ -926,7 +964,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('选择节点'), findsOneWidget);
     expect(find.text('测速全部'), findsOneWidget);
-    expect(find.text('测速当前节点'), findsOneWidget);
+    expect(find.text('测当前节点'), findsOneWidget);
     // 分组默认全部折叠：组头在、节点不在，点组头展开才看到节点。
     expect(find.text('未命名订阅'), findsOneWidget);
     expect(find.text('甲-直连'), findsNothing);
@@ -942,7 +980,7 @@ void main() {
     expect(find.text('当前节点：乙-中转'), findsOneWidget);
   });
 
-  testWidgets('节点弹窗：点“测速当前节点”，只测选中节点、延迟就地更新', (
+  testWidgets('节点弹窗：点“测当前节点”，只测选中节点、延迟就地更新', (
     tester,
   ) async {
     final stub = _PickerStubNodesNotifier(
@@ -954,7 +992,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('未命名订阅'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('测速当前节点'));
+    await tester.tap(find.text('测当前节点'));
     await tester.pumpAndSettle();
     expect(stub.testSingleCalls, 1);
     // 只测了选中的甲：弹窗里甲显示 88ms（绿色），乙还是未测速。
@@ -994,6 +1032,92 @@ void main() {
     expect(find.text('选择节点'), findsNothing);
     expect(find.text('请先绑定订阅，再选择节点'), findsOneWidget);
     expect(goToMeCalls, 1);
+  });
+
+  // 0.1.14：节点弹窗组头测速、底部按钮一行、局域网代理格子。
+  testWidgets('节点弹窗：组头“测速”只测该组节点，点按钮不触发展开', (tester) async {
+    final stub = _PickerStubNodesNotifier(
+      nodes: [
+        _node(
+          '甲1-直连',
+          subscriptionId: 'sub-a',
+          subscriptionName: '订阅甲',
+        ),
+        _node(
+          '甲2-直连',
+          subscriptionId: 'sub-a',
+          subscriptionName: '订阅甲',
+        ),
+        _node(
+          '乙1-中转',
+          subscriptionId: 'sub-b',
+          subscriptionName: '订阅乙',
+        ),
+      ],
+      selected: '甲1-直连',
+    );
+    await pumpHome(tester, nodesOverride: stub);
+    await tester.tap(find.text('当前节点：甲1-直连'));
+    await tester.pumpAndSettle();
+    // 两个组头各有一个“测速”按钮，第一个是甲组的：点它只测该组，
+    // 且不触发展开（甲组节点仍不可见）。
+    await tester.tap(find.text('测速').first);
+    await tester.pumpAndSettle();
+    expect(stub.testGroupCalls, 1);
+    expect(stub.lastGroupKey, 'sub-a');
+    expect(find.text('甲1-直连'), findsNothing);
+    // 展开甲组：两行都出了 77ms；展开乙组：乙还是未测速。
+    await tester.tap(find.text('订阅甲'));
+    await tester.pumpAndSettle();
+    expect(find.text('77ms'), findsNWidgets(2));
+    await tester.tap(find.text('订阅乙'));
+    await tester.pumpAndSettle();
+    expect(find.text('未测速'), findsOneWidget);
+  });
+
+  testWidgets('节点弹窗：三个底部按钮在 360dp 手机宽度下一行排下', (tester) async {
+    final stub = _PickerStubNodesNotifier(
+      nodes: [_node('甲-直连'), _node('乙-中转')],
+      selected: '甲-直连',
+    );
+    await pumpHome(
+      tester,
+      nodesOverride: stub,
+      viewSize: const Size(360, 800),
+    );
+    await tester.tap(find.text('当前节点：甲-直连'));
+    await tester.pumpAndSettle();
+    final yAll = tester.getCenter(find.text('测速全部')).dy;
+    final yCurrent = tester.getCenter(find.text('测当前节点')).dy;
+    final yCancel = tester.getCenter(find.text('取消')).dy;
+    expect(yAll, closeTo(yCurrent, 1.0));
+    expect(yCurrent, closeTo(yCancel, 1.0));
+  });
+
+  testWidgets('局域网代理格子：点一下开（显示 IP:端口），再点一下关', (tester) async {
+    await pumpHome(
+      tester,
+      nodes: [_node('甲-直连')],
+      selected: '甲-直连',
+      extraOverrides: [
+        lanIpProvider.overrideWith((ref) async => '192.168.1.5'),
+      ],
+    );
+    expect(find.text('局域网代理'), findsOneWidget);
+    expect(find.text('关闭'), findsOneWidget);
+    // 点格子：重建配置＋写盘是真异步 IO，照大开关的做法包在 runAsync 里。
+    await tester.runAsync(() async {
+      await tester.tap(find.text('局域网代理'));
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+    });
+    await pumpFrames(tester);
+    expect(find.text('192.168.1.5:2080'), findsOneWidget);
+    await tester.runAsync(() async {
+      await tester.tap(find.text('局域网代理'));
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+    });
+    await pumpFrames(tester);
+    expect(find.text('关闭'), findsOneWidget);
   });
 
   // 问题 8：首页小卡片之间留 8px 缝隙，两行都改，高度与内容不变。

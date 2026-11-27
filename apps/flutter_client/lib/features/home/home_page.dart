@@ -16,7 +16,10 @@ import '../../core/routing_mode.dart';
 import '../../core/singbox_core.dart';
 import '../../core/userinfo.dart';
 import '../../services/announcement_service.dart';
+import '../../services/config_rebuild.dart';
 import '../../services/custom_rules_notifier.dart';
+import '../../services/lan_address.dart';
+import '../../services/lan_proxy_notifier.dart';
 import '../../services/nodes_notifier.dart';
 import '../../services/remote_config_notifier.dart';
 import '../../services/routing_mode_notifier.dart';
@@ -235,6 +238,11 @@ class _HomePageState extends ConsumerState<HomePage> {
         // 设置页配好的规则与 TUN 丢掉。
         customRules: ref.read(customRulesProvider.notifier).activeRules,
         tunEnabled: ref.read(settingsProvider).tun,
+        // 局域网代理同样要带上（不带就回落默认值，等于悄悄关了它）。
+        lanProxy: ref.read(lanProxyProvider).enabled,
+        lanProxyPort: ref.read(lanProxyProvider).port,
+        lanProxyUsername: ref.read(lanProxyProvider).authCredentials?.username,
+        lanProxyPassword: ref.read(lanProxyProvider).authCredentials?.password,
       );
       if (!result.ok) {
         // 校验失败要报出真实原因（2026-11-26：TUN 的 stack 字段被
@@ -272,6 +280,40 @@ class _HomePageState extends ConsumerState<HomePage> {
     if (!ok && mounted) {
       final reason = ref.read(routingModeProvider).errorMessage;
       _showSnack(reason ?? '切换失败，已保持原模式');
+    }
+  }
+
+  /// 首页局域网代理格子的值：关着显示“关闭”，开着显示监听地址
+  /// （手机 IP:端口，IP 拿不到时只显示“已开启”）。
+  String _lanProxyCellValue() {
+    final lan = ref.watch(lanProxyProvider);
+    if (lan.switching) return '切换中…';
+    if (!lan.enabled) return '关闭';
+    final ip = ref.watch(lanIpProvider).valueOrNull;
+    if (ip == null) return '已开启';
+    return '$ip:${lan.port}';
+  }
+
+  /// 首页局域网代理格子：点一下切换开关（与设置页的开关完全一致，
+  /// 不用二次确认，和模式切换三档一样）；失败回滚并提示。
+  /// 没节点时只记偏好（下次生成配置时生效），提示一句。
+  Future<void> _onLanProxyCellTap() async {
+    final lan = ref.read(lanProxyProvider);
+    if (lan.switching) return;
+    final prev = lan.enabled;
+    final next = !prev;
+    await ref.read(lanProxyProvider.notifier).setEnabled(next);
+    final ok = await rebuildConfigWithCurrentSettings(ref);
+    if (!mounted) return;
+    if (!ok) {
+      await ref.read(lanProxyProvider.notifier).setEnabled(prev);
+      _showSnack('局域网代理切换失败，已保持原设置');
+      return;
+    }
+    if (ref.read(nodesProvider).nodes.isEmpty) {
+      _showSnack(
+        next ? '局域网代理已开启，下次启动核心时生效' : '局域网代理已关闭，下次启动核心时生效',
+      );
     }
   }
 
@@ -694,7 +736,13 @@ class _HomePageState extends ConsumerState<HomePage> {
                 child: _StatCell(label: '流量口径', value: '全部节点'),
               ),
               const SizedBox(width: AppTokens.spacingXs),
-              const Expanded(child: SizedBox.shrink()),
+              Expanded(
+                child: _StatCell(
+                  label: '局域网代理',
+                  value: _lanProxyCellValue(),
+                  onTap: _onLanProxyCellTap,
+                ),
+              ),
             ],
           ),
           const SizedBox(height: 4),
@@ -873,6 +921,24 @@ class _NodePickerDialogState extends ConsumerState<_NodePickerDialog> {
     });
   }
 
+  /// 只测一订阅组（组头“测速”入口）：只测该组内的节点，其他组不动；
+  /// 测速中该组头按钮变“测速中…”，其他测速入口按一键测速的规则禁用。
+  /// 失败原因留在弹窗里（整轮没跑起来才留错，单节点失败只标该行）。
+  Future<void> _testGroup(_NodeGroup group) async {
+    final state = ref.read(nodesProvider);
+    if (state.testingSpeed || state.testingSingleNodeKey != null) return;
+    final ok = await ref
+        .read(nodesProvider.notifier)
+        .testGroupSpeeds(group.key, group.nodes);
+    if (!mounted) return;
+    if (!ok) {
+      setState(() {
+        _error =
+            ref.read(nodesProvider).speedTestError ?? '正在测速，请稍后再试';
+      });
+    }
+  }
+
   /// 只测一行（点行内延迟处触发，复用节点页 `_LatencyChip` 的
   /// 做法）：只改这一行的延迟/失败标记，不碰其他行、不重排；
   /// 一键测速进行中、或已有单节点在测时直接返回（不另起一轮）。
@@ -944,10 +1010,12 @@ class _NodePickerDialogState extends ConsumerState<_NodePickerDialog> {
     final selectedName = nodesState.selectedNodeName;
     final testingKey = nodesState.testingSingleNodeKey;
     final testingAll = _testingAll || nodesState.testingSpeed;
+    final testingGroupKey = nodesState.testingGroupKey;
     final theme = Theme.of(context);
     final groups = _groupNodes(nodes);
     return AlertDialog(
       title: const Text('选择节点'),
+      actionsPadding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
       content: SizedBox(
         width: double.maxFinite,
         child: Column(
@@ -970,6 +1038,11 @@ class _NodePickerDialogState extends ConsumerState<_NodePickerDialog> {
                       title: group.title,
                       count: group.nodes.length,
                       expanded: _expandedGroups.contains(group.key),
+                      testingGroup: testingGroupKey == group.key,
+                      testingAny:
+                          testingAll ||
+                          _testing ||
+                          testingGroupKey != null,
                       onTap: () {
                         setState(() {
                           if (_expandedGroups.contains(group.key)) {
@@ -979,6 +1052,7 @@ class _NodePickerDialogState extends ConsumerState<_NodePickerDialog> {
                           }
                         });
                       },
+                      onTestGroup: () => _testGroup(group),
                     ),
                     if (_expandedGroups.contains(group.key))
                       for (final node in group.nodes)
@@ -1001,44 +1075,79 @@ class _NodePickerDialogState extends ConsumerState<_NodePickerDialog> {
           ],
         ),
       ),
+      // 三个按钮必须排成一行（0.1.14）：默认 actions 是 OverflowBar，
+      // 三个 TextButton 默认最小宽 64＋内边距 16，在手机宽度下放不下
+      // 会折成竖排。做法：只传一个 Row 作 actions 孩子（OverflowBar
+      // 不对单个孩子换行）＋按钮收紧（shrinkWrap 去最小宽、横向内边距
+      // 8）＋中间文案缩短为“测当前节点”；启用/禁用规则与文案含义不变。
       actions: [
-        TextButton(
-          onPressed: testingAll ? null : _testAll,
-          child: Text(testingAll ? '测速中…' : '测速全部'),
-        ),
-        TextButton(
-          onPressed:
-              _testing ||
-                  testingAll ||
-                  nodesState.selectedNode == null
-              ? null
-              : _testSelected,
-          child: Text(_testing ? '测速中…' : '测速当前节点'),
-        ),
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('取消'),
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          mainAxisAlignment: MainAxisAlignment.end,
+          children: [
+            TextButton(
+              onPressed: testingAll ? null : _testAll,
+              style: _dialogActionStyle,
+              child: Text(testingAll ? '测速中…' : '测速全部'),
+            ),
+            TextButton(
+              onPressed:
+                  _testing ||
+                      testingAll ||
+                      nodesState.selectedNode == null
+                  ? null
+                  : _testSelected,
+              style: _dialogActionStyle,
+              child: Text(_testing ? '测速中…' : '测当前节点'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              style: _dialogActionStyle,
+              child: const Text('取消'),
+            ),
+          ],
         ),
       ],
     );
   }
 }
 
+/// 节点弹窗底部三个按钮的收紧样式（0.1.14）：去最小宽、横向内边距 8，
+/// 三个排一行才放得下。
+final _dialogActionStyle = TextButton.styleFrom(
+  padding: const EdgeInsets.symmetric(horizontal: 8),
+  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+);
+
 /// 订阅分组的组头：点一下展开/收起该组（箭头跟着转）。
 /// 标题只写订阅名，节点数另起一格，避免标题带数字后
-/// `find.text(订阅名)` 认不出来。
+/// `find.text(订阅名)` 认不出来。右侧有个“测速”小按钮：
+/// 只测该组内的节点（0.1.14），测速中变“测速中…”、其他测速入口
+/// 禁用时它也禁用；点它不触发展开/收起（按钮自己吃掉点击）。
 class _GroupHeader extends StatelessWidget {
   const _GroupHeader({
     required this.title,
     required this.count,
     required this.expanded,
     required this.onTap,
+    required this.testingGroup,
+    required this.testingAny,
+    required this.onTestGroup,
   });
 
   final String title;
   final int count;
   final bool expanded;
   final VoidCallback onTap;
+
+  /// 正在测这一组（按钮变“测速中…”）。
+  final bool testingGroup;
+
+  /// 任何一轮测速进行中（按钮禁用）。
+  final bool testingAny;
+
+  /// 点“测速”只测这一组。
+  final VoidCallback onTestGroup;
 
   @override
   Widget build(BuildContext context) {
@@ -1075,6 +1184,14 @@ class _GroupHeader extends StatelessWidget {
               style: theme.textTheme.bodySmall?.copyWith(
                 color: theme.colorScheme.onSurfaceVariant,
               ),
+            ),
+            TextButton(
+              onPressed: testingAny ? null : onTestGroup,
+              style: TextButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+              child: Text(testingGroup ? '测速中…' : '测速'),
             ),
           ],
         ),
@@ -1145,40 +1262,55 @@ class _NodeRow extends StatelessWidget {
 }
 
 class _StatCell extends StatelessWidget {
-  const _StatCell({required this.label, required this.value});
+  const _StatCell({required this.label, required this.value, this.onTap});
 
   final String label;
   final String value;
 
+  /// 点一下切换（只有局域网代理格子传这个；其余格子是纯展示）。
+  final VoidCallback? onTap;
+
   @override
   Widget build(BuildContext context) {
+    final content = Padding(
+      padding: const EdgeInsets.symmetric(
+        vertical: AppTokens.spacingMd,
+        horizontal: 4,
+      ),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Text(
+            value,
+            style: Theme.of(context).textTheme.titleMedium,
+            textAlign: TextAlign.center,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+          ),
+          const SizedBox(height: 4),
+          Text(
+            label,
+            style: Theme.of(context).textTheme.bodySmall,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ],
+      ),
+    );
+    // 点按墨水要包在 GlassCard 里面：GlassCard 的底色 DecoratedBox
+    // 会盖住外面的 InkWell（见当前节点行的注释）。
     return GlassCard(
       height: _HomePageState._statCellHeight,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(
-          vertical: AppTokens.spacingMd,
-          horizontal: 4,
-        ),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Text(
-              value,
-              style: Theme.of(context).textTheme.titleMedium,
-              textAlign: TextAlign.center,
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
+      child: onTap == null
+          ? content
+          : Material(
+              color: Colors.transparent,
+              child: InkWell(
+                borderRadius: BorderRadius.circular(AppTokens.radiusLarge),
+                onTap: onTap,
+                child: content,
+              ),
             ),
-            const SizedBox(height: 4),
-            Text(
-              label,
-              style: Theme.of(context).textTheme.bodySmall,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ],
-        ),
-      ),
     );
   }
 }

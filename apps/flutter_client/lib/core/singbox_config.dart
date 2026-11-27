@@ -216,6 +216,13 @@ class SingboxConfigBuilder {
 /// TUN 接管流量，gvisor 栈 + 自动路由，0.1.10 起写 `stack: gvisor`）；
 /// 为 false 时不写 tun 入站。TUN 只改入站，不改出站与规则。
 ///
+/// [lanProxy]（0.1.14）：为 true 时 mixed 入站监听 0.0.0.0（局域网
+/// 可连），否则只听 127.0.0.1；[lanProxyPort] 是 mixed 入站的端口
+/// （默认 [mixedPort]）；鉴权开着时 [lanProxyUsername] /
+/// [lanProxyPassword] 非空才写 `users`（sing-box mixed 入站支持
+/// `users` 字段，见 schema；空值不写，不留半截鉴权）。只改入站，
+/// 不改出站与规则：局域网进来的流量走同一套分流。
+///
 /// 同节点多入站 fallback 组（切片 10）：备注名 `<节点名>-<入站 tag>`
 /// 归组，≥2 个入站的组出一个 urltest 组（组名就是节点名，成员是该
 /// 节点各入站的出站 tag），selector 里该节点只占组 tag 一位，组内
@@ -227,6 +234,10 @@ static SingboxConfigResult build(
   String? selectedNodeName,
   List<CustomRule> customRules = const [],
   bool tunEnabled = false,
+  bool lanProxy = false,
+  int lanProxyPort = mixedPort,
+  String? lanProxyUsername,
+  String? lanProxyPassword,
 }) {
     final skipped = <String>[];
     final outbounds = <Map<String, dynamic>>[];
@@ -564,8 +575,20 @@ static SingboxConfigResult build(
           {
             'type': 'mixed',
             'tag': 'mixed-in',
-            'listen': '127.0.0.1',
-            'listen_port': mixedPort,
+            'listen': lanProxy ? '0.0.0.0' : '127.0.0.1',
+            'listen_port': lanProxyPort,
+            // 鉴权（0.1.14）：账号密码都有才写 users，缺一个都不写。
+            if (lanProxy &&
+                lanProxyUsername != null &&
+                lanProxyUsername.isNotEmpty &&
+                lanProxyPassword != null &&
+                lanProxyPassword.isNotEmpty)
+              'users': [
+                {
+                  'username': lanProxyUsername,
+                  'password': lanProxyPassword,
+                },
+              ],
           },
           // TUN 入站（切片 6，tunEnabled 时才写）：系统级 TUN 接管
           // 流量，自动路由；不写时就是原来的 mixed 入站。

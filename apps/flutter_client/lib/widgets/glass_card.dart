@@ -10,6 +10,9 @@ import '../core/app_tokens.dart';
 /// 用 Flutter 跨端 API 实现（[BackdropFilter]＋半透明＋圆角），
 /// 不写端专属样式；浅色/深色两套透明度与边框色按当前
 /// [ThemeData.brightness] 走，不按平台分支。
+/// 0.1.14 做强：模糊 16→24、夜晚填充白 8%→12%、边框 15%→20%，
+/// 白天填充 60%→65%、边框 65%→70%，玻璃感更明显，底色透出来
+/// 的层次还在（不是实色卡片）。
 class GlassCard extends StatelessWidget {
   const GlassCard({
     super.key,
@@ -47,7 +50,7 @@ class GlassCard extends StatelessWidget {
         borderRadius: radius,
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: dark ? 0.35 : 0.10),
+            color: Colors.black.withValues(alpha: dark ? 0.40 : 0.10),
             blurRadius: 20,
             offset: const Offset(0, 8),
           ),
@@ -56,20 +59,20 @@ class GlassCard extends StatelessWidget {
       child: ClipRRect(
         borderRadius: radius,
         child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+          filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
           child: Container(
             padding: padding,
             decoration: BoxDecoration(
-              // 白天是象牙白半透明、夜晚是白 8% 半透明（品牌色走，
+              // 白天是象牙白半透明、夜晚是白 12% 半透明（品牌色走，
               // 毛玻璃效果保留：半透明＋背景模糊＋细边框＋柔和阴影）。
               color: dark
-                  ? Colors.white.withValues(alpha: 0.08)
-                  : tokens.background.withValues(alpha: 0.6),
+                  ? Colors.white.withValues(alpha: 0.12)
+                  : tokens.background.withValues(alpha: 0.65),
               borderRadius: radius,
               border: Border.all(
                 color: dark
-                    ? Colors.white.withValues(alpha: 0.15)
-                    : Colors.white.withValues(alpha: 0.65),
+                    ? Colors.white.withValues(alpha: 0.20)
+                    : Colors.white.withValues(alpha: 0.70),
                 width: 1,
               ),
             ),

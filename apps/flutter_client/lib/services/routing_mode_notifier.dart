@@ -4,6 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../core/core_provider.dart';
 import '../core/routing_mode.dart';
 import 'custom_rules_notifier.dart';
+import 'lan_proxy_notifier.dart';
 import 'nodes_notifier.dart';
 import 'settings_notifier.dart';
 
@@ -69,6 +70,9 @@ class RoutingModeNotifier extends Notifier<RoutingModeState> {
     // 设置页配好的规则与 TUN 丢掉；回滚那次同样要带。
     final customRules = ref.read(customRulesProvider.notifier).activeRules;
     final tunEnabled = ref.read(settingsProvider).tun;
+    // 局域网代理同样要带上（不带就回落默认值，等于悄悄关了它）。
+    final lan = ref.read(lanProxyProvider);
+    final lanCreds = lan.authCredentials;
     try {
       final result = await core.applyNodes(
         nodes,
@@ -78,6 +82,10 @@ class RoutingModeNotifier extends Notifier<RoutingModeState> {
         selectedNodeName: selected,
         customRules: customRules,
         tunEnabled: tunEnabled,
+        lanProxy: lan.enabled,
+        lanProxyPort: lan.port,
+        lanProxyUsername: lanCreds?.username,
+        lanProxyPassword: lanCreds?.password,
       );
       if (!result.ok) {
         // 校验失败要把真实原因写进 errorMessage（2026-11-26：以前
@@ -103,6 +111,10 @@ class RoutingModeNotifier extends Notifier<RoutingModeState> {
           selectedNodeName: selected,
           customRules: customRules,
           tunEnabled: tunEnabled,
+          lanProxy: lan.enabled,
+          lanProxyPort: lan.port,
+          lanProxyUsername: lanCreds?.username,
+          lanProxyPassword: lanCreds?.password,
         );
       } catch (_) {}
       state = state.copyWith(

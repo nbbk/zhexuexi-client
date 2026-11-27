@@ -7,7 +7,12 @@ import 'remote_config_keys.dart';
 
 /// 客户端版本号（与 pubspec.yaml 的 version 同步）。
 /// 远程配置的 `min_app_version` 低于它时，`forceUpdateRequired` 为真。
-const String appVersion = '0.1.10';
+///
+/// 注意：这只是 PackageInfo 读不到时（测试环境没插件）的回退值，
+/// 关于页与诊断包显示的都是 [resolveAppVersion] 读到的真实安装版本；
+/// 这个常量必须与 pubspec 一致，test/app_version_test.dart 会断言，
+/// 0.1.10–0.1.13 就是只升 pubspec 没升它，关于页才一直显示 0.1.10。
+const String appVersion = '0.1.14';
 
 /// 远程配置（切片 7：远程配置中心＋品牌远程替换）。
 ///

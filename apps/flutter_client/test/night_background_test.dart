@@ -2,7 +2,7 @@
 //
 // 四页（首页、我的、设置、登录）夜晚都要包 GlassBackground、
 // 渐变三色一致；我的页 7 张 GlassCard、无原生 Card；
-// 卡片夜晚填色白 8%；白天回落象牙白渐变。
+// 卡片夜晚填色白 12%（0.1.14 毛玻璃做强）；白天回落象牙白渐变。
 import 'dart:async';
 import 'dart:io';
 
@@ -192,14 +192,14 @@ List<Color> _backgroundGradient(WidgetTester tester) {
   return gradient.colors;
 }
 
-/// 任意 GlassCard 的内层填色是不是夜晚白 8%。
+/// 任意 GlassCard 的内层填色是不是夜晚白 12%。
 bool _hasNightCardFill(WidgetTester tester) {
   for (final container in tester.widgetList<Container>(
     find.byType(Container),
   )) {
     final decoration = container.decoration;
     if (decoration is BoxDecoration &&
-        decoration.color == Colors.white.withValues(alpha: 0.08)) {
+        decoration.color == Colors.white.withValues(alpha: 0.12)) {
       return true;
     }
   }

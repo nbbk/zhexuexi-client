@@ -199,8 +199,8 @@ void main() {
     expect(find.text('规则模式'), findsOneWidget);
     expect(find.text('订阅自动更新'), findsOneWidget);
     expect(find.text('客户端版本'), findsOneWidget);
-    // 关于行显示的客户端版本与 pubspec / appVersion 常量一致（0.1.10）。
-    expect(find.text('0.1.10'), findsOneWidget);
+    // 关于行显示的客户端版本与 pubspec / appVersion 常量一致（0.1.14）。
+    expect(find.text('0.1.14'), findsOneWidget);
     // 高级默认折叠：TUN、DNS、诊断都在折叠里，不可见。
     expect(find.text('TUN 模式'), findsNothing);
     expect(find.text('导出诊断包'), findsNothing);
@@ -323,6 +323,40 @@ void main() {
     expect((inbounds[1] as Map)['tag'], 'tun-in');
   });
 
+  testWidgets('局域网代理开关：默认关闭，打开后 mixed 监听 0.0.0.0＋写 users、再关回去', (
+    tester,
+  ) async {
+    await pumpSettings(
+      tester,
+      nodes: [_node('日本-直连')],
+      selected: '日本-直连',
+    );
+    await expandAdvanced(tester);
+    // 默认关：点一次打开，mixed 改听 0.0.0.0。
+    await tapAsync(tester, find.text('局域网代理'));
+    var config = await readWrittenConfig(tester);
+    var inbounds = config['inbounds'] as List;
+    var mixed = inbounds
+        .cast<Map<String, dynamic>>()
+        .firstWhere((inbound) => inbound['tag'] == 'mixed-in');
+    expect(mixed['listen'], '0.0.0.0');
+    expect(mixed['listen_port'], 2080);
+    // 鉴权默认开：users 里是默认用户名＋自动生成的 12 位密码。
+    final users = mixed['users'] as List;
+    expect(users.length, 1);
+    expect((users.first as Map)['username'], 'zhexuexi');
+    expect(((users.first as Map)['password'] as String).length, 12);
+    // 再点一次关回去：只听本机，不写 users。
+    await tapAsync(tester, find.text('局域网代理'));
+    config = await readWrittenConfig(tester);
+    inbounds = config['inbounds'] as List;
+    mixed = inbounds
+        .cast<Map<String, dynamic>>()
+        .firstWhere((inbound) => inbound['tag'] == 'mixed-in');
+    expect(mixed['listen'], '127.0.0.1');
+    expect(mixed.containsKey('users'), isFalse);
+  });
+
   testWidgets('导出诊断包：弹窗显示报告，不含节点地址', (tester) async {
     final node = _node('日本-直连');
     await pumpSettings(tester, nodes: [node], selected: '日本-直连');
@@ -369,7 +403,7 @@ void main() {
       ],
     );
     await tapAsync(tester, find.text('检查更新'));
-    expect(find.textContaining('当前版本 0.1.10'), findsOneWidget);
+    expect(find.textContaining('当前版本 0.1.14'), findsOneWidget);
     expect(find.textContaining('检查失败，请检查网络后重试'), findsOneWidget);
   });
 
@@ -406,7 +440,7 @@ void main() {
       ],
     );
     await tapAsync(tester, find.text('检查更新'));
-    expect(find.textContaining('当前版本 0.1.10'), findsOneWidget);
+    expect(find.textContaining('当前版本 0.1.14'), findsOneWidget);
     expect(find.textContaining('远程配置暂未发布'), findsOneWidget);
     expect(find.textContaining('请检查网络后重试'), findsNothing);
   });
@@ -447,7 +481,7 @@ void main() {
       ],
     );
     await tapAsync(tester, find.text('检查更新'));
-    expect(find.textContaining('当前版本 0.1.10'), findsOneWidget);
+    expect(find.textContaining('当前版本 0.1.14'), findsOneWidget);
     expect(find.textContaining('已更新到配置 v1'), findsOneWidget);
   });
 
@@ -480,6 +514,9 @@ void main() {
     SharedPreferences.setMockInitialValues({});
     await pumpSettings(tester);
     expect(find.text('主题'), findsOneWidget);
+    // 0.1.14：主题区默认折叠，点开才列出主题行。
+    expect(find.text('曜石黑金 · 夜晚'), findsNothing);
+    await tapAsync(tester, find.text('主题'));
     expect(find.text('白天'), findsOneWidget);
     expect(find.text('夜晚'), findsOneWidget);
     // 十个主题都在列表里（五套皮肤 × 白天/夜晚）。
@@ -504,6 +541,18 @@ void main() {
     await tapAsync(tester, find.text('白天'));
     expect(prefs.getString('app_theme_id'), 'day');
     expect(themeRowCheck('白天'), findsOneWidget);
+  });
+
+  testWidgets('主题区：默认折叠，点开列出、再点收起', (tester) async {
+    await pumpSettings(tester);
+    expect(find.text('曜石黑金 · 夜晚'), findsNothing);
+    await tapAsync(tester, find.text('主题'));
+    expect(find.text('曜石黑金 · 夜晚'), findsOneWidget);
+    expect(find.text('星野紫 · 夜晚'), findsOneWidget);
+    await tapAsync(tester, find.text('主题'));
+    // ExpansionTile 收起后子行仍挂在树上（只是压成 0 高、裁掉），
+    // find.text 还找得到；断言用户点不到它，才是真的收起来了。
+    expect(find.text('曜石黑金 · 夜晚').hitTestable(), findsNothing);
   });
 
   testWidgets('检查应用更新：已是最新时报当前版本，不弹更新弹窗', (tester) async {

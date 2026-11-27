@@ -141,20 +141,29 @@ class _StubSubscriptionService extends SubscriptionService {
 /// 直连探测桩：按地址给固定结果，不碰真网络。
 /// 203.0.113.4 超时（失败原因“超时不可达”）；203.0.113.5（grpc 节点）
 /// 直连最快（40ms），但它配置里没有出站、选不了（自动选择要跳过它）。
+/// [_probeDelay] 设了就先等一等（组测速互斥测试用：让第一轮还在
+/// 飞，第二轮进不去）。
+Duration _probeDelay = Duration.zero;
+
 Future<DirectProbeResult> _fakeProbe(
   String host,
   int port, {
   Duration timeout = const Duration(seconds: 5),
-}) async => switch (host) {
-  '203.0.113.1' => const DirectProbeResult.reachable(120),
-  '203.0.113.2' => const DirectProbeResult.reachable(86),
-  '203.0.113.3' => const DirectProbeResult.reachable(210),
-  '203.0.113.4' => const DirectProbeResult.failed(
-    DirectProbeFailure.timeout,
-  ),
-  '203.0.113.5' => const DirectProbeResult.reachable(40),
-  _ => const DirectProbeResult.failed(DirectProbeFailure.other),
-};
+}) async {
+  if (_probeDelay > Duration.zero) {
+    await Future<void>.delayed(_probeDelay);
+  }
+  return switch (host) {
+    '203.0.113.1' => const DirectProbeResult.reachable(120),
+    '203.0.113.2' => const DirectProbeResult.reachable(86),
+    '203.0.113.3' => const DirectProbeResult.reachable(210),
+    '203.0.113.4' => const DirectProbeResult.failed(
+      DirectProbeFailure.timeout,
+    ),
+    '203.0.113.5' => const DirectProbeResult.reachable(40),
+    _ => const DirectProbeResult.failed(DirectProbeFailure.other),
+  };
+}
 
 Node _node(
   String name,
@@ -395,6 +404,62 @@ void main() {
     // grpc 节点：直连不看配置里有没有出站，照样测连通性。
     expect(byName['grpc-直连']!.latencyMs, 40);
     expect(byName['grpc-直连']!.latencyFailed, isFalse);
+  });
+
+  test('组测速：只测该组节点，其他组不动', () async {
+    core.statusValue = CoreStatus.stopped;
+    final notifier = await loadNodes();
+    final nodes = container.read(nodesProvider).nodes;
+    expect(
+      await notifier.testGroupSpeeds('g-a', nodes.sublist(0, 2)),
+      isTrue,
+    );
+
+    final state = container.read(nodesProvider);
+    expect(state.testingSpeed, isFalse);
+    expect(state.testingGroupKey, isNull);
+    expect(state.speedTestedCount, 2);
+    expect(state.speedTestTotal, 2);
+    expect(state.speedTestDirect, isTrue);
+    expect(state.speedTestAt, isNotNull);
+    // 直连探测没碰 Clash API：delay 接口一次没调。
+    expect(delayHits, 0);
+    final byName = {for (final n in state.nodes) n.name: n};
+    expect(byName['香港-中转']!.latencyMs, 120);
+    expect(byName['智利-直连']!.latencyMs, 86);
+    // 其他组一个没动：延迟还是空、也没标失败。
+    expect(byName['日本-直连']!.latencyMs, isNull);
+    expect(byName['日本-直连']!.latencyFailed, isFalse);
+    expect(byName['坏节点-直连']!.latencyMs, isNull);
+    expect(byName['坏节点-直连']!.latencyFailed, isFalse);
+    expect(byName['grpc-直连']!.latencyMs, isNull);
+    expect(byName['grpc-直连']!.latencyFailed, isFalse);
+  });
+
+  test('组测速：空组返回 false，不改状态', () async {
+    core.statusValue = CoreStatus.stopped;
+    final notifier = await loadNodes();
+    expect(await notifier.testGroupSpeeds('g-a', []), isFalse);
+    expect(container.read(nodesProvider).testingSpeed, isFalse);
+    expect(container.read(nodesProvider).testingGroupKey, isNull);
+  });
+
+  test('组测速互斥：进行中时一键/单节点/另一组都返回 false', () async {
+    _probeDelay = const Duration(milliseconds: 300);
+    addTearDown(() => _probeDelay = Duration.zero);
+    core.statusValue = CoreStatus.stopped;
+    final notifier = await loadNodes();
+    final nodes = container.read(nodesProvider).nodes;
+    final first = notifier.testGroupSpeeds('g-a', nodes.sublist(0, 2));
+    // 第一轮还在飞（直连探测被拖慢 300ms）：三路都进不去。
+    expect(await notifier.testAllSpeeds(), isFalse);
+    expect(await notifier.testSingleSpeed(nodes[0]), isFalse);
+    expect(await notifier.testGroupSpeeds('g-b', nodes.sublist(2, 4)), isFalse);
+    expect(await first, isTrue);
+    final state = container.read(nodesProvider);
+    expect(state.testingSpeed, isFalse);
+    expect(state.testingGroupKey, isNull);
+    expect(state.speedTestedCount, 2);
   });
 
   test('一键测速：开关开着但探活失败，改走直连并明确提示、不静默切换', () async {

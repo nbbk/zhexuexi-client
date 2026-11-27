@@ -3,10 +3,9 @@ import 'dart:io';
 import 'package:cryptography/cryptography.dart';
 import 'package:dio/dio.dart';
 import 'package:open_filex/open_filex.dart';
-import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 
-import '../../brand/remote_config.dart';
+import '../../services/app_version.dart';
 import 'semver.dart';
 import 'update_source.dart';
 
@@ -136,15 +135,8 @@ class AppUpdater {
   /// 读本机版本号：优先 package_info_plus（与 pubspec 的 version
   /// 同步的 versionName）；读不到（如测试环境没插件）回退到编译进
   /// 代码的 [appVersion] 常量，不让查版因读不到版本而崩。
-  static Future<String> _readPackageVersion() async {
-    try {
-      final info = await PackageInfo.fromPlatform();
-      if (info.version.isNotEmpty) return info.version;
-    } catch (_) {
-      // 测试环境 / 插件未注册时走回退值。
-    }
-    return appVersion;
-  }
+  /// 与关于页、诊断包同一源（见 [resolveAppVersion]）。
+  static Future<String> _readPackageVersion() => resolveAppVersion();
 
   Future<String> currentVersion() => _currentVersionReader();
 

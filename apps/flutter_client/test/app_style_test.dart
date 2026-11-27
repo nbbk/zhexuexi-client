@@ -34,7 +34,7 @@ double _contrast(Color a, Color b) {
 
 void main() {
   group('主题注册表', () {
-    test('注册了五套皮肤 × 白天/夜晚两档，默认白天，id 不存在回落默认', () {
+    test('注册了十一套皮肤 × 白天/夜晚两档，默认白天，id 不存在回落默认', () {
       expect(
         AppThemes.all.map((t) => t.id).toList(),
         [
@@ -48,6 +48,18 @@ void main() {
           'sakura-night',
           'violet-day',
           'violet-night',
+          'seasalt-day',
+          'seasalt-night',
+          'lime-day',
+          'lime-night',
+          'peach-day',
+          'peach-night',
+          'lemon-day',
+          'lemon-night',
+          'moonlight-day',
+          'moonlight-night',
+          'comet-day',
+          'comet-night',
         ],
       );
       expect(AppThemes.defaultId, 'day');
@@ -77,19 +89,19 @@ void main() {
       );
     });
 
-    test('夜晚主题 token：墨蓝黑底＋香槟金点缀', () {
+    test('夜晚主题 token：墨蓝深底＋香槟金点缀', () {
       expect(AppThemes.night.brightness, Brightness.dark);
-      expect(AppThemes.night.tokens.background, const Color(0xFF070F1C));
+      expect(AppThemes.night.tokens.background, const Color(0xFF061B3D));
       expect(AppThemes.night.tokens.gold, const Color(0xFFEEC362));
     });
 
-    test('夜晚 scaffold 底色 #070F1C（非纯黑），渐变三色齐全', () {
+    test('夜晚 scaffold 底色 #061B3D（同色加深，非纯黑），渐变三色齐全', () {
       final night = AppThemes.night;
-      expect(night.themeData.scaffoldBackgroundColor, const Color(0xFF070F1C));
+      expect(night.themeData.scaffoldBackgroundColor, const Color(0xFF061B3D));
       expect(
         night.tokens.backgroundGradient,
         [
-          const Color(0xFF070F1C),
+          const Color(0xFF061B3D),
           const Color(0xFF082E63),
           const Color(0xFF0B3D84),
         ],
@@ -103,7 +115,7 @@ void main() {
 
     test('cardTheme/dialogTheme 兜底：原生 Card/对话框不露 M3 默认深色面', () {
       final night = AppThemes.night.themeData;
-      expect(night.cardTheme.color, Colors.white.withValues(alpha: 0.08));
+      expect(night.cardTheme.color, Colors.white.withValues(alpha: 0.12));
       expect(night.cardTheme.surfaceTintColor, Colors.transparent);
       expect(night.dialogTheme.backgroundColor, const Color(0xFF082E63));
       final day = AppThemes.day.themeData;
@@ -147,7 +159,7 @@ void main() {
         const Color(0xFF0B0B10),
         const Color(0xFF2A2A35),
       ]);
-      expect(AppThemes.obsidianNight.tokens.background, const Color(0xFF050508));
+      expect(AppThemes.obsidianNight.tokens.background, const Color(0xFF0C0C1C));
       expect(AppThemes.obsidianNight.brightness, Brightness.dark);
       // 青瓷月白。
       t = AppThemes.celadonDay.tokens;
@@ -156,9 +168,9 @@ void main() {
       expect(t.gold, const Color(0xFFC9A86A));
       expect(t.background, const Color(0xFFF7F6F1));
       expect(t.secondaryText, const Color(0xFF4E6A61));
-      expect(AppThemes.celadonNight.tokens.background, const Color(0xFF0A1F1A));
+      expect(AppThemes.celadonNight.tokens.background, const Color(0xFF07231C));
       expect(AppThemes.celadonNight.tokens.segmentedSelectedForeground,
-          const Color(0xFF0A1F1A));
+          const Color(0xFF07231C));
       // 落樱粉。
       t = AppThemes.sakuraDay.tokens;
       expect(t.deepBlue, const Color(0xFF9E3D5E));
@@ -166,20 +178,72 @@ void main() {
       expect(t.gold, const Color(0xFFF0B8C8));
       expect(t.background, const Color(0xFFFFF8F9));
       expect(t.secondaryText, const Color(0xFF7E5F6B));
-      expect(AppThemes.sakuraNight.tokens.background, const Color(0xFF1E0E14));
+      expect(AppThemes.sakuraNight.tokens.background, const Color(0xFF240F1B));
       expect(AppThemes.sakuraNight.tokens.segmentedSelectedForeground,
-          const Color(0xFF1E0E14));
+          const Color(0xFF240F1B));
       // 星野紫。
       t = AppThemes.violetDay.tokens;
       expect(t.deepBlue, const Color(0xFF4C2A85));
       expect(t.deepBlueLight, const Color(0xFF7B5EA7));
       expect(t.gold, const Color(0xFFEEC362));
       expect(t.background, const Color(0xFFF7F5FB));
-      expect(AppThemes.violetNight.tokens.background, const Color(0xFF120A24));
+      expect(AppThemes.violetNight.tokens.background, const Color(0xFF160B31));
       expect(AppThemes.violetNight.brightness, Brightness.dark);
       // 墨蓝两档原样不动。
       expect(AppThemes.day.tokens.deepBlue, const Color(0xFF082E63));
-      expect(AppThemes.night.tokens.background, const Color(0xFF070F1C));
+      expect(AppThemes.night.tokens.background, const Color(0xFF061B3D));
+      // 海盐蓝（0.1.14 新增）。
+      t = AppThemes.seasaltDay.tokens;
+      expect(t.deepBlue, const Color(0xFF256A9E));
+      expect(t.deepBlueLight, const Color(0xFF3A90D1));
+      expect(t.gold, const Color(0xFF8EC8EA));
+      expect(t.background, const Color(0xFFF2F8FD));
+      expect(t.secondaryText, const Color(0xFF1B4E75));
+      expect(AppThemes.seasaltNight.tokens.background, const Color(0xFF0B2233));
+      expect(AppThemes.seasaltNight.tokens.gold, const Color(0xFF8FC3E8));
+      expect(AppThemes.seasaltNight.tokens.segmentedSelectedForeground,
+          const Color(0xFF0B2233));
+      // 青柠绿（0.1.14 新增）。
+      t = AppThemes.limeDay.tokens;
+      expect(t.deepBlue, const Color(0xFF1E7A4E));
+      expect(t.deepBlueLight, const Color(0xFF259760));
+      expect(t.gold, const Color(0xFF8FD8B4));
+      expect(t.background, const Color(0xFFF2FAF5));
+      expect(t.secondaryText, const Color(0xFF145134));
+      expect(AppThemes.limeNight.tokens.background, const Color(0xFF0B241A));
+      expect(AppThemes.limeNight.tokens.gold, const Color(0xFF7ED3B4));
+      expect(AppThemes.limeNight.tokens.segmentedSelectedForeground,
+          const Color(0xFF0B241A));
+      // 蜜桃珊瑚（0.1.14 新增）。
+      t = AppThemes.peachDay.tokens;
+      expect(t.deepBlue, const Color(0xFFB44A30));
+      expect(t.deepBlueLight, const Color(0xFFD37159));
+      expect(t.gold, const Color(0xFFF6B89A));
+      expect(t.background, const Color(0xFFFDF6F2));
+      expect(t.secondaryText, const Color(0xFF8C3925));
+      expect(AppThemes.peachNight.tokens.background, const Color(0xFF2A140E));
+      expect(AppThemes.peachNight.tokens.segmentedSelectedForeground,
+          const Color(0xFF2A140E));
+      // 月昼银（0.1.14 新增，深夜星空系列）。
+      t = AppThemes.moonlightDay.tokens;
+      expect(t.deepBlue, const Color(0xFF4A5A6A));
+      expect(t.deepBlueLight, const Color(0xFF677E94));
+      expect(t.gold, const Color(0xFFC8D6E8));
+      expect(t.background, const Color(0xFFF5F7FA));
+      expect(t.secondaryText, const Color(0xFF35404C));
+      expect(AppThemes.moonlightNight.tokens.background, const Color(0xFF0D1420));
+      expect(AppThemes.moonlightNight.tokens.segmentedSelectedForeground,
+          const Color(0xFF0D1420));
+      // 彗星青（0.1.14 新增，深夜星空系列）。
+      t = AppThemes.cometDay.tokens;
+      expect(t.deepBlue, const Color(0xFF146B7A));
+      expect(t.deepBlueLight, const Color(0xFF1EA1B7));
+      expect(t.gold, const Color(0xFF7ED8E0));
+      expect(t.background, const Color(0xFFF0FAFB));
+      expect(t.secondaryText, const Color(0xFF0D454E));
+      expect(AppThemes.cometNight.tokens.background, const Color(0xFF07191D));
+      expect(AppThemes.cometNight.tokens.segmentedSelectedForeground,
+          const Color(0xFF07191D));
     });
 
     test('新皮肤：文字对比度都达标（白天主色字、夜晚点缀字、次要文字、'
@@ -193,6 +257,18 @@ void main() {
         AppThemes.sakuraNight,
         AppThemes.violetDay,
         AppThemes.violetNight,
+        AppThemes.seasaltDay,
+        AppThemes.seasaltNight,
+        AppThemes.limeDay,
+        AppThemes.limeNight,
+        AppThemes.peachDay,
+        AppThemes.peachNight,
+        AppThemes.lemonDay,
+        AppThemes.lemonNight,
+        AppThemes.moonlightDay,
+        AppThemes.moonlightNight,
+        AppThemes.cometDay,
+        AppThemes.cometNight,
       ];
       for (final def in defs) {
         final t = def.tokens;
@@ -226,6 +302,43 @@ void main() {
       }
     });
 
+    test('0.1.14：夜晚底色是同色加深加纯，不是中性黑', () {
+      // 每套夜晚底色都有色相：RGB 三通道极差 ≥ 10
+      //（纯黑/中性灰是 0；曜石最浅的一档是 16）。
+      for (final def in AppThemes.all.where(
+        (d) => d.brightness == Brightness.dark,
+      )) {
+        final bg = def.tokens.background;
+        final channels = [
+          (bg.r * 255).round(),
+          (bg.g * 255).round(),
+          (bg.b * 255).round(),
+        ];
+        final spread =
+            channels.reduce(math.max) - channels.reduce(math.min);
+        expect(spread, greaterThanOrEqualTo(10), reason: '${def.id} 夜晚底色');
+      }
+    });
+
+    test('0.1.14：墨蓝夜晚文字对比度（金、次要、三段选中）都达标', () {
+      // 0.1.13 的对比度机查只覆盖四套新皮肤；墨蓝夜晚底色 0.1.14
+      // 改成同色加深 #061B3D，这里补上它的三组文字对比度。
+      final t = AppThemes.night.tokens;
+      final bg = t.background;
+      expect(_contrast(t.gold, bg), greaterThanOrEqualTo(4.5),
+          reason: '墨蓝夜晚点缀字');
+      expect(_contrast(t.secondaryText, bg), greaterThanOrEqualTo(4.5),
+          reason: '墨蓝夜晚次要文字');
+      expect(
+        _contrast(
+          t.segmentedSelectedForeground,
+          t.segmentedSelectedBackground,
+        ),
+        greaterThanOrEqualTo(4.5),
+        reason: '墨蓝夜晚三段选中',
+      );
+    });
+
     test('新皮肤：ThemeData 能编出来，底色与兜底色跟 token 走', () {
       for (final def in [
         AppThemes.obsidianDay,
@@ -236,6 +349,18 @@ void main() {
         AppThemes.sakuraNight,
         AppThemes.violetDay,
         AppThemes.violetNight,
+        AppThemes.seasaltDay,
+        AppThemes.seasaltNight,
+        AppThemes.limeDay,
+        AppThemes.limeNight,
+        AppThemes.peachDay,
+        AppThemes.peachNight,
+        AppThemes.lemonDay,
+        AppThemes.lemonNight,
+        AppThemes.moonlightDay,
+        AppThemes.moonlightNight,
+        AppThemes.cometDay,
+        AppThemes.cometNight,
       ]) {
         final data = def.themeData;
         expect(data.brightness, def.brightness);
@@ -254,7 +379,7 @@ void main() {
           );
         } else {
           expect(data.dialogTheme.backgroundColor, def.tokens.deepBlue);
-          expect(data.cardTheme.color, Colors.white.withValues(alpha: 0.08));
+          expect(data.cardTheme.color, Colors.white.withValues(alpha: 0.12));
         }
       }
     });
