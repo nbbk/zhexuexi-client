@@ -71,7 +71,9 @@ class ConnectionEntry {
   /// 网络类型（`metadata.network`：tcp / udp；无 metadata 时 null）。
   final String? network;
 
-  /// 入站类型（`metadata.type`：tun / mixed 等；无 metadata 时 null）。
+  /// 入站类型（`metadata.type` 的首段：上游写成 `"<type>/<tag>"`，
+  /// 如 "tun/tun-in"，解析时已取首段归一化为 "tun" / "mixed" 等；
+  /// 无 metadata 时 null）。
   final String? inboundType;
 }
 
@@ -306,6 +308,8 @@ class ClashApiClient {
   /// 0.1.10：同时解析 `metadata.network`（tcp/udp）与
   /// `metadata.type`（入站类型 tun/mixed，供采样器分 TUN 流与
   /// mixed 探针流）；没有 metadata 时两字段为 null，不丢条目。
+  /// 0.1.11：`metadata.type` 实为 `"<type>/<tag>"`（如 "tun/tun-in"），
+  /// 解析时取 `/` 前首段归一化为裸类型，否则采样器 `== 'tun'` 全跳过。
   Future<List<ConnectionEntry>> getConnectionEntries() async {
     final client = _httpClientFactory();
     try {
@@ -331,9 +335,16 @@ class ClashApiClient {
         final network = metadata is Map<String, dynamic>
             ? metadata['network']?.toString()
             : null;
-        final inboundType = metadata is Map<String, dynamic>
+        // 0.1.11：上游 `type` 是 `"<inboundType>/<tag>"`（tag 非空时，
+        // 如 TUN 入站 "tun/tun-in"），不是裸类型；取 `/` 前首段归一化
+        // 为裸入站类型（"tun"/"mixed"），采样器 `== 'tun'` 才能命中。
+        // 无 `/` 的裸值不变；空串当无 metadata。
+        final rawType = metadata is Map<String, dynamic>
             ? metadata['type']?.toString()
             : null;
+        final inboundType = rawType == null || rawType.isEmpty
+            ? null
+            : rawType.split('/').first;
         entries.add(
           ConnectionEntry(
             chains: chain.map((e) => e.toString()).toList(),

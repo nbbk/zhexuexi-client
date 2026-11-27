@@ -464,6 +464,8 @@ void main() {
       // TUN 证据的输入：`metadata.network`（tcp/udp）与
       // `metadata.type`（tun/mixed）要进 ConnectionEntry；没有
       // metadata 的条目不丢，两字段为 null（采样器当“未知”）。
+      // 0.1.11 修正：夹具必须用上游真实形状 `"tun/tun-in"`（裸 "tun"
+      // 是凭空想的，0.1.10 的 bug 就是夹具没写真形状而漏网的）。
       server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       server.listen((request) async {
         try {
@@ -472,9 +474,9 @@ void main() {
           if (request.uri.path == '/connections') {
             response.write(
               '{"connections": ['
-              '{"metadata": {"network": "tcp", "type": "tun"}, "chains": ["Proxy"], "upload": 100, "download": 0}, '
-              '{"metadata": {"network": "udp", "type": "tun"}, "chains": ["direct"], "upload": 50, "download": 200}, '
-              '{"metadata": {"network": "tcp", "type": "mixed"}, "chains": ["direct"], "upload": 1, "download": 2}, '
+              '{"metadata": {"network": "tcp", "type": "tun/tun-in"}, "chains": ["Proxy"], "upload": 100, "download": 0}, '
+              '{"metadata": {"network": "udp", "type": "tun/tun-in"}, "chains": ["direct"], "upload": 50, "download": 200}, '
+              '{"metadata": {"network": "tcp", "type": "mixed/mixed-in"}, "chains": ["direct"], "upload": 1, "download": 2}, '
               '{"chains": ["direct"], "upload": 3, "download": 4}'
               ']}',
             );
@@ -496,6 +498,48 @@ void main() {
       expect(entries[2].inboundType, 'mixed');
       expect(entries[3].network, isNull);
       expect(entries[3].inboundType, isNull);
+    });
+
+    test('0.1.11：metadata.type 是 `<type>/<tag>` 形状，要取首段', () async {
+      // 根因（021-invest/root-cause.md）：上游 connections.go
+      // MarshalJSON 把 type 写成 `InboundType + "/" + Inbound`
+      // （tag 非空时），TUN 入站真实值是 "tun/tun-in"，不是裸 "tun"。
+      // 0.1.10 的解析原样抄 type，采样器 `== 'tun'` 全跳过，TUN 段
+      // 7 次印“无连接”。修前本测试失败（inboundType 为 "tun/tun-in"）。
+      server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      server.listen((request) async {
+        try {
+          final response = request.response;
+          response.headers.contentType = ContentType.json;
+          if (request.uri.path == '/connections') {
+            response.write(
+              '{"connections": ['
+              '{"metadata": {"network": "tcp", "type": "tun/tun-in"}, "chains": ["测试机-hy2-443-A", "测试机", "Proxy"], "upload": 392900, "download": 5200000}, '
+              '{"metadata": {"network": "udp", "type": "tun/tun-in"}, "chains": ["direct"], "upload": 50, "download": 200}, '
+              '{"metadata": {"network": "tcp", "type": "mixed/mixed-in"}, "chains": ["direct"], "upload": 1, "download": 2}, '
+              '{"metadata": {"network": "tcp", "type": "tun"}, "chains": ["direct"], "upload": 3, "download": 4}, '
+              '{"chains": ["direct"], "upload": 5, "download": 6}'
+              ']}',
+            );
+          } else {
+            response.statusCode = HttpStatus.notFound;
+          }
+          await response.close();
+        } catch (_) {}
+      });
+      final client = ClashApiClient(
+        baseUrl: 'http://127.0.0.1:${server.port}',
+      );
+      final entries = await client.getConnectionEntries();
+      expect(entries.length, 5);
+      expect(entries[0].network, 'tcp');
+      expect(entries[0].inboundType, 'tun');
+      expect(entries[1].network, 'udp');
+      expect(entries[1].inboundType, 'tun');
+      expect(entries[2].inboundType, 'mixed');
+      expect(entries[3].inboundType, 'tun');
+      expect(entries[4].network, isNull);
+      expect(entries[4].inboundType, isNull);
     });
 
     test('queryDns：200 且 Status 0 算通过并记延迟；Rcode 非 0/500 算失败', () async {
