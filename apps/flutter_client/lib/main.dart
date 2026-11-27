@@ -8,6 +8,7 @@ import 'core/app_theme.dart';
 import 'core/core_provider.dart';
 import 'features/update/app_update_dialog.dart';
 import 'services/app_update/app_update_provider.dart';
+import 'services/app_update/app_updater.dart';
 import 'services/remote_config_notifier.dart';
 import 'services/subscription_auto_refresh.dart';
 import 'services/theme_notifier.dart';
@@ -85,18 +86,35 @@ class _ZhexuexiAppState extends ConsumerState<ZhexuexiApp> {
   Widget build(BuildContext context) {
     // 新版提示监听（ref.listen 只能在 build 里用）：状态变成
     // available 时弹一次更新弹窗，同一版本只弹一次。
+    // 手动查出来的新版（设置页点的“检查应用更新”）由设置页自己弹，
+    // 这里跳过，不然同一版本会连弹两个弹窗。
     ref.listen<AppUpdateState>(appUpdateProvider, (_, next) {
       final latest = next.latest;
       if (next.status != AppUpdateStatus.available || latest == null) return;
+      if (next.fromManualCheck) return;
       if (_updatePromptedVersion == latest.version) return;
       _updatePromptedVersion = latest.version;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
+      WidgetsBinding.instance.addPostFrameCallback((_) async {
         if (!mounted) return;
+        final updater = ref.read(appUpdaterProvider);
+        final pendingApk = ref.read(appUpdateProvider.notifier).pendingApk;
+        DownloadedApk? alreadyDownloaded;
+        if (next.pendingReady && pendingApk != null) {
+          // 待安装提醒：一天只提醒一次；当天已提醒过就不弹，
+          // 用户想装时去设置页点“已下载，点击安装”。
+          if (await updater.wasRemindedToday(latest.version)) return;
+          await updater.markRemindedToday(latest.version);
+          alreadyDownloaded = pendingApk;
+        }
+        if (!mounted) return;
+        // 用 State 的 context（this.context）：build 参数的 context
+        // 不认 State 的 mounted 检查，跨异步间隙用它会被 lint 拦。
         unawaited(
           showAppUpdateDialog(
-            context: context,
-            updater: ref.read(appUpdaterProvider),
+            context: this.context,
+            updater: updater,
             info: latest,
+            alreadyDownloaded: alreadyDownloaded,
           ),
         );
       });

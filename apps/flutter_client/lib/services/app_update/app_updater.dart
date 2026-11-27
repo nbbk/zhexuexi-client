@@ -6,6 +6,7 @@ import 'package:open_filex/open_filex.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../../services/app_version.dart';
+import 'pending_update_store.dart';
 import 'semver.dart';
 import 'update_http.dart';
 import 'update_source.dart';
@@ -120,18 +121,24 @@ class AppUpdater {
     AppInstaller? installer,
     Future<String> Function()? currentVersionReader,
     Future<Directory> Function()? downloadDir,
+    PendingUpdateStore? pendingStore,
   })  : _http = http ??
             UpdateHttp(coreRunning: () => false, directDio: dio),
         _installer = installer ?? OpenFilexAppInstaller(),
         _currentVersionReader =
             currentVersionReader ?? _readPackageVersion,
-        _downloadDir = downloadDir ?? _defaultDownloadDir;
+        _downloadDir = downloadDir ?? _defaultDownloadDir,
+        _pendingStore =
+            pendingStore ?? SharedPreferencesPendingUpdateStore();
 
   final List<UpdateSource> sources;
   final UpdateHttp _http;
   final AppInstaller _installer;
   final Future<String> Function() _currentVersionReader;
   final Future<Directory> Function() _downloadDir;
+
+  /// 待安装记录（下载完校验通过后持久化；弹窗关了也能重调安装）。
+  final PendingUpdateStore _pendingStore;
 
   static Future<Directory> _defaultDownloadDir() async {
     final docs = await getApplicationDocumentsDirectory();
@@ -150,12 +157,26 @@ class AppUpdater {
 
   /// 按顺序查各通道的最新版。
   Future<AppUpdateCheckResult> checkLatest() async {
+    // 先对账：本机版本已追上待安装记录（装上了，或装了更新的版）
+    // 时删包清记录，别长期占地方；对账失败不阻断查版。
+    try {
+      await reconcilePending();
+    } catch (_) {}
     final current = await currentVersion();
     final failures = <UpdateException>[];
     for (final source in sources) {
       try {
         final info = await source.checkLatest();
         if (compareSemver(info.version, current) > 0) {
+          // 出了更新的版本：旧待安装记录作废（删包清记录），
+          // 以最新版为准；版本一致的记录留着（还能重调安装）。
+          try {
+            final record = await _pendingStore.read();
+            if (record != null &&
+                compareSemver(record.version, info.version) < 0) {
+              await _discardPending(record);
+            }
+          } catch (_) {}
           return AppUpdateCheckResult.available(info);
         }
         return AppUpdateCheckResult.upToDate(
@@ -216,6 +237,18 @@ class AppUpdater {
           '安装包校验没通过（SHA-256 对不上），已删除，不安装。',
         );
       }
+      // 校验通过：把待安装记录持久化（版本号＋文件路径＋期望 SHA），
+      // 弹窗关了、安装提示错过了也能在设置页重调安装，不用重下。
+      // 存记录失败不阻断本次安装（本次弹窗里照样能装）。
+      try {
+        await _pendingStore.save(
+          PendingUpdate(
+            version: info.version,
+            filePath: file.path,
+            sha256: info.sha256!.toLowerCase(),
+          ),
+        );
+      } catch (_) {}
       return DownloadedApk(file: file, sha256Verified: true);
     }
     return DownloadedApk(file: file, sha256Verified: false);
@@ -223,6 +256,82 @@ class AppUpdater {
 
   /// 调系统安装确认（用户须在系统界面点确认；做不到静默安装）。
   Future<void> install(DownloadedApk apk) => _installer.installApk(apk.file);
+
+  /// 读待安装记录（不校验文件；给设置页刷新行状态用）。
+  Future<PendingUpdate?> pendingRecord() => _pendingStore.read();
+
+  /// 校验通过的待安装包（可直接调安装，不用重下）：
+  /// - 没有记录 → null；
+  /// - 版本已追上（已装上，或装了更新的版）→ 删包清记录，返回 null；
+  /// - 文件没了 → 清记录，返回 null；
+  /// - 重核 SHA 对不上 → 删包清记录，返回 null（坏包不留、不装）。
+  Future<DownloadedApk?> pendingInstall() async {
+    final record = await _pendingStore.read();
+    if (record == null) return null;
+    if (await _isInstalledOrNewer(record.version)) {
+      await _discardPending(record);
+      return null;
+    }
+    final file = File(record.filePath);
+    if (!await file.exists()) {
+      try {
+        await _pendingStore.clear();
+      } catch (_) {}
+      return null;
+    }
+    final actual = await _sha256Hex(file);
+    if (actual != record.sha256.toLowerCase()) {
+      await _discardPending(record);
+      return null;
+    }
+    return DownloadedApk(file: file, sha256Verified: true);
+  }
+
+  /// 对账：本机版本已追上待安装记录时删包清记录，别长期占地方。
+  /// 查版开头调（启动安静查与设置页手动查都走这里）；更新还没装
+  /// 上之前文件必须一直留着，不然“错过提示重装”就没法用。
+  Future<void> reconcilePending() async {
+    final record = await _pendingStore.read();
+    if (record == null) return;
+    if (await _isInstalledOrNewer(record.version)) {
+      await _discardPending(record);
+    }
+  }
+
+  /// 今天有没有提醒过装这个版本（启动提醒一天只弹一次用）。
+  Future<bool> wasRemindedToday(String version) async {
+    try {
+      return await _pendingStore.remindedToday(version);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 记下“今天已提醒过装这个版本”。
+  Future<void> markRemindedToday(String version) async {
+    try {
+      await _pendingStore.markRemindedToday(version);
+    } catch (_) {}
+  }
+
+  /// 本机版本是否已追上待安装记录的版本（相等＝已装上；
+  /// 更大＝装了更新的版；两种情况下记录里的包都已无用）。
+  Future<bool> _isInstalledOrNewer(String version) async {
+    final current = await currentVersion();
+    return compareSemver(current, version) >= 0;
+  }
+
+  /// 删待安装的 APK 文件＋清记录（各步都 best-effort，一步失败
+  /// 不拦另一步）。
+  Future<void> _discardPending(PendingUpdate record) async {
+    try {
+      final file = File(record.filePath);
+      if (await file.exists()) await file.delete();
+    } catch (_) {}
+    try {
+      await _pendingStore.clear();
+    } catch (_) {}
+  }
 
   /// 流式算文件 SHA-256（不整包读进内存）。
   static Future<String> _sha256Hex(File file) async {

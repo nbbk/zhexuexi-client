@@ -11,37 +11,70 @@ import '../../services/app_update/update_source.dart';
 /// 源没给校验值时先如实提示“无校验值”，由用户决定是否继续）
 /// → 调系统安装确认（侧载必须要点确认，做不到静默安装）。
 ///
-/// Release 说明截断口径：只显示前 500 字，超了末尾加“……”，
-/// 全文不贴（Release 说明可能很长，弹窗里放不下）。
+/// 已下载过同一版本时（[alreadyDownloaded] 非空）：直接进
+/// “已下载”相，点“安装”直接调起系统安装，不用重新下载；
+/// 点“重新下载”才走下载流程。下载完校验通过后待安装记录已
+/// 持久化，弹窗关了、安装提示错过了也能在设置页重调安装。
 Future<void> showAppUpdateDialog({
   required BuildContext context,
   required AppUpdater updater,
   required UpdateReleaseInfo info,
+  DownloadedApk? alreadyDownloaded,
 }) {
   return showAppDialog<void>(
     context: context,
     barrierDismissible: false,
-    builder: (context) => _AppUpdateDialog(updater: updater, info: info),
+    builder: (context) => _AppUpdateDialog(
+      updater: updater,
+      info: info,
+      alreadyDownloaded: alreadyDownloaded,
+    ),
   );
 }
 
 class _AppUpdateDialog extends StatefulWidget {
-  const _AppUpdateDialog({required this.updater, required this.info});
+  const _AppUpdateDialog({
+    required this.updater,
+    required this.info,
+    this.alreadyDownloaded,
+  });
 
   final AppUpdater updater;
   final UpdateReleaseInfo info;
+
+  /// 已下载好的安装包（校验通过）；非空时弹窗直接给安装入口。
+  final DownloadedApk? alreadyDownloaded;
 
   @override
   State<_AppUpdateDialog> createState() => _AppUpdateDialogState();
 }
 
-enum _Phase { prompt, downloading, noChecksumConfirm, installing, done, error }
+enum _Phase {
+  prompt,
+  downloading,
+  noChecksumConfirm,
+  installing,
+  done,
+  error,
+
+  /// 安装包已下载好（不用重下）：给“安装 / 重新下载”两个选择。
+  readyToInstall,
+}
 
 class _AppUpdateDialogState extends State<_AppUpdateDialog> {
   _Phase _phase = _Phase.prompt;
   double _progress = 0;
   String? _error;
   DownloadedApk? _downloaded;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.alreadyDownloaded != null) {
+      _downloaded = widget.alreadyDownloaded;
+      _phase = _Phase.readyToInstall;
+    }
+  }
 
   String get _notes {
     final notes = widget.info.releaseNotes.trim();
@@ -142,6 +175,9 @@ class _AppUpdateDialogState extends State<_AppUpdateDialog> {
             '改过。确定要继续安装吗？',
           ),
         _Phase.installing => const Text('正在调起系统安装…'),
+        _Phase.readyToInstall => Text(
+            '已下载 v${info.version}，无需重新下载。\n点“安装”直接调起系统安装。',
+          ),
         _Phase.done => const Text(
             '已调起系统安装，请在系统安装界面点“安装”完成更新。'
             '安装完成后重新打开客户端即可。',
@@ -160,6 +196,20 @@ class _AppUpdateDialogState extends State<_AppUpdateDialog> {
             ),
           ],
         _Phase.downloading || _Phase.installing => const [],
+        _Phase.readyToInstall => [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('取消'),
+            ),
+            TextButton(
+              onPressed: _startDownload,
+              child: const Text('重新下载'),
+            ),
+            TextButton(
+              onPressed: () => _install(_downloaded!),
+              child: const Text('安装'),
+            ),
+          ],
         _Phase.noChecksumConfirm => [
             TextButton(
               onPressed: () => Navigator.of(context).pop(),

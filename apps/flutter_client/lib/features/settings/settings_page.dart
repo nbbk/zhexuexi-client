@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -74,6 +75,9 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     super.initState();
     _loadCoreVersion();
     _loadAppVersion();
+    // 待安装状态：打开设置页就刷新一次，有已下载没装的版本时
+    // “检查应用更新”那行直接显示“已下载 vX.Y.Z，点击安装”。
+    unawaited(ref.read(appUpdateProvider.notifier).refreshPending());
   }
 
   Future<void> _loadAppVersion() async {
@@ -497,6 +501,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   /// 检查应用更新：查 GitHub 最新 Release（主通道；失败走备通道
   /// 自托管，本轮备通道未启用时如实报原因）。
   /// - 有新版：弹更新弹窗（版本号＋Release 说明，点“立即更新”下载安装）；
+  ///   同一版本已下载好时弹窗直接给“安装”入口，不用重新下载；
   /// - 已是最新：报当前版本号；
   /// - 查不到：报每条通道的原因，不说“已是最新”，不静默。
   /// 与上面那个“检查更新”（拉远程配置、换品牌与订阅地址）是两回事，
@@ -510,6 +515,8 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
           context: context,
           updater: ref.read(appUpdaterProvider),
           info: result.latest!,
+          alreadyDownloaded:
+              ref.read(appUpdateProvider.notifier).pendingApk,
         );
       case AppUpdateCheckStatus.upToDate:
         await showAppDialog<void>(
@@ -570,6 +577,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     final remoteState = ref.watch(remoteConfigProvider);
     final lan = ref.watch(lanProxyProvider);
     final lanIp = ref.watch(lanIpProvider).valueOrNull;
+    final updateState = ref.watch(appUpdateProvider);
 
     // 夜晚模式（0.1.2）：包一层 GlassBackground，与首页/节点页同款
     // 渐变底（#070F1C→#082E63→#0B3D84），不再露 Scaffold 纯色底。
@@ -863,7 +871,11 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
         ),
         ListTile(
           title: const Text('检查应用更新'),
-          subtitle: const Text('从 GitHub 检查新版本，可下载安装'),
+          subtitle: Text(
+            updateState.pendingReady && updateState.pendingVersion != null
+                ? '已下载 v${updateState.pendingVersion}，点击安装'
+                : '从 GitHub 检查新版本，可下载安装',
+          ),
           onTap: _checkAppUpdate,
         ),
       ],

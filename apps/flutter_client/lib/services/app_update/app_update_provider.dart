@@ -52,6 +52,9 @@ class AppUpdateState {
     this.currentVersion,
     this.message,
     this.lastCheckedAt,
+    this.pendingReady = false,
+    this.pendingVersion,
+    this.fromManualCheck = false,
   });
 
   final AppUpdateStatus status;
@@ -67,12 +70,26 @@ class AppUpdateState {
 
   final DateTime? lastCheckedAt;
 
+  /// 有新版且安装包已下载好、校验通过（设置页行上显示
+  /// “已下载 vX.Y.Z，点击安装”，点一下直接调安装，不用重下）。
+  final bool pendingReady;
+
+  /// 待安装的版本号（pendingReady 为真时才有值）。
+  final String? pendingVersion;
+
+  /// 这次 available 是不是设置页手动查出来的（是的话由设置页
+  /// 自己弹更新弹窗，main.dart 的监听不再弹，不连弹两个）。
+  final bool fromManualCheck;
+
   AppUpdateState copyWith({
     AppUpdateStatus? status,
     UpdateReleaseInfo? latest,
     String? currentVersion,
     String? message,
     DateTime? lastCheckedAt,
+    bool? pendingReady,
+    String? pendingVersion,
+    bool? fromManualCheck,
   }) {
     return AppUpdateState(
       status: status ?? this.status,
@@ -80,6 +97,9 @@ class AppUpdateState {
       currentVersion: currentVersion ?? this.currentVersion,
       message: message ?? this.message,
       lastCheckedAt: lastCheckedAt ?? this.lastCheckedAt,
+      pendingReady: pendingReady ?? this.pendingReady,
+      pendingVersion: pendingVersion ?? this.pendingVersion,
+      fromManualCheck: fromManualCheck ?? this.fromManualCheck,
     );
   }
 }
@@ -98,9 +118,16 @@ class AppUpdateNotifier extends Notifier<AppUpdateState> {
   bool _checking = false;
   AppUpdateCheckResult? _lastResult;
 
+  /// 查到新版时已下载好的安装包（校验通过的待安装包；没有时为 null）。
+  /// 设置页与 main.dart 的监听用它直接调安装，不用重下。
+  DownloadedApk? _pendingApk;
+
+  /// 同上（只读）。
+  DownloadedApk? get pendingApk => _pendingApk;
+
   /// 启动时安静查一次：绝不抛错，失败只记状态，不弹框。
   Future<void> checkQuiet() async {
-    final result = await checkManual();
+    final result = await checkManual(manual: false);
     // 安静规则：只有“有新版”才留状态给界面弹提示；其余状态
     // （已是最新/失败）不留给界面，避免启动时弹错误框打扰用户。
     if (result.status != AppUpdateCheckStatus.available) {
@@ -108,9 +135,47 @@ class AppUpdateNotifier extends Notifier<AppUpdateState> {
     }
   }
 
+  /// 只刷新待安装状态（不查版）：设置页打开时调，行上直接显示
+  /// “已下载 vX.Y.Z，点击安装”。读记录失败不阻断设置页，
+  /// 只是不显示“已下载”。
+  Future<void> refreshPending() async {
+    try {
+      final updater = ref.read(appUpdaterProvider);
+      final record = await updater.pendingRecord();
+      if (record == null) {
+        _pendingApk = null;
+        if (state.pendingReady) {
+          state = AppUpdateState(
+            status: state.status,
+            latest: state.latest,
+            currentVersion: state.currentVersion,
+            message: state.message,
+            lastCheckedAt: state.lastCheckedAt,
+            fromManualCheck: state.fromManualCheck,
+          );
+        }
+        return;
+      }
+      final apk = await updater.pendingInstall();
+      _pendingApk = apk;
+      state = AppUpdateState(
+        status: state.status,
+        latest: state.latest,
+        currentVersion: state.currentVersion,
+        message: state.message,
+        lastCheckedAt: state.lastCheckedAt,
+        pendingReady: apk != null,
+        pendingVersion: apk != null ? record.version : null,
+        fromManualCheck: state.fromManualCheck,
+      );
+    } catch (_) {
+      // 读记录失败不阻断设置页，只是不显示“已下载”。
+    }
+  }
+
   /// 查一次新版（手动入口与安静检查共用）：正在查时再调直接返回
   /// 上次的结果，不开第二轮。
-  Future<AppUpdateCheckResult> checkManual() async {
+  Future<AppUpdateCheckResult> checkManual({bool manual = true}) async {
     if (_checking) {
       // 正在查时再调直接返回上次的结果，不开第二轮。
       return _lastResult ?? const AppUpdateCheckResult.failed([]);
@@ -121,11 +186,13 @@ class AppUpdateNotifier extends Notifier<AppUpdateState> {
       final updater = ref.read(appUpdaterProvider);
       final result = await updater.checkLatest();
       _lastResult = result;
+      // 先清掉旧的待安装包；available 分支有待安装包时再填。
+      _pendingApk = null;
       state = switch (result.status) {
-        AppUpdateCheckStatus.available => AppUpdateState(
-            status: AppUpdateStatus.available,
-            latest: result.latest,
-            lastCheckedAt: DateTime.now(),
+        AppUpdateCheckStatus.available => await _availableState(
+            result,
+            updater,
+            manual,
           ),
         AppUpdateCheckStatus.upToDate => AppUpdateState(
             status: AppUpdateStatus.upToDate,
@@ -133,17 +200,43 @@ class AppUpdateNotifier extends Notifier<AppUpdateState> {
             message:
                 '已是最新版本（v${result.currentVersion}，${result.sourceName} 上最新也是 v${result.latestVersion}）。',
             lastCheckedAt: DateTime.now(),
+            fromManualCheck: manual,
           ),
         AppUpdateCheckStatus.failed => AppUpdateState(
             status: AppUpdateStatus.failed,
             message: result.failureMessage,
             lastCheckedAt: DateTime.now(),
+            fromManualCheck: manual,
           ),
       };
       return result;
     } finally {
       _checking = false;
     }
+  }
+
+  /// 有新版时的状态：先看待安装记录——安装包已下载好、校验通过
+  /// 时直接给安装入口，不用重下。
+  Future<AppUpdateState> _availableState(
+    AppUpdateCheckResult result,
+    AppUpdater updater,
+    bool manual,
+  ) async {
+    DownloadedApk? pending;
+    try {
+      pending = await updater.pendingInstall();
+    } catch (_) {
+      pending = null;
+    }
+    _pendingApk = pending;
+    return AppUpdateState(
+      status: AppUpdateStatus.available,
+      latest: result.latest,
+      lastCheckedAt: DateTime.now(),
+      pendingReady: pending != null,
+      pendingVersion: pending != null ? result.latest!.version : null,
+      fromManualCheck: manual,
+    );
   }
 }
 

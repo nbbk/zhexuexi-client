@@ -6,9 +6,11 @@ import 'dart:io';
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:zhexuexi_client/services/app_update/app_update_provider.dart';
 import 'package:zhexuexi_client/services/app_update/app_updater.dart';
 import 'package:zhexuexi_client/services/app_update/github_update_source.dart';
+import 'package:zhexuexi_client/services/app_update/pending_update_store.dart';
 import 'package:zhexuexi_client/services/app_update/self_hosted_update_source.dart';
 import 'package:zhexuexi_client/services/app_update/semver.dart';
 import 'package:zhexuexi_client/services/app_update/update_http.dart';
@@ -185,6 +187,30 @@ class _ForwardProxy {
   int get port => server.port;
 
   Future<void> stop() => server.close(force: true);
+}
+
+/// 内存版待安装记录存储（待安装测试用；不碰 SharedPreferences）。
+class _MemoryPendingUpdateStore implements PendingUpdateStore {
+  PendingUpdate? record;
+  final Set<String> _reminded = {};
+
+  @override
+  Future<void> save(PendingUpdate value) async => record = value;
+
+  @override
+  Future<PendingUpdate?> read() async => record;
+
+  @override
+  Future<void> clear() async => record = null;
+
+  @override
+  Future<bool> remindedToday(String version) async =>
+      _reminded.contains(version);
+
+  @override
+  Future<void> markRemindedToday(String version) async {
+    _reminded.add(version);
+  }
 }
 
 void main() {
@@ -793,6 +819,313 @@ void main() {
         options: Options(responseType: ResponseType.plain),
       );
       expect(resp.data, 'pong');
+    });
+  });
+
+  group('待安装记录（0.1.17）：下载后持久化、错过提示不用重下', () {
+    late HttpServer server;
+    late Directory tmpDir;
+    var hits = 0;
+
+    setUp(() async {
+      hits = 0;
+      tmpDir = await Directory.systemTemp.createTemp('app-update-pending-');
+      server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      server.listen((request) async {
+        hits++;
+        request.response.headers.contentType =
+            ContentType('application', 'octet-stream');
+        request.response.add(_apkBytes);
+        await request.response.close();
+      });
+    });
+
+    tearDown(() async {
+      await server.close(force: true);
+      if (await tmpDir.exists()) await tmpDir.delete(recursive: true);
+    });
+
+    UpdateReleaseInfo info(String version) => UpdateReleaseInfo(
+          version: version,
+          downloadUrl: 'http://127.0.0.1:${server.port}/app.apk',
+          sha256: _apkSha256,
+          sourceName: 'GitHub',
+        );
+
+    AppUpdater updaterWithStore(
+      _MemoryPendingUpdateStore store, {
+      String current = '1.0.0',
+      List<UpdateSource> sources = const [],
+    }) {
+      return AppUpdater(
+        sources: sources,
+        currentVersionReader: () async => current,
+        downloadDir: () async => tmpDir,
+        pendingStore: store,
+      );
+    }
+
+    test('下载完校验通过 → 记录已存（版本＋路径＋SHA），文件还在', () async {
+      final store = _MemoryPendingUpdateStore();
+      final updater = updaterWithStore(store);
+      final apk = await updater.download(info('1.2.3'));
+      expect(apk.sha256Verified, isTrue);
+      final record = await store.read();
+      expect(record, isNotNull);
+      expect(record!.version, '1.2.3');
+      expect(record.filePath, apk.file.path);
+      expect(record.sha256, _apkSha256);
+      expect(await apk.file.exists(), isTrue);
+    });
+
+    test('有效记录 → pendingInstall 直接给同一文件，不再发下载请求', () async {
+      final store = _MemoryPendingUpdateStore();
+      final updater = updaterWithStore(store);
+      final apk = await updater.download(info('1.2.3'));
+      expect(hits, 1);
+      final pending = await updater.pendingInstall();
+      expect(pending, isNotNull);
+      expect(pending!.file.path, apk.file.path);
+      expect(pending.sha256Verified, isTrue);
+      expect(hits, 1);
+    });
+
+    test('文件丢了 → pendingInstall 返回 null，记录已清（再点就重新下载）',
+        () async {
+      final store = _MemoryPendingUpdateStore();
+      final updater = updaterWithStore(store);
+      final apk = await updater.download(info('1.2.3'));
+      await apk.file.delete();
+      expect(await updater.pendingInstall(), isNull);
+      expect(await store.read(), isNull);
+    });
+
+    test('文件被改过、SHA 对不上 → 返回 null，坏包已删、记录已清', () async {
+      final store = _MemoryPendingUpdateStore();
+      final updater = updaterWithStore(store);
+      final apk = await updater.download(info('1.2.3'));
+      await apk.file.writeAsBytes(utf8.encode('被人改过的包'));
+      expect(await updater.pendingInstall(), isNull);
+      expect(await apk.file.exists(), isFalse);
+      expect(await store.read(), isNull);
+    });
+
+    test('源没给校验值 → 不存待安装记录（重调安装时核不了 SHA）', () async {
+      final store = _MemoryPendingUpdateStore();
+      final updater = updaterWithStore(store);
+      await updater.download(
+        UpdateReleaseInfo(
+          version: '1.2.3',
+          downloadUrl: 'http://127.0.0.1:${server.port}/app.apk',
+          sourceName: 'GitHub',
+        ),
+      );
+      expect(await store.read(), isNull);
+    });
+  });
+
+  group('待安装记录（0.1.17）：查版时对账、装完删包', () {
+    late HttpServer server;
+    late Directory tmpDir;
+
+    setUp(() async {
+      tmpDir = await Directory.systemTemp.createTemp('app-update-reconcile-');
+      server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      server.listen((request) async {
+        request.response.headers.contentType =
+            ContentType('application', 'octet-stream');
+        request.response.add(_apkBytes);
+        await request.response.close();
+      });
+    });
+
+    tearDown(() async {
+      await server.close(force: true);
+      if (await tmpDir.exists()) await tmpDir.delete(recursive: true);
+    });
+
+    UpdateReleaseInfo info(String version) => UpdateReleaseInfo(
+          version: version,
+          downloadUrl: 'http://127.0.0.1:${server.port}/app.apk',
+          sha256: _apkSha256,
+          sourceName: 'GitHub',
+        );
+
+    AppUpdater updaterWithStore(
+      _MemoryPendingUpdateStore store, {
+      required String current,
+      UpdateSource? source,
+    }) {
+      return AppUpdater(
+        sources: source == null ? const [] : [source],
+        currentVersionReader: () async => current,
+        downloadDir: () async => tmpDir,
+        pendingStore: store,
+      );
+    }
+
+    test('版本追上（本机已是记录里的版本）→ 记录清除、安装包文件删除', () async {
+      final store = _MemoryPendingUpdateStore();
+      final downloadUpdater = updaterWithStore(store, current: '1.0.0');
+      final apk = await downloadUpdater.download(info('1.2.3'));
+      expect(await apk.file.exists(), isTrue);
+      // 模拟装完：本机版本变成 1.2.3，再查一次版。
+      final installedUpdater = updaterWithStore(
+        store,
+        current: '1.2.3',
+        source: _StubSource(name: 'GitHub', info: info('1.2.3')),
+      );
+      final result = await installedUpdater.checkLatest();
+      expect(result.status, AppUpdateCheckStatus.upToDate);
+      expect(await store.read(), isNull);
+      expect(await apk.file.exists(), isFalse);
+    });
+
+    test('更新待装时（本机比记录旧）→ 查版 available，文件保留、记录还在',
+        () async {
+      final store = _MemoryPendingUpdateStore();
+      final downloadUpdater = updaterWithStore(store, current: '1.0.0');
+      final apk = await downloadUpdater.download(info('1.2.3'));
+      final checkUpdater = updaterWithStore(
+        store,
+        current: '1.0.0',
+        source: _StubSource(name: 'GitHub', info: info('1.2.3')),
+      );
+      final result = await checkUpdater.checkLatest();
+      expect(result.status, AppUpdateCheckStatus.available);
+      expect(await apk.file.exists(), isTrue);
+      expect((await store.read())!.version, '1.2.3');
+    });
+
+    test('出了更新的版本 → 旧记录作废：文件删除、记录清除', () async {
+      final store = _MemoryPendingUpdateStore();
+      final downloadUpdater = updaterWithStore(store, current: '1.0.0');
+      final apk = await downloadUpdater.download(info('1.2.3'));
+      final checkUpdater = updaterWithStore(
+        store,
+        current: '1.0.0',
+        source: _StubSource(name: 'GitHub', info: info('1.2.4')),
+      );
+      final result = await checkUpdater.checkLatest();
+      expect(result.status, AppUpdateCheckStatus.available);
+      expect(result.latest!.version, '1.2.4');
+      expect(await store.read(), isNull);
+      expect(await apk.file.exists(), isFalse);
+    });
+  });
+
+  group('待安装记录存储（SharedPreferences 真实现）', () {
+    test('save/read/clear 往返；提醒一天一次按版本记', () async {
+      SharedPreferences.setMockInitialValues({});
+      final store = SharedPreferencesPendingUpdateStore();
+      expect(await store.read(), isNull);
+      await store.save(
+        const PendingUpdate(
+          version: '1.2.3',
+          filePath: '/tmp/x.apk',
+          sha256: 'abc',
+        ),
+      );
+      final record = await store.read();
+      expect(record, isNotNull);
+      expect(record!.version, '1.2.3');
+      expect(record.filePath, '/tmp/x.apk');
+      expect(record.sha256, 'abc');
+      expect(await store.remindedToday('1.2.3'), isFalse);
+      await store.markRemindedToday('1.2.3');
+      expect(await store.remindedToday('1.2.3'), isTrue);
+      expect(await store.remindedToday('1.2.4'), isFalse);
+      await store.clear();
+      expect(await store.read(), isNull);
+    });
+  });
+
+  group('更新状态管理：待安装入口（0.1.17）', () {
+    test('checkManual 有新版且已下载 → pendingReady 为真、fromManualCheck 为真',
+        () async {
+      final tmpDir =
+          await Directory.systemTemp.createTemp('app-update-provider-');
+      addTearDown(() async {
+        if (await tmpDir.exists()) await tmpDir.delete(recursive: true);
+      });
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(() => server.close(force: true));
+      server.listen((request) async {
+        request.response.headers.contentType =
+            ContentType('application', 'octet-stream');
+        request.response.add(_apkBytes);
+        await request.response.close();
+      });
+      final store = _MemoryPendingUpdateStore();
+      final updater = AppUpdater(
+        sources: [
+          _StubSource(
+            name: 'GitHub',
+            info: UpdateReleaseInfo(
+              version: '1.2.3',
+              downloadUrl: 'http://127.0.0.1:${server.port}/app.apk',
+              sha256: _apkSha256,
+              sourceName: 'GitHub',
+            ),
+          ),
+        ],
+        currentVersionReader: () async => '1.0.0',
+        downloadDir: () async => tmpDir,
+        pendingStore: store,
+      );
+      // 先下载一次（模拟用户上次下载完错过了安装提示）。
+      await updater.download(
+        UpdateReleaseInfo(
+          version: '1.2.3',
+          downloadUrl: 'http://127.0.0.1:${server.port}/app.apk',
+          sha256: _apkSha256,
+          sourceName: 'GitHub',
+        ),
+      );
+      final container = ProviderContainer(
+        overrides: [appUpdaterProvider.overrideWithValue(updater)],
+      );
+      addTearDown(container.dispose);
+      final result =
+          await container.read(appUpdateProvider.notifier).checkManual();
+      expect(result.status, AppUpdateCheckStatus.available);
+      final state = container.read(appUpdateProvider);
+      expect(state.pendingReady, isTrue);
+      expect(state.pendingVersion, '1.2.3');
+      expect(state.fromManualCheck, isTrue);
+      expect(
+        container.read(appUpdateProvider.notifier).pendingApk,
+        isNotNull,
+      );
+    });
+
+    test('checkQuiet 有新版 → fromManualCheck 为假（启动安静查）', () async {
+      final container = ProviderContainer(
+        overrides: [
+          appUpdaterProvider.overrideWithValue(
+            AppUpdater(
+              sources: [
+                _StubSource(
+                  name: 'GitHub',
+                  info: const UpdateReleaseInfo(
+                    version: '1.2.3',
+                    downloadUrl: 'https://example.com/app.apk',
+                    sourceName: 'GitHub',
+                  ),
+                ),
+              ],
+              currentVersionReader: () async => '1.0.0',
+              pendingStore: _MemoryPendingUpdateStore(),
+            ),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+      await container.read(appUpdateProvider.notifier).checkQuiet();
+      final state = container.read(appUpdateProvider);
+      expect(state.status, AppUpdateStatus.available);
+      expect(state.fromManualCheck, isFalse);
+      expect(state.pendingReady, isFalse);
     });
   });
 }
