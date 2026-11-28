@@ -297,7 +297,10 @@ jobs:
           $old = Join-Path $releaseDir "zhexuexi.exe"
           $new = Join-Path $releaseDir "哲学系.exe"
           if (-not (Test-Path $old)) { throw "构建产物里没找到 zhexuexi.exe" }
-          Rename-Item $old $new
+          # 注意：Rename-Item 的 -NewName 只能是叶名（不能带路径），
+          # 传完整路径会报“represents a path or device name”
+          # （0.1.20 的 CI 46112038926 已实测）。
+          Rename-Item -Path $old -NewName "哲学系.exe"
           if (-not (Test-Path $new)) { throw "exe 改名失败" }
           Write-Host "exe 已改名：哲学系.exe"
 
