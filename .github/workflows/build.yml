@@ -8,7 +8,7 @@
 #   brand_name：应用名（默认“哲学系”），改包内 brand.json 的 app_name，
 #     并同步 Windows 原生窗口标题（main.cpp）与版本信息串
 #     （Runner.rc 的 FileDescription/ProductName）；exe 文件名
-#     （zhexuexi.exe）不随品牌改。
+#     （哲学系.exe）不随品牌改。
 #   version：版本号 x.y.z（留空时产物名用分支/tag 名）。
 #   logo_url：Logo 图片地址（选填）。空着用仓里自带的 Logo；
 #     填了会在构建前下载，替换包内 Logo（assets/logo/logo.png，
@@ -49,8 +49,9 @@
 #   Windows：未签名或已签名的 exe，打成 zip（解压即用：exe＋
 #     flutter_windows.dll＋data/ 都在里面，双击 exe 就能跑）。
 #   注意：Windows 资产里的 sing-box.exe 不进仓（太大，Git Data API
-#     拒收），Windows job 在构建前从上游 SagerNet 官方 Release 下载
-#     1.14.4 并校验 SHA-256；helper（自研小二进制）在仓里。
+#     拒收），Windows job 在构建前从打补丁的源码交叉编译 1.14.4
+#     （见 tool/sing-box-patches/README.md；未打补丁的上游版握不过
+#     Xray v26.11.9 的 REALITY）；helper（自研小二进制）在仓里。
 #
 # 注意：流程已多次跑绿；跑不通时先看 Actions 日志，不要声称 CI 跑过。
 #
@@ -141,7 +142,7 @@ jobs:
             Write-Host "品牌注入完成：应用名=$brandName"
             # Windows 原生标题与版本信息串（0.1.19）：main.cpp 的窗口标题
             # 与 Runner.rc 的 FileDescription/ProductName 跟着品牌名走；
-            # InternalName/OriginalFilename 是文件身份（zhexuexi.exe），
+            # InternalName/OriginalFilename 是文件身份（哲学系.exe），
             # 不随品牌改。UTF-8 无 BOM 写回（.rc 有 #pragma code_page(65001)，
             # main.cpp 靠 /utf-8 编译选项）。
             $utf8NoBom = [Text.UTF8Encoding]::new($false)
@@ -208,31 +209,77 @@ jobs:
             Write-Host "远程配置域名跳过：用仓里默认值"
           }
 
-      - name: 下载 sing-box 内核（Windows 资产）
-        # 0.1.19：sing-box.exe（amd64 79MB／arm64 72MB）太大，
+      - name: 装 Go 1.26.10（编打补丁的 sing-box 内核）
+        # 0.1.20：Go 版本钉 1.26.10（sing-box 1.14.4 的 tag 构建用的
+        # 版本，见 tool/sing-box-patches/README.md），不用 go.mod 的
+        # 最低版 1.25.5。
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.10"
+
+      - name: 编 sing-box 内核（Windows 资产，打补丁版）
+        # 0.1.20：sing-box.exe（amd64 79MB／arm64 72MB）太大，
         # Git Data API 拒收（422 input too large），不进仓；
-        # CI 在这里从上游 SagerNet 官方 Release 下载 1.14.4，
-        # 解压后放进插件资产目录，再校验 SHA-256（须与本地验证过的
-        # 二进制逐字节一致，否则直接报错、不出包）。helper 是自研
-        # 小二进制，仍在仓里。zip 里还带 libcronet.dll 与 LICENSE，
-        # 与仓里已有的逐字节一致，这里只取 sing-box.exe。
+        # 且未打补丁的上游 1.14.4 握不过 Xray v26.11.9 的 REALITY
+        # （Windows 上三个 REALITY 节点测速全报“握手失败”，
+        # 同 NekoBox 1.4.2 的失败模式；Android 的 libbox 早已打
+        # 同一份补丁）。CI 在这里从源码编打补丁版：
+        # 下 sing-box 1.14.4 源码 → git apply reality-xray.patch
+        # → 下 metacubex/utls v1.8.7 → git apply utls-presets.patch
+        # → go mod edit -replace 指过去 → 交叉编译 windows/amd64
+        # 与 windows/arm64（CGO_ENABLED=0，tags 与 libbox 构建一致）
+        # → 放进插件资产目录。版本戳 1.14.4-patched（与 libbox 同款，
+        # 日志里能认出是补丁版）。helper 是自研小二进制，仍在仓里。
+        # 注意：pwsh 里原生命令失败不会自动停住步骤，每步都查
+        # $LASTEXITCODE 再 throw。
         run: |
-          $base = "https://github.com/SagerNet/sing-box/releases/download/v1.14.4"
-          $amd64Sha = "8F30682EE198855440D2A7FE070D5D3653793B2D01BB8C85EEA88F93BBE7C8B9"
-          $arm64Sha = "FA52DCB75BDC08E864927E260BAAD31A4D62668F0AF40725D7A5E5AAC37DFB92"
-          Invoke-WebRequest -Uri "$base/sing-box-1.14.4-windows-amd64.zip" -OutFile "sing-box-amd64.zip"
-          Invoke-WebRequest -Uri "$base/sing-box-1.14.4-windows-arm64.zip" -OutFile "sing-box-arm64.zip"
-          Expand-Archive -Path "sing-box-amd64.zip" -DestinationPath "sb-amd64" -Force
-          Expand-Archive -Path "sing-box-arm64.zip" -DestinationPath "sb-arm64" -Force
+          $ErrorActionPreference = 'Stop'
+          $tags = "with_gvisor,with_quic,with_wireguard,with_utls,with_clash_api"
+          $ldflags = "-X github.com/sagernet/sing-box/constant.Version=1.14.4-patched -s -w -buildid="
+          New-Item -ItemType Directory -Force -Path "sb-src" | Out-Null
+          Invoke-WebRequest -Uri "https://github.com/SagerNet/sing-box/archive/refs/tags/v1.14.4.tar.gz" -OutFile "sb-src/sing-box-1.14.4.tar.gz"
+          Invoke-WebRequest -Uri "https://github.com/metacubex/utls/archive/refs/tags/v1.8.7.tar.gz" -OutFile "sb-src/utls-1.8.7.tar.gz"
+          tar -xzf "sb-src/sing-box-1.14.4.tar.gz" -C "sb-src"
+          if ($LASTEXITCODE -ne 0) { throw "sing-box 源码解压失败" }
+          tar -xzf "sb-src/utls-1.8.7.tar.gz" -C "sb-src"
+          if ($LASTEXITCODE -ne 0) { throw "utls 源码解压失败" }
+          Push-Location "sb-src/sing-box-1.14.4"
+          git apply --check "../../tool/sing-box-patches/reality-xray.patch"
+          if ($LASTEXITCODE -ne 0) { throw "reality-xray.patch 贴不上（先 --check）" }
+          git apply "../../tool/sing-box-patches/reality-xray.patch"
+          if ($LASTEXITCODE -ne 0) { throw "reality-xray.patch 应用失败" }
+          Pop-Location
+          Push-Location "sb-src/utls-1.8.7"
+          git apply --check "../../tool/sing-box-patches/utls-presets.patch"
+          if ($LASTEXITCODE -ne 0) { throw "utls-presets.patch 贴不上（先 --check）" }
+          git apply "../../tool/sing-box-patches/utls-presets.patch"
+          if ($LASTEXITCODE -ne 0) { throw "utls-presets.patch 应用失败" }
+          Pop-Location
+          Push-Location "sb-src/sing-box-1.14.4"
+          go mod edit -replace github.com/metacubex/utls=../utls-1.8.7
+          if ($LASTEXITCODE -ne 0) { throw "go mod edit -replace 失败" }
+          if (-not (Select-String -Path "go.mod" -Pattern "github.com/metacubex/utls => ../utls-1.8.7" -Quiet)) { throw "go.mod 里没找到 utls replace" }
+          $env:CGO_ENABLED = "0"
+          $env:GOTOOLCHAIN = "local"
+          $env:GOOS = "windows"
+          $env:GOARCH = "amd64"
+          go build -tags $tags -trimpath -ldflags $ldflags -o "../../packages/flutter_sing_box/assets/windows/amd64/sing-box.exe" ./cmd/sing-box
+          if ($LASTEXITCODE -ne 0) { throw "sing-box windows/amd64 编译失败" }
+          $env:GOARCH = "arm64"
+          go build -tags $tags -trimpath -ldflags $ldflags -o "../../packages/flutter_sing_box/assets/windows/arm64/sing-box.exe" ./cmd/sing-box
+          if ($LASTEXITCODE -ne 0) { throw "sing-box windows/arm64 编译失败" }
+          Pop-Location
           $amd64Exe = "packages\flutter_sing_box\assets\windows\amd64\sing-box.exe"
           $arm64Exe = "packages\flutter_sing_box\assets\windows\arm64\sing-box.exe"
-          Copy-Item "sb-amd64\sing-box-1.14.4-windows-amd64\sing-box.exe" $amd64Exe -Force
-          Copy-Item "sb-arm64\sing-box-1.14.4-windows-arm64\sing-box.exe" $arm64Exe -Force
-          if ((Get-FileHash $amd64Exe -Algorithm SHA256).Hash -ne $amd64Sha) { throw "sing-box amd64 SHA 不符" }
-          if ((Get-FileHash $arm64Exe -Algorithm SHA256).Hash -ne $arm64Sha) { throw "sing-box arm64 SHA 不符" }
-          Remove-Item "sing-box-amd64.zip","sing-box-arm64.zip" -Force
-          Remove-Item "sb-amd64","sb-arm64" -Recurse -Force
-          Write-Host "sing-box 1.14.4 已就位并校验通过（amd64/arm64）"
+          $verOut = (& $amd64Exe version | Out-String)
+          if ($LASTEXITCODE -ne 0) { throw "sing-box.exe version 跑不起来" }
+          if ($verOut -notmatch "1.14.4-patched") { throw "sing-box.exe 版本戳不对：$verOut" }
+          if ($verOut -notmatch "with_utls") { throw "sing-box.exe 没带 with_utls tag：$verOut" }
+          $modOut = (go version -m $amd64Exe | Out-String) -replace "\s+", " "
+          if ($modOut -notmatch "metacubex/utls v1.8.7 => ../utls-1.8.7") { throw "sing-box.exe 的 utls replace 没生效" }
+          if ((Get-Item $arm64Exe).Length -lt 10MB) { throw "sing-box arm64 exe 太小，不像编出来的" }
+          Remove-Item "sb-src" -Recurse -Force
+          Write-Host "sing-box 1.14.4-patched 已编好（amd64/arm64），版本与 replace 核对通过"
 
       - name: 编 Windows
         run: flutter build windows --release

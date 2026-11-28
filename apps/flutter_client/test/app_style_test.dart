@@ -491,9 +491,24 @@ void main() {
         const Color(0xFFEAF1F8),
       ]);
       expect(t.surfaceGlass, const Color(0x99E6EEF8));
-      expect(t.cardRadius, 22);
-      expect(t.cardBorderWidth, 2);
+      // 0.1.20：弹窗表面必须不透明（实色近白横带），卡片仍半透明。
+      expect(t.dialogSurface, const Color(0xFFEAF1F8));
+      expect(t.dialogSurface!.toARGB32() >> 24, 0xFF);
       expect(AppThemes.byId('glass-day').id, 'glass-day');
+    });
+
+    test('玻璃主题的弹窗底色是不透明的 dialogSurface，其他主题仍走原规则', () {
+      final glass = AppThemes.glassDay.themeData;
+      expect(
+        glass.dialogTheme.backgroundColor,
+        const Color(0xFFEAF1F8),
+      );
+      // 默认主题没设 dialogSurface：白天仍是实色底色（原规则）。
+      final day = AppThemes.day.themeData;
+      expect(
+        day.dialogTheme.backgroundColor,
+        const Color(0xFFFAF7F0),
+      );
     });
 
     testWidgets('玻璃主题下 GlassCard 是蓝调磨砂白 60%＋圆角 22＋2px 描边＋顶部高光，默认主题仍是底色 65%＋圆角 16＋1px 描边',

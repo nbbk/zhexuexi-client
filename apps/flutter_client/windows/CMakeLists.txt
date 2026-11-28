@@ -4,9 +4,10 @@ project(zhexuexi_client LANGUAGES CXX)
 
 # The name of the executable created for the application. Change this to change
 # the on-disk name of your application.
-# 0.1.19：exe 文件名改成品牌拼音 zhexuexi（zhexuexi.exe）；
-# 中文 exe 名有 CMake/编码风险，不用“哲学系.exe”。
-set(BINARY_NAME "zhexuexi")
+# 0.1.20：exe 文件名改成品牌名“哲学系”（哲学系.exe，用户点名要的）。
+# 0.1.19 曾因 CMake／编码风险避开中文名、只用拼音 zhexuexi；
+# 本版改回中文名，CI（Windows job）会验证产物里确实是哲学系.exe。
+set(BINARY_NAME "哲学系")
 
 # Explicitly opt in to modern CMake behaviors to avoid warnings with recent
 # versions of CMake.

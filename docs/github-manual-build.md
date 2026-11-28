@@ -149,10 +149,10 @@ Get-FileHash .\app-arm64-v8a-release.apk -Algorithm SHA256
 
 | 文件 | 说明 |
 |---|---|
-| `zhexuexi.exe` | **双击这个就能跑** |
+| `哲学系.exe` | **双击这个就能跑** |
 | `flutter_windows.dll` | 程序要用的库，和 exe 放同一个文件夹，别删 |
 | `data/` 文件夹 | 程序要用的资源文件，和 exe 放同一个文件夹，别删 |
-| `zhexuexi.exe.sha256` | 校验用的哈希值（校验方法见下面） |
+| `哲学系.exe.sha256` | 校验用的哈希值（校验方法见下面） |
 
 解压后别把 exe 单独拷走：exe、dll、`data/` 必须在同一个文件夹里才能跑，
 拷走一个就跑不起来。
@@ -162,7 +162,7 @@ Get-FileHash .\app-arm64-v8a-release.apk -Algorithm SHA256
 在 Windows PowerShell 里，进到解压出来的文件夹，跑：
 
 ```powershell
-Get-FileHash .\zhexuexi.exe -Algorithm SHA256
+Get-FileHash .\哲学系.exe -Algorithm SHA256
 ```
 
 输出一串哈希值。再打开同名的 `.sha256` 文件（记事本就能开），里面也是一串
@@ -234,8 +234,8 @@ Get-FileHash .\zhexuexi.exe -Algorithm SHA256
 
 ### 怎么确认装的是新版
 
-应用里 **设置** 页显示的版本号目前是写死的 `0.1.0`，改了也不变，
-**不要拿它当新版的证据**。看这几处，有就是新版：
+应用里 **设置** 页显示的版本号就是装的这一版（0.1.14 起改读安装包的
+真实版本，不再写死），**可以直接拿它当新版的证据**。下面几处也可以对照：
 
 - 顶栏是墨蓝色的（不是浅灰蓝）；
 - 节点列表里每行左侧圆圈里是协议简称（`VL`、`HY2` 这种），不是国旗、

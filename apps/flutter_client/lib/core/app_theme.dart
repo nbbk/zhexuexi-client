@@ -28,6 +28,7 @@ class AppThemeTokens extends ThemeExtension<AppThemeTokens> {
     required this.segmentedSelectedBackground,
     required this.segmentedSelectedForeground,
     this.surfaceGlass,
+    this.dialogSurface,
     this.cardRadius,
     this.cardBorderWidth,
   });
@@ -65,11 +66,17 @@ class AppThemeTokens extends ThemeExtension<AppThemeTokens> {
   /// 三段切换的选中态文字。
   final Color segmentedSelectedForeground;
 
-  /// 磨砂白表面色（仅玻璃拟物主题用）：卡片/弹窗的半透明填充
+  /// 磨砂白表面色（仅玻璃拟物主题用）：卡片的半透明填充
   /// （token：带蓝调的磨砂白 rgba(230,238,248,0.55–0.65)，0.1.19
   /// 起 0.60）。为空时按原规则：白天底色 60%/65%、夜晚白 12%，
-  /// 其他主题不受影响。
+  /// 其他主题不受影响。弹窗不用它（见 [dialogSurface]）。
   final Color? surfaceGlass;
+
+  /// 弹窗表面色（仅玻璃拟物主题用）：弹窗必须不透明
+  /// （0.1.20：用户反馈选择节点弹窗半透明、透出下面首页；
+  /// 玻璃感只留给页面卡片，弹窗用实色底）。
+  /// 为空时按原规则：夜晚深蓝、白天磨砂白或底色。
+  final Color? dialogSurface;
 
   /// 卡片圆角覆盖（仅玻璃拟物主题用，token 20–24px）。
   /// 为空时用 [AppTokens.radiusLarge]（16），其他主题不受影响。
@@ -93,6 +100,7 @@ class AppThemeTokens extends ThemeExtension<AppThemeTokens> {
     Color? segmentedSelectedBackground,
     Color? segmentedSelectedForeground,
     Color? surfaceGlass,
+    Color? dialogSurface,
     double? cardRadius,
     double? cardBorderWidth,
   }) {
@@ -111,6 +119,7 @@ class AppThemeTokens extends ThemeExtension<AppThemeTokens> {
       segmentedSelectedForeground:
           segmentedSelectedForeground ?? this.segmentedSelectedForeground,
       surfaceGlass: surfaceGlass ?? this.surfaceGlass,
+      dialogSurface: dialogSurface ?? this.dialogSurface,
       cardRadius: cardRadius ?? this.cardRadius,
       cardBorderWidth: cardBorderWidth ?? this.cardBorderWidth,
     );
@@ -153,6 +162,9 @@ class AppThemeTokens extends ThemeExtension<AppThemeTokens> {
       surfaceGlass: (surfaceGlass == null || other.surfaceGlass == null)
           ? (other.surfaceGlass ?? surfaceGlass)
           : lerpColor(surfaceGlass!, other.surfaceGlass!),
+      dialogSurface: (dialogSurface == null || other.dialogSurface == null)
+          ? (other.dialogSurface ?? dialogSurface)
+          : lerpColor(dialogSurface!, other.dialogSurface!),
       cardRadius: (cardRadius == null || other.cardRadius == null)
           ? (other.cardRadius ?? cardRadius)
           : cardRadius! + (other.cardRadius! - cardRadius!) * t,
@@ -214,9 +226,13 @@ class AppThemeDefinition {
         surfaceTintColor: Colors.transparent,
       ),
       dialogTheme: DialogThemeData(
-        backgroundColor: brightness == Brightness.dark
-            ? tokens.deepBlue
-            : tokens.surfaceGlass ?? tokens.background,
+        // 弹窗表面必须不透明（0.1.20）：玻璃主题用实色 dialogSurface，
+        // 其他主题仍走原规则（夜晚深蓝、白天磨砂白或底色）。
+        backgroundColor:
+            tokens.dialogSurface ??
+            (brightness == Brightness.dark
+                ? tokens.deepBlue
+                : tokens.surfaceGlass ?? tokens.background),
       ),
       // 顶栏刷成墨蓝（不要 M3 默认的浅灰蓝 surface），标题与图标走白色。
       // 白字在墨蓝上的对比度 13.28:1，夜晚同理。
@@ -783,6 +799,8 @@ class AppThemes {
   /// 次要文字没用观察值 #6B7C8D（在底色上只有 3.68:1），加深到
   /// #55677A（4.99:1）才达标；三段选中不用亮蓝作底（白字 3.76:1
   /// 不够），改用主色深蓝灰作底。两处对比度处理 0.1.19 保持不动。
+  /// 0.1.20：弹窗表面改不透明（dialogSurface 实色 #EAF1F8），
+  /// 卡片仍用半透明 surfaceGlass；弹窗不透、卡片透。
   static const AppThemeDefinition glassDay = AppThemeDefinition(
     id: 'glass-day',
     name: '玻璃拟物',
@@ -800,6 +818,9 @@ class AppThemes {
       segmentedSelectedBackground: Color(0xFF33475B),
       segmentedSelectedForeground: Colors.white,
       surfaceGlass: Color(0x99E6EEF8),
+      // 0.1.20：弹窗不透明，用近白横带实色（主文字 8.27:1、
+      // 次要文字约 4.9:1，与磨砂面复合色上算出来的一致）。
+      dialogSurface: Color(0xFFEAF1F8),
       cardRadius: 22,
       cardBorderWidth: 2,
     ),
