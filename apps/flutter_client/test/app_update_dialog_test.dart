@@ -12,6 +12,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:zhexuexi_client/features/update/app_update_dialog.dart';
 import 'package:zhexuexi_client/services/app_update/app_updater.dart';
+import 'package:zhexuexi_client/services/app_update/external_link_opener.dart';
 import 'package:zhexuexi_client/services/app_update/update_source.dart';
 
 /// 记数的 fake 安装器：只记调了几次、最后一次传的文件路径，不调系统安装。
@@ -23,6 +24,21 @@ class _FakeInstaller implements AppInstaller {
   Future<void> installApk(File apk) async {
     calls++;
     lastPath = apk.path;
+  }
+}
+
+/// 记数的 fake 外部链接开启器：只记调了几次、最后一次传的 URL，
+/// 不真开浏览器；[error] 非空时抛错（测打不开的分支）。
+class _FakeLinkOpener implements ExternalLinkOpener {
+  int calls = 0;
+  String? lastUrl;
+  UpdateException? error;
+
+  @override
+  Future<void> open(String url) async {
+    calls++;
+    lastUrl = url;
+    if (error != null) throw error!;
   }
 }
 
@@ -84,6 +100,84 @@ void main() {
       await tester.pump(const Duration(milliseconds: 200));
       expect(installer.calls, 1);
       expect(installer.lastPath, file.path);
+    });
+  });
+
+  group('更新弹窗：Windows 分支（0.1.22）', () {
+    const windowsInfo = UpdateReleaseInfo(
+      version: '1.2.3',
+      downloadUrl: 'https://example.com/windows-1.2.3.zip',
+      openExternally: true,
+      releaseNotes: '新版说明',
+      sourceName: 'GitHub',
+    );
+
+    Future<void> pumpWindowsDialog(
+      WidgetTester tester,
+      _FakeLinkOpener opener, {
+      _FakeInstaller? installer,
+    }) async {
+      final effectiveInstaller = installer ?? _FakeInstaller();
+      final updater = AppUpdater(
+        sources: const [],
+        installer: effectiveInstaller,
+        currentVersionReader: () async => '1.0.0',
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Builder(
+            builder: (context) {
+              return TextButton(
+                onPressed: () => showAppUpdateDialog(
+                  context: context,
+                  updater: updater,
+                  info: windowsInfo,
+                  linkOpener: opener,
+                ),
+                child: const Text('打开更新弹窗'),
+              );
+            },
+          ),
+        ),
+      );
+      await tester.tap(find.text('打开更新弹窗'));
+      await tester.pump(const Duration(milliseconds: 500));
+    }
+
+    testWidgets('点“去下载”开浏览器，不下载、不调安装', (tester) async {
+      final opener = _FakeLinkOpener();
+      final installer = _FakeInstaller();
+      await pumpWindowsDialog(tester, opener, installer: installer);
+      expect(find.text('去下载'), findsOneWidget);
+      expect(find.text('立即更新'), findsNothing);
+      expect(find.textContaining('浏览器'), findsOneWidget);
+      await tester.tap(find.text('去下载'));
+      await tester.pump(const Duration(milliseconds: 200));
+      expect(opener.calls, 1);
+      expect(opener.lastUrl, 'https://example.com/windows-1.2.3.zip');
+      expect(find.textContaining('已在浏览器打开下载页'), findsOneWidget);
+      expect(installer.calls, 0);
+    });
+
+    testWidgets('打不开浏览器时报错里带上下载地址，点重试再开一次',
+        (tester) async {
+      final opener = _FakeLinkOpener()
+        ..error = const UpdateException.install(
+          '打不开浏览器，请手动打开：https://example.com/windows-1.2.3.zip',
+        );
+      await pumpWindowsDialog(tester, opener);
+      await tester.tap(find.text('去下载'));
+      await tester.pump(const Duration(milliseconds: 200));
+      expect(opener.calls, 1);
+      expect(
+        find.textContaining('https://example.com/windows-1.2.3.zip'),
+        findsOneWidget,
+      );
+      expect(find.text('重试'), findsOneWidget);
+      await tester.tap(find.text('重试'));
+      await tester.pump(const Duration(milliseconds: 200));
+      expect(opener.calls, 2);
+      expect(opener.lastUrl, 'https://example.com/windows-1.2.3.zip');
     });
   });
 }

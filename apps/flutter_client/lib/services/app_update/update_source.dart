@@ -18,6 +18,7 @@ class UpdateReleaseInfo {
     this.sha256Url,
     this.releaseNotes = '',
     required this.sourceName,
+    this.openExternally = false,
   });
 
   /// 已去 `v` 前缀的版本号（如 `1.0.0`、`1.0.0-beta.1`）。
@@ -39,6 +40,13 @@ class UpdateReleaseInfo {
 
   /// 来源名（`GitHub` / `自托管`），报错与日志里写明走的是哪条通道。
   final String sourceName;
+
+  /// Windows 分支（0.1.22）：不下载、不安装，只给下载链接，
+  /// 界面在浏览器里打开它。为 true 时 [downloadUrl] 是下载页
+  /// 地址（优先 Windows zip 资产，拿不到时是 Release 页），
+  /// [sha256] 与 [sha256Url] 恒为 null；更新器的 download()
+  /// 收到这种信息直接报“不支持”，不走应用内下载。
+  final bool openExternally;
 }
 
 /// 更新失败的原因分类（报错文案按它区分，不笼统说“失败”）。

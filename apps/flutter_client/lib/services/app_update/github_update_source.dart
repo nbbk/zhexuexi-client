@@ -16,6 +16,11 @@ import 'update_source.dart';
 ///   两列，都只取第一列）；没有该资产时 [UpdateReleaseInfo.sha256]
 ///   为 null，下载后须让用户决定是否继续，不悄悄跳过校验。
 ///
+/// Windows 分支（0.1.22，`windows: true`）：同一接口、不下 APK。
+/// 取 `windows-<版本号>.zip` 资产的下载地址给界面在浏览器里打开
+/// （拿不到 zip 资产时给 Release 页地址）；不拉 `.sha256`、不校验，
+/// 用户在浏览器里自己下载。版本号比对与代理回落与安卓同一套。
+///
 /// 注意（发版前置条件）：CI 现在只把 APK 上传为 Actions 产物，
 /// 不建 GitHub Release；`releases/latest` 在有人把 APK 挂到 Release
 /// 上之前会 404，更新器会如实报“GitHub 上还没有 Release”。
@@ -26,17 +31,25 @@ class GitHubUpdateSource implements UpdateSource {
   /// Dio 时走这条；生产由 provider 传配好代理的 [UpdateHttp]）。
   /// 查版与 .sha256 拉取都走 [UpdateHttp]：核心开着先走本机
   /// 127.0.0.1:2080 代理，代理不通回落直连（见 [UpdateHttp]）。
-  GitHubUpdateSource({UpdateHttp? http, Dio? dio})
+  /// [windows] 为真时走 Windows 分支（取 zip 下载链接、不下载）。
+  GitHubUpdateSource({UpdateHttp? http, Dio? dio, this.windows = false})
       : _http = http ??
             UpdateHttp(coreRunning: () => false, directDio: dio);
 
   final UpdateHttp _http;
+
+  /// Windows 分支开关（provider 按 Platform.isWindows 传；测试注入）。
+  final bool windows;
 
   static const String repoOwner = 'nbbk';
   static const String repoName = 'zhexuexi-client';
 
   /// CI 产出的 arm64 APK 文件名。
   static const String arm64ApkName = 'app-arm64-v8a-release.apk';
+
+  /// Release 页地址（Windows 分支拿不到 zip 资产时的兜底下载链接）。
+  static const String releasesPageUrl =
+      'https://github.com/nbbk/zhexuexi-client/releases/latest';
 
   static const Duration requestTimeout = Duration(seconds: 10);
 
@@ -73,6 +86,16 @@ class GitHubUpdateSource implements UpdateSource {
       rethrow;
     } catch (e) {
       throw UpdateException.network('连不上 GitHub：$e');
+    }
+    if (windows) {
+      // Windows 分支：只取版本号＋下载链接，不拉 .sha256、不校验。
+      final info = parseReleaseJsonWindows(json);
+      if (info == null) {
+        throw const UpdateException.parse(
+          'GitHub Release 里没有找到 Windows 版本信息。',
+        );
+      }
+      return info;
     }
     final info = parseReleaseJson(json);
     if (info == null) {
@@ -153,6 +176,54 @@ class GitHubUpdateSource implements UpdateSource {
       version: normalizeSemver(tag),
       downloadUrl: downloadUrl,
       sha256Url: sha256Url,
+      releaseNotes: json['body'] as String? ?? '',
+      sourceName: 'GitHub',
+    );
+  }
+
+  /// Windows 分支（0.1.22）：从 `/releases/latest` 的 JSON 解析出
+  /// 版本信息（纯函数，可单测，不碰网络）。不找 APK，只找 Windows
+  /// zip 资产：`windows-<版本号>.zip` 精确匹配优先，兜底匹配
+  /// `windows-*.zip`；都没有时下载链接给 Release 页地址（用户
+  /// 自己在页上找 zip 下）。tag 缺失时返回 null。
+  /// 返回的 [UpdateReleaseInfo] 一律 `openExternally: true`，
+  /// sha256/sha256Url 恒为 null（不下载、不校验）。
+  static UpdateReleaseInfo? parseReleaseJsonWindows(
+    Map<String, dynamic> json,
+  ) {
+    final tag = json['tag_name'] as String?;
+    if (tag == null || tag.isEmpty) return null;
+    final version = normalizeSemver(tag);
+    final assets = json['assets'];
+    String? zipUrl;
+    if (assets is List) {
+      for (final asset in assets) {
+        if (asset is! Map<String, dynamic>) continue;
+        if (asset['name'] == 'windows-$version.zip') {
+          final url = asset['browser_download_url'] as String?;
+          if (url != null && url.isNotEmpty) {
+            zipUrl = url;
+            break;
+          }
+        }
+      }
+      zipUrl ??= () {
+        for (final asset in assets) {
+          if (asset is! Map<String, dynamic>) continue;
+          final name = asset['name'] as String?;
+          if (name == null) continue;
+          if (name.startsWith('windows-') && name.endsWith('.zip')) {
+            final url = asset['browser_download_url'] as String?;
+            if (url != null && url.isNotEmpty) return url;
+          }
+        }
+        return null;
+      }();
+    }
+    return UpdateReleaseInfo(
+      version: version,
+      downloadUrl: zipUrl ?? releasesPageUrl,
+      openExternally: true,
       releaseNotes: json['body'] as String? ?? '',
       sourceName: 'GitHub',
     );

@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/core_provider.dart';
@@ -32,7 +34,9 @@ final appUpdaterProvider = Provider<AppUpdater>((ref) {
   );
   return AppUpdater(
     sources: [
-      GitHubUpdateSource(http: http),
+      // Windows 上 GitHub 通道走 Windows 分支：只取 Windows zip 的
+      // 下载链接、不下 APK（0.1.22）；安卓流程不动。
+      GitHubUpdateSource(http: http, windows: Platform.isWindows),
       SelfHostedUpdateSource(
         baseUrl: config.updateServerBaseUrl,
         versionPath: config.updateVersionPath,

@@ -108,6 +108,33 @@ Map<String, dynamic> _releaseJson({
   return {'tag_name': tag, 'body': body, 'assets': assets};
 }
 
+/// Windows 分支用的 Release JSON：带 windows zip 资产（可关掉、
+/// 可改名测兜底），APK 默认也带上（Windows 解析不该理它）。
+Map<String, dynamic> _releaseJsonWindows({
+  String tag = 'v1.2.3',
+  String body = '新版说明',
+  bool withZip = true,
+  bool exactZipName = true,
+  bool withApk = true,
+}) {
+  final assets = <Map<String, dynamic>>[];
+  if (withApk) {
+    assets.add({
+      'name': 'app-arm64-v8a-release.apk',
+      'browser_download_url':
+          'https://github.com/nbbk/zhexuexi-client/releases/download/v1.2.3/app-arm64-v8a-release.apk',
+    });
+  }
+  if (withZip) {
+    assets.add({
+      'name': exactZipName ? 'windows-1.2.3.zip' : 'windows-1.2.3-rc.zip',
+      'browser_download_url':
+          'https://github.com/nbbk/zhexuexi-client/releases/download/v1.2.3/windows-1.2.3.zip',
+    });
+  }
+  return {'tag_name': tag, 'body': body, 'assets': assets};
+}
+
 /// 记数的 fake Dio：onRequest 里数一次，按 [failWith] 拒绝或按
 /// [resolveData] 回包。用来断言一次请求走了代理 Dio 还是直连 Dio。
 /// [failStatusCode] 非空时拒绝带上该状态码的 Response（407/404 等）。
@@ -1126,6 +1153,170 @@ void main() {
       expect(state.status, AppUpdateStatus.available);
       expect(state.fromManualCheck, isFalse);
       expect(state.pendingReady, isFalse);
+    });
+  });
+
+  group('GitHub Release JSON 解析（Windows，0.1.22）', () {
+    test('精确匹配 windows-<版本>.zip，openExternally 为真、不带校验值', () {
+      final info = GitHubUpdateSource.parseReleaseJsonWindows(
+        _releaseJsonWindows(),
+      );
+      expect(info, isNotNull);
+      expect(info!.version, '1.2.3');
+      expect(info.downloadUrl, contains('windows-1.2.3.zip'));
+      expect(info.openExternally, isTrue);
+      expect(info.sha256, isNull);
+      expect(info.sha256Url, isNull);
+      expect(info.releaseNotes, '新版说明');
+      expect(info.sourceName, 'GitHub');
+    });
+
+    test('没有精确名时兜底 windows-*.zip；APK 资产不影响 Windows 解析', () {
+      final info = GitHubUpdateSource.parseReleaseJsonWindows(
+        _releaseJsonWindows(exactZipName: false),
+      );
+      expect(info, isNotNull);
+      expect(info!.downloadUrl, contains('windows-1.2.3.zip'));
+      expect(info.openExternally, isTrue);
+    });
+
+    test('没有 zip 资产时下载链接给 Release 页地址', () {
+      final info = GitHubUpdateSource.parseReleaseJsonWindows(
+        _releaseJsonWindows(withZip: false),
+      );
+      expect(info, isNotNull);
+      expect(
+        info!.downloadUrl,
+        'https://github.com/nbbk/zhexuexi-client/releases/latest',
+      );
+      expect(info.openExternally, isTrue);
+    });
+
+    test('tag 缺失时返回 null', () {
+      expect(
+        GitHubUpdateSource.parseReleaseJsonWindows(
+          {'tag_name': '', 'assets': []},
+        ),
+        isNull,
+      );
+      expect(
+        GitHubUpdateSource.parseReleaseJsonWindows({'assets': []}),
+        isNull,
+      );
+    });
+
+    test('安卓解析不受影响：Windows JSON 里 APK 还在时安卓仍取 APK', () {
+      final info = GitHubUpdateSource.parseReleaseJson(
+        _releaseJsonWindows(),
+      );
+      expect(info, isNotNull);
+      expect(info!.downloadUrl, contains('app-arm64-v8a-release.apk'));
+      expect(info.openExternally, isFalse);
+    });
+  });
+
+  group('GitHub 通道查版（Windows，0.1.22；fake Dio，不碰真网）', () {
+    test('拉到 Release 时给 zip 链接，不拉 .sha256、不填校验值', () async {
+      final source = GitHubUpdateSource(
+        windows: true,
+        dio: _fakeGitHubDio(
+          releaseJson: _releaseJsonWindows(),
+          sha256Text: '$_apkSha256\n',
+        ),
+      );
+      final info = await source.checkLatest();
+      expect(info.version, '1.2.3');
+      expect(info.downloadUrl, contains('windows-1.2.3.zip'));
+      expect(info.openExternally, isTrue);
+      // .sha256 资产明明在 Release 里，Windows 分支也不拉它。
+      expect(info.sha256, isNull);
+      expect(info.sha256Url, isNull);
+    });
+
+    test('只发一次请求（releases/latest），不拉 .sha256', () async {
+      final counting =
+          _CountingDio(resolveData: _releaseJsonWindows());
+      final source = GitHubUpdateSource(
+        windows: true,
+        http: UpdateHttp(
+          coreRunning: () => false,
+          directDio: counting.dio,
+        ),
+      );
+      final info = await source.checkLatest();
+      expect(info.version, '1.2.3');
+      expect(counting.calls, 1);
+    });
+
+    test('404 时报 notFound（与安卓同一条错误路径）', () async {
+      final source = GitHubUpdateSource(
+        windows: true,
+        dio: _fakeGitHubDio(releaseJson: {}, statusCode: 404),
+      );
+      await expectLater(
+        source.checkLatest(),
+        throwsA(
+          isA<UpdateException>().having(
+            (e) => e.kind,
+            'kind',
+            UpdateFailureKind.notFound,
+          ),
+        ),
+      );
+    });
+  });
+
+  group('更新器：Windows 分支（0.1.22）', () {
+    test('Windows 源有新版 → available，latest 带 openExternally', () async {
+      final result = await AppUpdater(
+        sources: [
+          _StubSource(
+            name: 'GitHub',
+            info: const UpdateReleaseInfo(
+              version: '1.2.3',
+              downloadUrl:
+                  'https://example.com/windows-1.2.3.zip',
+              openExternally: true,
+              sourceName: 'GitHub',
+            ),
+          ),
+        ],
+        currentVersionReader: () async => '1.0.0',
+      ).checkLatest();
+      expect(result.status, AppUpdateCheckStatus.available);
+      expect(result.latest!.openExternally, isTrue);
+      expect(result.latest!.downloadUrl, contains('windows-1.2.3.zip'));
+    });
+
+    test('openExternally 的信息调 download → 直接报不支持，不发请求', () async {
+      final tmpDir =
+          await Directory.systemTemp.createTemp('app-update-win-guard-');
+      addTearDown(() async {
+        if (await tmpDir.exists()) await tmpDir.delete(recursive: true);
+      });
+      final updater = AppUpdater(
+        sources: const [],
+        currentVersionReader: () async => '1.0.0',
+        downloadDir: () async => tmpDir,
+      );
+      await expectLater(
+        updater.download(
+          const UpdateReleaseInfo(
+            version: '1.2.3',
+            downloadUrl: 'https://example.com/windows-1.2.3.zip',
+            openExternally: true,
+            sourceName: 'GitHub',
+          ),
+        ),
+        throwsA(
+          isA<UpdateException>().having(
+            (e) => e.kind,
+            'kind',
+            UpdateFailureKind.unsupported,
+          ),
+        ),
+      );
+      expect(await tmpDir.list().toList(), isEmpty);
     });
   });
 }

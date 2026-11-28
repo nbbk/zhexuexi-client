@@ -500,8 +500,11 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
 
   /// 检查应用更新：查 GitHub 最新 Release（主通道；失败走备通道
   /// 自托管，本轮备通道未启用时如实报原因）。
-  /// - 有新版：弹更新弹窗（版本号＋Release 说明，点“立即更新”下载安装）；
-  ///   同一版本已下载好时弹窗直接给“安装”入口，不用重新下载；
+  /// - 安卓：有新版弹更新弹窗（版本号＋Release 说明，点“立即更新”
+  ///   下载安装）；同一版本已下载好时弹窗直接给“安装”入口，
+  ///   不用重新下载；
+  /// - Windows（0.1.22）：有新版只弹提示，点“去下载”在浏览器里
+  ///   打开 Windows 安装包下载页，不下载、不安装；
   /// - 已是最新：报当前版本号；
   /// - 查不到：报每条通道的原因，不说“已是最新”，不静默。
   /// 与上面那个“检查更新”（拉远程配置、换品牌与订阅地址）是两回事，
@@ -874,7 +877,11 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
           subtitle: Text(
             updateState.pendingReady && updateState.pendingVersion != null
                 ? '已下载 v${updateState.pendingVersion}，点击安装'
-                : '从 GitHub 检查新版本，可下载安装',
+                // Windows 上不下 APK、不安装：副标题按 Windows 口径写
+                //（0.1.22；安卓那行还是“可下载安装”）。
+                : Platform.isWindows
+                    ? '检查 Windows 新版本，有新版打开下载页'
+                    : '从 GitHub 检查新版本，可下载安装',
           ),
           onTap: _checkAppUpdate,
         ),

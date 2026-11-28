@@ -204,6 +204,14 @@ class AppUpdater {
     UpdateReleaseInfo info, {
     void Function(double progress)? onProgress,
   }) async {
+    // Windows 分支（0.1.22）：这种信息只给下载链接，不走应用内下载。
+    // 正常流程下 Windows 弹窗不会调 download，这里是防线——万一
+    // 哪路误调了也别悄悄下一个 zip 回来当 APK 装。
+    if (info.openExternally) {
+      throw const UpdateException.unsupported(
+        'Windows 版更新请在浏览器下载页手动下载，不走应用内下载。',
+      );
+    }
     final dir = await _downloadDir();
     final fileName = Uri.parse(info.downloadUrl).pathSegments.lastOrNull;
     final safeName = fileName != null && fileName.endsWith('.apk')
