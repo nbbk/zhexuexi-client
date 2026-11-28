@@ -5,11 +5,15 @@
 #   产物在那次运行页面的底部 Artifacts 里下载，保留 90 天。
 #
 # 五个输入（workflow_dispatch）：
-#   brand_name：应用名（默认“哲学系”），只改包内 brand.json 的 app_name。
+#   brand_name：应用名（默认“哲学系”），改包内 brand.json 的 app_name，
+#     并同步 Windows 原生窗口标题（main.cpp）与版本信息串
+#     （Runner.rc 的 FileDescription/ProductName）；exe 文件名
+#     （zhexuexi.exe）不随品牌改。
 #   version：版本号 x.y.z（留空时产物名用分支/tag 名）。
 #   logo_url：Logo 图片地址（选填）。空着用仓里自带的 Logo；
 #     填了会在构建前下载，替换包内 Logo（assets/logo/logo.png，
-#     应用内顶栏与启动器图标源图都用它），并重编 Android 启动器图标。
+#     应用内顶栏与启动器图标源图都用它），并重编 Android 启动器图标
+#     与 Windows .ico（各 job 里分别重编）。
 #     支持 PNG / JPG / WebP / BMP / GIF 等常见格式（见
 #     apps/flutter_client/tool/normalize_logo.py），下载后统一转成
 #     PNG；不是图片时构建直接报错，不出包。
@@ -44,6 +48,9 @@
 #     各带 .sha256），小米手机用 arm64-v8a。
 #   Windows：未签名或已签名的 exe，打成 zip（解压即用：exe＋
 #     flutter_windows.dll＋data/ 都在里面，双击 exe 就能跑）。
+#   注意：Windows 资产里的 sing-box.exe 不进仓（太大，Git Data API
+#     拒收），Windows job 在构建前从上游 SagerNet 官方 Release 下载
+#     1.14.4 并校验 SHA-256；helper（自研小二进制）在仓里。
 #
 # 注意：流程已多次跑绿；跑不通时先看 Actions 日志，不要声称 CI 跑过。
 #
@@ -120,9 +127,10 @@ jobs:
           cache: true
 
       - name: 品牌注入（§11.1）
-        # 只改包内默认 brand.json 的 app_name；颜色/Logo/订阅地址等其他
-        # 品牌变量在阶段 1 由远程配置中心下发，不在这里填。
-        # 没传 brand_name 时不动包内文件，直接用默认值构建。
+        # 改包内默认 brand.json 的 app_name，并同步 Windows 原生窗口标题
+        # 与版本信息串；颜色/Logo/订阅地址等其他品牌变量在阶段 1 由远程
+        # 配置中心下发，不在这里填。没传 brand_name 时不动包内文件，
+        # 直接用默认值构建。
         run: |
           $brandName = "${{ inputs.brand_name }}"
           if ($brandName -ne '') {
@@ -131,6 +139,29 @@ jobs:
             $brand.brand.app_name = $brandName
             $brand | ConvertTo-Json -Depth 5 | Out-File $brandFile -Encoding utf8
             Write-Host "品牌注入完成：应用名=$brandName"
+            # Windows 原生标题与版本信息串（0.1.19）：main.cpp 的窗口标题
+            # 与 Runner.rc 的 FileDescription/ProductName 跟着品牌名走；
+            # InternalName/OriginalFilename 是文件身份（zhexuexi.exe），
+            # 不随品牌改。UTF-8 无 BOM 写回（.rc 有 #pragma code_page(65001)，
+            # main.cpp 靠 /utf-8 编译选项）。
+            $utf8NoBom = [Text.UTF8Encoding]::new($false)
+            $cppFile = "windows\runner\main.cpp"
+            $cpp = [IO.File]::ReadAllText((Resolve-Path $cppFile).Path, [Text.Encoding]::UTF8)
+            if ($cpp -notmatch 'window\.Create\(L"哲学系"') { throw "main.cpp 里没找到默认标题" }
+            $cpp = $cpp.Replace('window.Create(L"哲学系"', 'window.Create(L"' + $brandName + '"')
+            [IO.File]::WriteAllText((Resolve-Path $cppFile).Path, $cpp, $utf8NoBom)
+            $rcFile = "windows\runner\Runner.rc"
+            $rc = [IO.File]::ReadAllText((Resolve-Path $rcFile).Path, [Text.Encoding]::UTF8)
+            $rcLines = @($rc -split "`n")
+            $rcLines = $rcLines | ForEach-Object {
+              if ($_ -match 'VALUE "FileDescription", "哲学系"') { $_ -replace '"哲学系"', ('"' + $brandName + '"') }
+              elseif ($_ -match 'VALUE "ProductName", "哲学系"') { $_ -replace '"哲学系"', ('"' + $brandName + '"') }
+              else { $_ }
+            }
+            $rcNew = $rcLines -join "`n"
+            if ($rcNew -eq $rc) { throw "Runner.rc 里没找到 FileDescription/ProductName 默认串" }
+            [IO.File]::WriteAllText((Resolve-Path $rcFile).Path, $rcNew, $utf8NoBom)
+            Write-Host "Windows 标题与版本信息串已同步：$brandName"
           } else {
             Write-Host "品牌注入跳过：用包内默认 brand.json"
           }
@@ -139,7 +170,8 @@ jobs:
         # logo_url 为空 → 用仓里自带的 Logo；remote_config_domain 为空 →
         # 用仓里默认值。Logo 填了：下载图片（PNG/JPG/WebP/BMP/GIF 等，
         # 见 tool/normalize_logo.py）→ 转成 PNG 替换 assets/logo/logo.png
-        # （应用内顶栏用它；Android 启动器图标在 Android job 里另行重编）。
+        # （应用内顶栏用它；Android 启动器图标在 Android job 里另行重编，
+        # Windows .ico 在这里重编，见 tool/regen_windows_icon.py）。
         # 远程配置域名填了：只换 remote_config_service.dart 里
         # workerConfigUrl 的域名，其他代码不动。
         run: |
@@ -152,6 +184,10 @@ jobs:
             python tool/normalize_logo.py $logoTmp $logoFile
             Remove-Item $logoTmp -ErrorAction SilentlyContinue
             Write-Host "Logo 已替换：$logoFile"
+            # 0.1.19：Logo 换了就重编 Windows .ico（任务栏与 exe 图标），
+            # 与 Android job 里的 regen_launcher_icons.py 同路。
+            python tool/regen_windows_icon.py $logoFile
+            Write-Host "Windows 图标已重编：windows/runner/resources/app_icon.ico"
           } else {
             Write-Host "Logo 跳过：用仓里自带的 Logo"
           }
@@ -170,6 +206,32 @@ jobs:
           } else {
             Write-Host "远程配置域名跳过：用仓里默认值"
           }
+
+      - name: 下载 sing-box 内核（Windows 资产）
+        # 0.1.19：sing-box.exe（amd64 79MB／arm64 72MB）太大，
+        # Git Data API 拒收（422 input too large），不进仓；
+        # CI 在这里从上游 SagerNet 官方 Release 下载 1.14.4，
+        # 解压后放进插件资产目录，再校验 SHA-256（须与本地验证过的
+        # 二进制逐字节一致，否则直接报错、不出包）。helper 是自研
+        # 小二进制，仍在仓里。zip 里还带 libcronet.dll 与 LICENSE，
+        # 与仓里已有的逐字节一致，这里只取 sing-box.exe。
+        run: |
+          $base = "https://github.com/SagerNet/sing-box/releases/download/v1.14.4"
+          $amd64Sha = "8F30682EE198855440D2A7FE070D5D3653793B2D01BB8C85EEA88F93BBE7C8B9"
+          $arm64Sha = "FA52DCB75BDC08E864927E260BAAD31A4D62668F0AF40725D7A5E5AAC37DFB92"
+          Invoke-WebRequest -Uri "$base/sing-box-1.14.4-windows-amd64.zip" -OutFile "sing-box-amd64.zip"
+          Invoke-WebRequest -Uri "$base/sing-box-1.14.4-windows-arm64.zip" -OutFile "sing-box-arm64.zip"
+          Expand-Archive -Path "sing-box-amd64.zip" -DestinationPath "sb-amd64" -Force
+          Expand-Archive -Path "sing-box-arm64.zip" -DestinationPath "sb-arm64" -Force
+          $amd64Exe = "packages\flutter_sing_box\assets\windows\amd64\sing-box.exe"
+          $arm64Exe = "packages\flutter_sing_box\assets\windows\arm64\sing-box.exe"
+          Copy-Item "sb-amd64\sing-box-1.14.4-windows-amd64\sing-box.exe" $amd64Exe -Force
+          Copy-Item "sb-arm64\sing-box-1.14.4-windows-arm64\sing-box.exe" $arm64Exe -Force
+          if ((Get-FileHash $amd64Exe -Algorithm SHA256).Hash -ne $amd64Sha) { throw "sing-box amd64 SHA 不符" }
+          if ((Get-FileHash $arm64Exe -Algorithm SHA256).Hash -ne $arm64Sha) { throw "sing-box arm64 SHA 不符" }
+          Remove-Item "sing-box-amd64.zip","sing-box-arm64.zip" -Force
+          Remove-Item "sb-amd64","sb-arm64" -Recurse -Force
+          Write-Host "sing-box 1.14.4 已就位并校验通过（amd64/arm64）"
 
       - name: 编 Windows
         run: flutter build windows --release

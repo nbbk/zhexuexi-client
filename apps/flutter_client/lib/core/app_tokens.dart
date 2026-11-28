@@ -26,6 +26,16 @@ class AppTokens {
   /// 底部导航栏（见 [AppShell]）。
   static const double navBreakpoint = 700;
 
+  /// 桌面端内容列上限（0.1.19）：宽屏时页面内容居中、不拉满。
+  /// 客户端页面是手机设计的单列 UI（首页开关＋状态卡＋节点列表），
+  /// 640 已够放三格统计与节点卡；面板博客的 1200px 是文章网格
+  /// 容器，不适用这里。窄屏（< 断点）保持全宽。
+  static const double desktopContentMaxWidth = 640;
+
+  /// 首页大开关直径上限（0.1.19）：手机上按宽度的 1/3（~130px），
+  /// 宽窗口下钳到 180（外层光晕 306px，640 内容列内放得下）。
+  static const double powerButtonMaxSize = 180;
+
   /// 节点行高：节点列表用 SliverFixedExtentList，行高固定 64，
   /// 滚动时按行复用、不量高。
   static const double nodeRowHeight = 64;

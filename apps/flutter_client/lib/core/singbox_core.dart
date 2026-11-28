@@ -134,6 +134,15 @@ class CoreService {
   CoreStatus _status = CoreStatus.stopped;
   String? _lastError;
 
+  /// init() 是否失败及其原因（0.1.19）：插件初始化失败（如 Windows
+  /// 上资产里没有 sing-box.exe / helper，复制失败）时记下来，
+  /// start() 直接抛给界面，不让按钮静默、也不让 start() 报毫不相干的
+  /// “没有可用配置”。init() 成功时为 null。
+  String? _initError;
+
+  /// 最近一次插件初始化失败的原因；成功时为 null。
+  String? get initError => _initError;
+
   /// 启动探活位（2026-11-26 二轮修复）：只反映出站拨测，不改
   /// [_status]。新一轮启动时清掉，停核心时也清掉。
   ProbeState _probe = const ProbeState(failed: false);
@@ -198,8 +207,13 @@ class CoreService {
   /// 不能当成“磁盘上没有配置”吞掉——否则 start() 只会报一个毫不相干的
   /// “没有可用配置”，真正原因被掩盖（小米真机 2026-11-25 就是这么丢的）。
   /// 磁盘配置本身读不到（文件不存在/读失败）才不影响启动。
+  ///
+  /// 顺序（0.1.19）：先订阅状态流与日志流，再调 `_plugin.init()`——
+  /// 0.1.18 的静默根因就是反过来的：init 抛错（Windows 上资产里没有
+  /// sing-box.exe / helper，复制失败）时订阅还没建，失败原因无处可去；
+  /// 点开关时 start() 只会报毫不相干的“没有可用配置”。先订阅、记下
+  /// [_initError]，start() 再抛给界面。
   Future<void> init() async {
-    await _plugin.init();
     // 0.1.9 核心日志尾巴：Dart 侧能取到核心日志——插件
     // `FlutterSingBox.logStream`（EventChannel `log_event`，原生侧
     // `SingBoxConnector.LogClient.appendLogs` 按批推，`ClientLog`
@@ -256,6 +270,16 @@ class CoreService {
       // 启动后的第二道校验。
       if (state is ProxyStarted) unawaited(_verifyControlApi());
     });
+    // 插件初始化放订阅之后（见本方法注释）：失败记下来再抛，
+    // main() 的 _initCore 会吞掉这次抛错，但 [_initError] 留着，
+    // start() 会把它抛给界面。
+    try {
+      await _plugin.init();
+    } catch (e) {
+      _initError = e.toString();
+      _lastError = _initError;
+      rethrow;
+    }
     try {
       final path = await _usingConfigPath();
       final file = File(path);
@@ -639,13 +663,73 @@ class CoreService {
       };
 
   /// 启动代理。没有可用配置时直接报错，不让核心空跑。
+  /// 插件初始化失败过（[_initError]）时先报初始化失败，不报
+  /// “没有可用配置”——后者会掩盖真正原因（0.1.19）。
   Future<void> start() async {
+    if (_initError != null) {
+      throw StateError('代理核心初始化失败：$_initError');
+    }
     if (_currentConfigJson == null) {
       throw StateError('没有可用配置：请先拉取订阅生成配置再启动');
     }
     final path = await _usingConfigPath();
     await _ensureSelectedProfile(path);
+    // Windows：系统服务是启动的前置条件（0.1.19）——新机器上服务
+    // 从没装过，startVpn 只会经 HTTP 找不到 helper 而静默失败。
+    // 未安装时先安装（弹 UAC，用户点“是”才继续）、已安装未运行时
+    // 先启动；拒绝或失败都抛明确原因，界面弹出来，不静默。
+    if (Platform.isWindows) await _ensureWindowsServiceReady();
     await _plugin.startVpn();
+  }
+
+  /// Windows 启动前置：确认 `clash_sing_service` 已安装且在运行。
+  ///
+  /// 失败抛 [StateError]（人话原因，界面直接弹），不返回 bool——
+  /// 调用方 start() 的 StateError 分支已经会弹 SnackBar。
+  Future<void> _ensureWindowsServiceReady() async {
+    final status = await _plugin.queryServiceStatus();
+    switch (status) {
+      case WindowsServiceStatus.running:
+        return;
+      case WindowsServiceStatus.stopped:
+        if (!await _plugin.startService()) {
+          throw StateError(
+            '系统服务 Clash Sing Service 启动失败：请在弹出的窗口点“是”允许，'
+            '或右键客户端选“以管理员身份运行”再试一次',
+          );
+        }
+        return;
+      case WindowsServiceStatus.notInstalled:
+        if (!await _plugin.installService(
+          serviceName: windowsServiceName,
+          displayName: windowsServiceDisplayName,
+          description: windowsServiceDescription,
+        )) {
+          throw StateError(
+            '未能安装系统服务 Clash Sing Service：请在弹出的 UAC 窗口点“是”允许安装，'
+            '拒绝后代理无法启动',
+          );
+        }
+        // 安装后服务可能仍是 stopped（install 只保证装上），再显式启动一次。
+        final afterInstall = await _plugin.queryServiceStatus();
+        if (afterInstall == WindowsServiceStatus.running) return;
+        if (afterInstall == WindowsServiceStatus.stopped) {
+          if (!await _plugin.startService()) {
+            throw StateError(
+              '系统服务 Clash Sing Service 已安装但启动失败：请在弹出的窗口点“是”允许，'
+              '或右键客户端选“以管理员身份运行”再试一次',
+            );
+          }
+          return;
+        }
+        throw StateError(
+          '系统服务 Clash Sing Service 安装后状态异常（$afterInstall），请重试或以管理员身份运行客户端',
+        );
+      default:
+        throw StateError(
+          '无法确认系统服务 Clash Sing Service 的状态（$status），请以管理员身份运行一次客户端再试',
+        );
+    }
   }
 
   /// 停止代理。

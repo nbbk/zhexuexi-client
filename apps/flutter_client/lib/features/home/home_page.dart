@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:material_ui/material_ui.dart';
@@ -621,7 +622,12 @@ class _HomePageState extends ConsumerState<HomePage> {
           // 现默认放金色信号弧占位，不写死电源符号）。
           Center(
             child: BreathingPowerButton(
-              size: MediaQuery.of(context).size.width / 3,
+              // 宽窗口下按宽度 1/3 会涨到 400+（0.1.18 真机：巨型灰圈），
+              // 钳到上限（见 [AppTokens.powerButtonMaxSize]）。
+              size: math.min(
+                MediaQuery.of(context).size.width / 3,
+                AppTokens.powerButtonMaxSize,
+              ),
               isOn: _status == CoreStatus.started,
               enabled: !switching,
               onPressed: _onToggle,

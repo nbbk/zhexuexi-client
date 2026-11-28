@@ -27,7 +27,9 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   FlutterWindow window(project);
   Win32Window::Point origin(10, 10);
   Win32Window::Size size(1280, 720);
-  if (!window.Create(L"zhexuexi_client", origin, size)) {
+  // 0.1.19：原生窗口标题＝品牌名（/utf-8 见 windows/CMakeLists.txt，
+  // 否则 en-US 环境的 MSVC 会把中文按本地代码页误解码）。
+  if (!window.Create(L"哲学系", origin, size)) {
     return EXIT_FAILURE;
   }
   window.SetQuitOnClose(true);

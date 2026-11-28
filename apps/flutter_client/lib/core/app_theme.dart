@@ -29,6 +29,7 @@ class AppThemeTokens extends ThemeExtension<AppThemeTokens> {
     required this.segmentedSelectedForeground,
     this.surfaceGlass,
     this.cardRadius,
+    this.cardBorderWidth,
   });
 
   /// 主深蓝：墨蓝（Logo 底色）。白天作文字与主按钮、夜晚作背景。
@@ -65,13 +66,18 @@ class AppThemeTokens extends ThemeExtension<AppThemeTokens> {
   final Color segmentedSelectedForeground;
 
   /// 磨砂白表面色（仅玻璃拟物主题用）：卡片/弹窗的半透明填充
-  /// （token：白 65%–75%）。为空时按原规则：白天底色 60%/65%、
-  /// 夜晚白 12%，其他主题不受影响。
+  /// （token：带蓝调的磨砂白 rgba(230,238,248,0.55–0.65)，0.1.19
+  /// 起 0.60）。为空时按原规则：白天底色 60%/65%、夜晚白 12%，
+  /// 其他主题不受影响。
   final Color? surfaceGlass;
 
   /// 卡片圆角覆盖（仅玻璃拟物主题用，token 20–24px）。
   /// 为空时用 [AppTokens.radiusLarge]（16），其他主题不受影响。
   final double? cardRadius;
+
+  /// 卡片边框宽度覆盖（仅玻璃拟物主题用，token 2px 半透明白描边）。
+  /// 为空时用 1，其他主题不受影响。
+  final double? cardBorderWidth;
 
   @override
   AppThemeTokens copyWith({
@@ -88,6 +94,7 @@ class AppThemeTokens extends ThemeExtension<AppThemeTokens> {
     Color? segmentedSelectedForeground,
     Color? surfaceGlass,
     double? cardRadius,
+    double? cardBorderWidth,
   }) {
     return AppThemeTokens(
       deepBlue: deepBlue ?? this.deepBlue,
@@ -105,6 +112,7 @@ class AppThemeTokens extends ThemeExtension<AppThemeTokens> {
           segmentedSelectedForeground ?? this.segmentedSelectedForeground,
       surfaceGlass: surfaceGlass ?? this.surfaceGlass,
       cardRadius: cardRadius ?? this.cardRadius,
+      cardBorderWidth: cardBorderWidth ?? this.cardBorderWidth,
     );
   }
 
@@ -148,6 +156,11 @@ class AppThemeTokens extends ThemeExtension<AppThemeTokens> {
       cardRadius: (cardRadius == null || other.cardRadius == null)
           ? (other.cardRadius ?? cardRadius)
           : cardRadius! + (other.cardRadius! - cardRadius!) * t,
+      cardBorderWidth:
+          (cardBorderWidth == null || other.cardBorderWidth == null)
+              ? (other.cardBorderWidth ?? cardBorderWidth)
+              : cardBorderWidth! +
+                  (other.cardBorderWidth! - cardBorderWidth!) * t,
     );
   }
 }
@@ -760,13 +773,16 @@ class AppThemes {
   /// 统一主题，参照 PANDA Studio 博客；共享 token 见
   /// ~/workspace/031-invest/glass-theme-tokens.md，只按观察值自己
   /// 实现，不碰对方源码）。
-  /// 浅蓝灰底 #E9EEF3、亮蓝强调 #2B7FFF、主文字深蓝灰 #33475B、
-  /// 磨砂白表面 70%＋圆角 22；深藏青 #0F2A4A 作对比。
-  /// 对比度机查：白字在主色上 9.36:1、主色字在底色上 8.02:1、
-  /// 次要文字 4.99:1、三段选中 9.36:1、开关图标 3.76:1/14.48:1。
+  /// 0.1.19（用户 10:17/10:18 两次反馈）：底色偏蓝 #DCE8F3、
+  /// 近白横带 #EAF1F8、磨砂面带蓝调 rgba(230,238,248,0.60)；
+  /// 卡片 2px 半透明白描边＋顶部高光、底色带轻微渐变（见
+  /// [GlassCard]）。亮蓝强调 #2B7FFF、主文字 #33475B、
+  /// 深藏青 #0F2A4A 不动。
+  /// 对比度机查（新磨砂面复合色 #E2ECF6–#E8EFF8 上）：主文字
+  /// 8.01–8.27:1、次要文字 4.87–5.03:1，均达标，不用加深文字。
   /// 次要文字没用观察值 #6B7C8D（在底色上只有 3.68:1），加深到
   /// #55677A（4.99:1）才达标；三段选中不用亮蓝作底（白字 3.76:1
-  /// 不够），改用主色深蓝灰作底。
+  /// 不够），改用主色深蓝灰作底。两处对比度处理 0.1.19 保持不动。
   static const AppThemeDefinition glassDay = AppThemeDefinition(
     id: 'glass-day',
     name: '玻璃拟物',
@@ -776,15 +792,16 @@ class AppThemes {
       deepBlueLight: Color(0xFF0F2A4A),
       gold: Color(0xFF2B7FFF),
       goldHighlight: Color(0xFF7FB8FF),
-      background: Color(0xFFE9EEF3),
-      backgroundGradient: [Color(0xFFE9EEF3), Color(0xFFF4F7FA)],
+      background: Color(0xFFDCE8F3),
+      backgroundGradient: [Color(0xFFDCE8F3), Color(0xFFEAF1F8)],
       secondaryText: Color(0xFF55677A),
       powerGradient: [Color(0xFF2B7FFF), Color(0xFF0F2A4A)],
       powerOffGradient: [Color(0xFF9CA3AF), Color(0xFF6B7280)],
       segmentedSelectedBackground: Color(0xFF33475B),
       segmentedSelectedForeground: Colors.white,
-      surfaceGlass: Color(0xB3FFFFFF),
+      surfaceGlass: Color(0x99E6EEF8),
       cardRadius: 22,
+      cardBorderWidth: 2,
     ),
   );
 

@@ -82,7 +82,19 @@ class _AppShellState extends State<AppShell> {
               ],
             ),
             const VerticalDivider(width: 1),
-            Expanded(child: body),
+            Expanded(
+              // 宽屏内容列居中＋上限（0.1.19）：页面是手机设计的单列
+              // UI，拉满 1280 会把开关与卡片都抻宽；上限见
+              // [AppTokens.desktopContentMaxWidth]。
+              child: Center(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(
+                    maxWidth: AppTokens.desktopContentMaxWidth,
+                  ),
+                  child: body,
+                ),
+              ),
+            ),
           ],
         ),
       );

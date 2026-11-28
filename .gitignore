@@ -21,6 +21,15 @@ windows/out/
 services/node-agent/node-agent
 services/node-agent/node-agent-*
 *.exe
+# 例外：插件的 helper 二进制是打包资产（不是构建产物），必须进仓——
+# 0.1.18 就是因为 *.exe 把它们拦在仓外，CI 打出的包里没有
+# clash_sing_helper.exe，Windows 客户端点开关静默失败。
+# sing-box.exe 不在此列：太大（amd64 79MB／arm64 72MB），
+# Git Data API 拒收（422 input too large），由 CI 从上游 SagerNet
+# 官方 Release 下载（SHA-256 校验），见 .github/workflows/build.yml
+# 的下载步骤；本地 kit 里的两份是校验用的参照本。
+!apps/flutter_client/packages/flutter_sing_box/assets/windows/amd64/clash_sing_helper.exe
+!apps/flutter_client/packages/flutter_sing_box/assets/windows/arm64/clash_sing_helper.exe
 *.apk
 *.aab
 *.msix

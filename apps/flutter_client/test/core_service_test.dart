@@ -29,8 +29,13 @@ class _FakePlugin extends FlutterSingBox {
   @override
   Stream<List<ClientLog>> get logStream => _logController.stream;
 
+  /// 置了以后 init() 抛它（0.1.19：模拟 Windows 资产缺失导致复制失败）。
+  Object? initError;
+
   @override
-  Future<void> init() async {}
+  Future<void> init() async {
+    if (initError != null) throw initError!;
+  }
 
   @override
   Future<void> startVpn() async {
@@ -322,6 +327,42 @@ void main() {
       await _pumpEvents();
       expect(service.status, CoreStatus.error);
       expect(service.lastError, '核心崩溃');
+      service.dispose();
+    });
+  });
+
+  group('init 失败不静默（0.1.19）', () {
+    test('init 抛错时状态流订阅已建：插件后续推状态，界面状态跟着变', () async {
+      plugin.initError = Exception('复制 sing_box.exe 资源失败');
+      final service = makeService();
+      await expectLater(service.init(), throwsException);
+      expect(service.initError, contains('复制 sing_box.exe 资源失败'));
+
+      plugin.emit(const ProxyStarted());
+      await _pumpEvents();
+      expect(service.status, CoreStatus.started);
+      service.dispose();
+    });
+
+    test('init 失败后 start() 报初始化失败，不报“没有可用配置”', () async {
+      plugin.initError = Exception('复制 sing_box.exe 资源失败');
+      final service = makeService();
+      await expectLater(service.init(), throwsException);
+      // 配置本身是好的：init 失败不能拿“没有可用配置”来顶。
+      await service.applyNodes([_node('甲-直连')]);
+      expect(service.currentConfigJson, isNotNull);
+
+      await expectLater(
+        service.start(),
+        throwsA(
+          isA<StateError>().having(
+            (e) => e.message,
+            'message',
+            allOf(contains('初始化失败'), contains('复制 sing_box.exe 资源失败')),
+          ),
+        ),
+      );
+      expect(plugin.startCalls, 0);
       service.dispose();
     });
   });

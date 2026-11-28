@@ -18,6 +18,9 @@ import '../core/app_tokens.dart';
 /// 没传 borderRadius 时，玻璃主题圆角 22、填充磨砂白 70%，
 /// 其他主题仍是圆角 16、填充底色 65%；显式传了 borderRadius 的
 /// 调用方不受影响。
+/// 0.1.19 玻璃拟物主题：填充改带蓝调磨砂白 60%（token），边框
+/// 2px 半透明白（token [AppThemeTokens.cardBorderWidth]），
+/// 卡片顶部加一处高光渐变（像玻璃反光）；其他主题不动。
 class GlassCard extends StatelessWidget {
   const GlassCard({
     super.key,
@@ -73,17 +76,36 @@ class GlassCard extends StatelessWidget {
             decoration: BoxDecoration(
               // 白天是象牙白半透明、夜晚是白 12% 半透明（品牌色走，
               // 毛玻璃效果保留：半透明＋背景模糊＋细边框＋柔和阴影）。
-              // 玻璃拟物主题（0.1.18）用磨砂白 surfaceGlass 作填充。
+              // 玻璃拟物主题（0.1.18）用磨砂白 surfaceGlass 作填充，
+              // 0.1.19 起是带蓝调的 60%。
               color: dark
                   ? Colors.white.withValues(alpha: 0.12)
                   : tokens.surfaceGlass ??
                       tokens.background.withValues(alpha: 0.65),
+              // 玻璃拟物主题（0.1.19）：顶部一处高光（像玻璃反光），
+              // 白 22% 从顶到底 30% 处褪到透明；其他主题不加。
+              // gradient 画在 color 之上，半透明，两者叠加。
+              gradient: (!dark && tokens.surfaceGlass != null)
+                  ? LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      stops: const [0.0, 0.3],
+                      colors: [
+                        Colors.white.withValues(alpha: 0.22),
+                        Colors.white.withValues(alpha: 0.0),
+                      ],
+                    )
+                  : null,
               borderRadius: radius,
+              // 玻璃拟物主题（0.1.19）：2px 半透明白描边（像白画框），
+              // 其他主题仍是 1px。
               border: Border.all(
                 color: dark
                     ? Colors.white.withValues(alpha: 0.20)
-                    : Colors.white.withValues(alpha: 0.70),
-                width: 1,
+                    : tokens.surfaceGlass != null
+                        ? Colors.white.withValues(alpha: 0.60)
+                        : Colors.white.withValues(alpha: 0.70),
+                width: dark ? 1 : (tokens.cardBorderWidth ?? 1),
               ),
             ),
             // 透明 Material：卡片里的 ListTile 要有 Material 祖先才

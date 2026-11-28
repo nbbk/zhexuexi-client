@@ -149,10 +149,10 @@ Get-FileHash .\app-arm64-v8a-release.apk -Algorithm SHA256
 
 | 文件 | 说明 |
 |---|---|
-| `zhexuexi_client.exe` | **双击这个就能跑** |
+| `zhexuexi.exe` | **双击这个就能跑** |
 | `flutter_windows.dll` | 程序要用的库，和 exe 放同一个文件夹，别删 |
 | `data/` 文件夹 | 程序要用的资源文件，和 exe 放同一个文件夹，别删 |
-| `zhexuexi_client.exe.sha256` | 校验用的哈希值（校验方法见下面） |
+| `zhexuexi.exe.sha256` | 校验用的哈希值（校验方法见下面） |
 
 解压后别把 exe 单独拷走：exe、dll、`data/` 必须在同一个文件夹里才能跑，
 拷走一个就跑不起来。
@@ -162,7 +162,7 @@ Get-FileHash .\app-arm64-v8a-release.apk -Algorithm SHA256
 在 Windows PowerShell 里，进到解压出来的文件夹，跑：
 
 ```powershell
-Get-FileHash .\zhexuexi_client.exe -Algorithm SHA256
+Get-FileHash .\zhexuexi.exe -Algorithm SHA256
 ```
 
 输出一串哈希值。再打开同名的 `.sha256` 文件（记事本就能开），里面也是一串

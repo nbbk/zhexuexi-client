@@ -478,24 +478,25 @@ void main() {
     });
   });
 
-  group('玻璃拟物主题（0.1.18）', () {
+  group('玻璃拟物主题（0.1.18 新增，0.1.19 改 token：偏蓝＋通透）', () {
     test('token 是共享 token 文件里的值', () {
       final t = AppThemes.glassDay.tokens;
-      expect(t.background, const Color(0xFFE9EEF3));
+      expect(t.background, const Color(0xFFDCE8F3));
       expect(t.gold, const Color(0xFF2B7FFF));
       expect(t.deepBlue, const Color(0xFF33475B));
       expect(t.deepBlueLight, const Color(0xFF0F2A4A));
       expect(t.secondaryText, const Color(0xFF55677A));
       expect(t.backgroundGradient, [
-        const Color(0xFFE9EEF3),
-        const Color(0xFFF4F7FA),
+        const Color(0xFFDCE8F3),
+        const Color(0xFFEAF1F8),
       ]);
-      expect(t.surfaceGlass, const Color(0xB3FFFFFF));
+      expect(t.surfaceGlass, const Color(0x99E6EEF8));
       expect(t.cardRadius, 22);
+      expect(t.cardBorderWidth, 2);
       expect(AppThemes.byId('glass-day').id, 'glass-day');
     });
 
-    testWidgets('玻璃主题下 GlassCard 是磨砂白 70%＋圆角 22，默认主题仍是底色 65%＋圆角 16',
+    testWidgets('玻璃主题下 GlassCard 是蓝调磨砂白 60%＋圆角 22＋2px 描边＋顶部高光，默认主题仍是底色 65%＋圆角 16＋1px 描边',
         (tester) async {
       Future<List<Container>> pumpCard(AppThemeDefinition theme) async {
         await tester.pumpWidget(
@@ -520,10 +521,24 @@ void main() {
           .whereType<BoxDecoration>()
           .map((d) => d.color)
           .toList();
+      List<double> borderWidths(List<Container> containers) => containers
+          .map((c) => c.decoration)
+          .whereType<BoxDecoration>()
+          .map((d) => d.border)
+          .whereType<Border>()
+          .map((b) => b.top.width)
+          .toList();
+      List<Gradient?> gradients(List<Container> containers) => containers
+          .map((c) => c.decoration)
+          .whereType<BoxDecoration>()
+          .map((d) => d.gradient)
+          .toList();
 
       final glassContainers = await pumpCard(AppThemes.glassDay);
       expect(radii(glassContainers), contains(22));
-      expect(fills(glassContainers), contains(const Color(0xB3FFFFFF)));
+      expect(fills(glassContainers), contains(const Color(0x99E6EEF8)));
+      expect(borderWidths(glassContainers), contains(2));
+      expect(gradients(glassContainers), contains(isA<LinearGradient>()));
 
       final dayContainers = await pumpCard(AppThemes.day);
       expect(radii(dayContainers), contains(16));
@@ -532,6 +547,9 @@ void main() {
         fills(dayContainers),
         contains(const Color(0xFFFAF7F0).withValues(alpha: 0.65)),
       );
+      expect(borderWidths(dayContainers), contains(1));
+      expect(borderWidths(dayContainers), isNot(contains(2)));
+      expect(gradients(dayContainers), everyElement(isNull));
     });
   });
 
