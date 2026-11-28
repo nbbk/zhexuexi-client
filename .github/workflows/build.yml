@@ -1,10 +1,10 @@
 # 哲学系客户端 — GitHub 免费 CI
 #
 # 手动打包入口（不用等 tag，不用本地编）：
-#   仓库 → Actions → build → Run workflow，填下面四个输入，点运行。
+#   仓库 → Actions → build → Run workflow，填下面五个输入，点运行。
 #   产物在那次运行页面的底部 Artifacts 里下载，保留 90 天。
 #
-# 四个输入（workflow_dispatch）：
+# 五个输入（workflow_dispatch）：
 #   brand_name：应用名（默认“哲学系”），只改包内 brand.json 的 app_name。
 #   version：版本号 x.y.z（留空时产物名用分支/tag 名）。
 #   logo_url：Logo 图片地址（选填）。空着用仓里自带的 Logo；
@@ -22,7 +22,7 @@
 #     （lib/services/remote_config_service.dart 的 workerConfigUrl）
 #     里的域名，其他代码不动。填完整 URL 也行，只取 host。
 #
-# 自动触发：push tag v* 时也跑（version 取 tag 名，四个输入取默认值）。
+# 自动触发：push tag v* 时也跑（version 取 tag 名；platform 为空时两个任务都跑）。
 #
 # Secrets（仓库 Settings → Secrets and variables → Actions 里填，
 # 绝不写进代码、不打日志；fork 不会带走 Secrets，新仓须重填）：
@@ -75,6 +75,15 @@ on:
         required: false
         default: ""
         type: string
+      platform:
+        description: "打包平台（all：Windows＋安卓一起打；windows：只打 Windows exe；android：只打安卓 APK）"
+        required: false
+        default: "all"
+        type: choice
+        options:
+          - all
+          - windows
+          - android
   push:
     tags:
       - "v*"
@@ -85,6 +94,9 @@ permissions:
 jobs:
   build-windows:
     name: Windows
+    # 平台门控：手动触发时按 platform 输入选；push tag 时 inputs 为空，
+    # github.event_name == 'push' 兜底，两个任务都跑，不会跳过。
+    if: ${{ github.event_name == 'push' || inputs.platform == '' || inputs.platform == 'all' || inputs.platform == 'windows' }}
     runs-on: windows-latest
     defaults:
       run:
@@ -198,6 +210,8 @@ jobs:
 
   build-android:
     name: Android
+    # 平台门控：与 Windows 任务同理（见上）。
+    if: ${{ github.event_name == 'push' || inputs.platform == '' || inputs.platform == 'all' || inputs.platform == 'android' }}
     runs-on: windows-latest
     # 0.1.8：PUB_CACHE 必须与工程同盘。GitHub Windows runner 上工程在 D:\a、
     # Pub Cache 默认在 C:\Users\runneradmin\...，Kotlin 增量编译用
