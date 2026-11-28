@@ -147,20 +147,21 @@ jobs:
             $utf8NoBom = [Text.UTF8Encoding]::new($false)
             $cppFile = "windows\runner\main.cpp"
             $cpp = [IO.File]::ReadAllText((Resolve-Path $cppFile).Path, [Text.Encoding]::UTF8)
-            if ($cpp -notmatch 'window\.Create\(L"哲学系"') { throw "main.cpp 里没找到默认标题" }
-            $cpp = $cpp.Replace('window.Create(L"哲学系"', 'window.Create(L"' + $brandName + '"')
+            if ($cpp -match 'window\.Create\(L"([^"]*)"') {
+              $curTitle = $Matches[1]
+              if ($curTitle -ne $brandName) {
+                $cpp = $cpp.Replace('window.Create(L"' + $curTitle + '"', 'window.Create(L"' + $brandName + '"')
+              }
+            } else { throw "main.cpp 里没找到窗口标题" }
             [IO.File]::WriteAllText((Resolve-Path $cppFile).Path, $cpp, $utf8NoBom)
             $rcFile = "windows\runner\Runner.rc"
             $rc = [IO.File]::ReadAllText((Resolve-Path $rcFile).Path, [Text.Encoding]::UTF8)
-            $rcLines = @($rc -split "`n")
-            $rcLines = $rcLines | ForEach-Object {
-              if ($_ -match 'VALUE "FileDescription", "哲学系"') { $_ -replace '"哲学系"', ('"' + $brandName + '"') }
-              elseif ($_ -match 'VALUE "ProductName", "哲学系"') { $_ -replace '"哲学系"', ('"' + $brandName + '"') }
-              else { $_ }
-            }
-            $rcNew = $rcLines -join "`n"
-            if ($rcNew -eq $rc) { throw "Runner.rc 里没找到 FileDescription/ProductName 默认串" }
-            [IO.File]::WriteAllText((Resolve-Path $rcFile).Path, $rcNew, $utf8NoBom)
+            $foundDesc = $rc -match 'VALUE "FileDescription", "([^"]*)"'
+            $foundProd = $rc -match 'VALUE "ProductName", "([^"]*)"'
+            if (-not $foundDesc -or -not $foundProd) { throw "Runner.rc 里没找到 FileDescription/ProductName" }
+            $rc = [regex]::Replace($rc, 'VALUE "FileDescription", "[^"]*"', { param($m) 'VALUE "FileDescription", "' + $brandName + '"' })
+            $rc = [regex]::Replace($rc, 'VALUE "ProductName", "[^"]*"', { param($m) 'VALUE "ProductName", "' + $brandName + '"' })
+            [IO.File]::WriteAllText((Resolve-Path $rcFile).Path, $rc, $utf8NoBom)
             Write-Host "Windows 标题与版本信息串已同步：$brandName"
           } else {
             Write-Host "品牌注入跳过：用包内默认 brand.json"
