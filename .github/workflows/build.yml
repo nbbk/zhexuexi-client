@@ -8,7 +8,8 @@
 #   brand_name：应用名（默认“哲学系”），改包内 brand.json 的 app_name，
 #     并同步 Windows 原生窗口标题（main.cpp）与版本信息串
 #     （Runner.rc 的 FileDescription/ProductName）；exe 文件名
-#     （哲学系.exe）不随品牌改。
+#     （哲学系.exe）不随品牌改——CMake 的 target 名只能是 ASCII，
+#     BINARY_NAME 保持拼音 zhexuexi，构建完 CI 在“exe 改名”步改名。
 #   version：版本号 x.y.z（留空时产物名用分支/tag 名）。
 #   logo_url：Logo 图片地址（选填）。空着用仓里自带的 Logo；
 #     填了会在构建前下载，替换包内 Logo（assets/logo/logo.png，
@@ -283,6 +284,22 @@ jobs:
 
       - name: 编 Windows
         run: flutter build windows --release
+
+      - name: exe 改名哲学系.exe
+        # CMake 的 target 名只能是 ASCII（BINARY_NAME 写中文时
+        # add_executable 直接报错，0.1.20 的 CI 46111528076 已实测），
+        # 所以构建产物先是 zhexuexi.exe，这里改成哲学系.exe。
+        # Runner.rc 的 InternalName/OriginalFilename 早已是“哲学系”/
+        # “哲学系.exe”，改名后与文件身份一致。
+        # 签名与算哈希都按 *.exe 通配，所以改名必须在它们之前。
+        run: |
+          $releaseDir = "build\windows\x64\runner\Release"
+          $old = Join-Path $releaseDir "zhexuexi.exe"
+          $new = Join-Path $releaseDir "哲学系.exe"
+          if (-not (Test-Path $old)) { throw "构建产物里没找到 zhexuexi.exe" }
+          Rename-Item $old $new
+          if (-not (Test-Path $new)) { throw "exe 改名失败" }
+          Write-Host "exe 已改名：哲学系.exe"
 
       - name: Windows 签名（OV 证书，Secrets 取）
         # 没填 WINDOWS_CERT_BASE64 时跳过签名，只出未签名包供测试；
