@@ -27,6 +27,8 @@ class AppThemeTokens extends ThemeExtension<AppThemeTokens> {
     required this.powerOffGradient,
     required this.segmentedSelectedBackground,
     required this.segmentedSelectedForeground,
+    this.surfaceGlass,
+    this.cardRadius,
   });
 
   /// 主深蓝：墨蓝（Logo 底色）。白天作文字与主按钮、夜晚作背景。
@@ -62,6 +64,15 @@ class AppThemeTokens extends ThemeExtension<AppThemeTokens> {
   /// 三段切换的选中态文字。
   final Color segmentedSelectedForeground;
 
+  /// 磨砂白表面色（仅玻璃拟物主题用）：卡片/弹窗的半透明填充
+  /// （token：白 65%–75%）。为空时按原规则：白天底色 60%/65%、
+  /// 夜晚白 12%，其他主题不受影响。
+  final Color? surfaceGlass;
+
+  /// 卡片圆角覆盖（仅玻璃拟物主题用，token 20–24px）。
+  /// 为空时用 [AppTokens.radiusLarge]（16），其他主题不受影响。
+  final double? cardRadius;
+
   @override
   AppThemeTokens copyWith({
     Color? deepBlue,
@@ -75,6 +86,8 @@ class AppThemeTokens extends ThemeExtension<AppThemeTokens> {
     List<Color>? powerOffGradient,
     Color? segmentedSelectedBackground,
     Color? segmentedSelectedForeground,
+    Color? surfaceGlass,
+    double? cardRadius,
   }) {
     return AppThemeTokens(
       deepBlue: deepBlue ?? this.deepBlue,
@@ -90,6 +103,8 @@ class AppThemeTokens extends ThemeExtension<AppThemeTokens> {
           segmentedSelectedBackground ?? this.segmentedSelectedBackground,
       segmentedSelectedForeground:
           segmentedSelectedForeground ?? this.segmentedSelectedForeground,
+      surfaceGlass: surfaceGlass ?? this.surfaceGlass,
+      cardRadius: cardRadius ?? this.cardRadius,
     );
   }
 
@@ -127,6 +142,12 @@ class AppThemeTokens extends ThemeExtension<AppThemeTokens> {
         segmentedSelectedForeground,
         other.segmentedSelectedForeground,
       ),
+      surfaceGlass: (surfaceGlass == null || other.surfaceGlass == null)
+          ? (other.surfaceGlass ?? surfaceGlass)
+          : lerpColor(surfaceGlass!, other.surfaceGlass!),
+      cardRadius: (cardRadius == null || other.cardRadius == null)
+          ? (other.cardRadius ?? cardRadius)
+          : cardRadius! + (other.cardRadius! - cardRadius!) * t,
     );
   }
 }
@@ -168,18 +189,21 @@ class AppThemeDefinition {
       // 没换成 GlassCard 的地方也别露 M3 默认深色 surface；
       // 夜晚白 12%、白天底色 60%（与 GlassCard 同款），
       // surfaceTintColor 透明（不要 M3 的色调 tint）。
-      // 底色从当前主题的 token 派生（墨蓝两档算出来跟原来写死的
-      // #FAF7F0 / #082E63 一模一样，见 app_style_test）。
+      // 玻璃拟物主题（0.1.18）用磨砂白 surfaceGlass 作兜底，
+      // 其他主题仍走底色 60%。底色从当前主题的 token 派生
+      //（墨蓝两档算出来跟原来写死的 #FAF7F0 / #082E63 一模一样，
+      // 见 app_style_test）。
       cardTheme: CardThemeData(
         color: brightness == Brightness.dark
             ? Colors.white.withValues(alpha: 0.12)
-            : tokens.background.withValues(alpha: 0.6),
+            : tokens.surfaceGlass ??
+                tokens.background.withValues(alpha: 0.6),
         surfaceTintColor: Colors.transparent,
       ),
       dialogTheme: DialogThemeData(
         backgroundColor: brightness == Brightness.dark
             ? tokens.deepBlue
-            : tokens.background,
+            : tokens.surfaceGlass ?? tokens.background,
       ),
       // 顶栏刷成墨蓝（不要 M3 默认的浅灰蓝 surface），标题与图标走白色。
       // 白字在墨蓝上的对比度 13.28:1，夜晚同理。
@@ -197,7 +221,7 @@ class AppThemeDefinition {
   }
 }
 
-/// 主题注册表：十一套皮肤 × 白天/夜晚两档，默认墨蓝白天。
+/// 主题注册表：十二套皮肤（十一套 × 白天/夜晚两档＋玻璃拟物浅色），默认墨蓝白天。
 /// 后面加更多风格主题时，只在这里加一个主题定义，不用改页面代码。
 class AppThemes {
   AppThemes._();
@@ -732,6 +756,38 @@ class AppThemes {
     ),
   );
 
+  /// 玻璃拟物 · 白天（0.1.18 新增，用户 2026-11-28 拍板，客户端与面板
+  /// 统一主题，参照 PANDA Studio 博客；共享 token 见
+  /// ~/workspace/031-invest/glass-theme-tokens.md，只按观察值自己
+  /// 实现，不碰对方源码）。
+  /// 浅蓝灰底 #E9EEF3、亮蓝强调 #2B7FFF、主文字深蓝灰 #33475B、
+  /// 磨砂白表面 70%＋圆角 22；深藏青 #0F2A4A 作对比。
+  /// 对比度机查：白字在主色上 9.36:1、主色字在底色上 8.02:1、
+  /// 次要文字 4.99:1、三段选中 9.36:1、开关图标 3.76:1/14.48:1。
+  /// 次要文字没用观察值 #6B7C8D（在底色上只有 3.68:1），加深到
+  /// #55677A（4.99:1）才达标；三段选中不用亮蓝作底（白字 3.76:1
+  /// 不够），改用主色深蓝灰作底。
+  static const AppThemeDefinition glassDay = AppThemeDefinition(
+    id: 'glass-day',
+    name: '玻璃拟物',
+    brightness: Brightness.light,
+    tokens: AppThemeTokens(
+      deepBlue: Color(0xFF33475B),
+      deepBlueLight: Color(0xFF0F2A4A),
+      gold: Color(0xFF2B7FFF),
+      goldHighlight: Color(0xFF7FB8FF),
+      background: Color(0xFFE9EEF3),
+      backgroundGradient: [Color(0xFFE9EEF3), Color(0xFFF4F7FA)],
+      secondaryText: Color(0xFF55677A),
+      powerGradient: [Color(0xFF2B7FFF), Color(0xFF0F2A4A)],
+      powerOffGradient: [Color(0xFF9CA3AF), Color(0xFF6B7280)],
+      segmentedSelectedBackground: Color(0xFF33475B),
+      segmentedSelectedForeground: Colors.white,
+      surfaceGlass: Color(0xB3FFFFFF),
+      cardRadius: 22,
+    ),
+  );
+
   /// 全部已注册主题（设置页切换列表从这里出）。
   static const List<AppThemeDefinition> all = [
     day,
@@ -756,6 +812,7 @@ class AppThemes {
     moonlightNight,
     cometDay,
     cometNight,
+    glassDay,
   ];
 
   /// 默认主题 id。

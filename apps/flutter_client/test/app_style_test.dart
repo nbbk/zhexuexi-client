@@ -34,7 +34,7 @@ double _contrast(Color a, Color b) {
 
 void main() {
   group('主题注册表', () {
-    test('注册了十一套皮肤 × 白天/夜晚两档，默认白天，id 不存在回落默认', () {
+    test('注册了十二套皮肤（十一套 × 两档＋玻璃拟物），默认白天，id 不存在回落默认', () {
       expect(
         AppThemes.all.map((t) => t.id).toList(),
         [
@@ -60,6 +60,7 @@ void main() {
           'moonlight-night',
           'comet-day',
           'comet-night',
+          'glass-day',
         ],
       );
       expect(AppThemes.defaultId, 'day');
@@ -269,6 +270,7 @@ void main() {
         AppThemes.moonlightNight,
         AppThemes.cometDay,
         AppThemes.cometNight,
+        AppThemes.glassDay,
       ];
       for (final def in defs) {
         final t = def.tokens;
@@ -473,6 +475,63 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(find.byType(BackdropFilter), findsOneWidget);
+    });
+  });
+
+  group('玻璃拟物主题（0.1.18）', () {
+    test('token 是共享 token 文件里的值', () {
+      final t = AppThemes.glassDay.tokens;
+      expect(t.background, const Color(0xFFE9EEF3));
+      expect(t.gold, const Color(0xFF2B7FFF));
+      expect(t.deepBlue, const Color(0xFF33475B));
+      expect(t.deepBlueLight, const Color(0xFF0F2A4A));
+      expect(t.secondaryText, const Color(0xFF55677A));
+      expect(t.backgroundGradient, [
+        const Color(0xFFE9EEF3),
+        const Color(0xFFF4F7FA),
+      ]);
+      expect(t.surfaceGlass, const Color(0xB3FFFFFF));
+      expect(t.cardRadius, 22);
+      expect(AppThemes.byId('glass-day').id, 'glass-day');
+    });
+
+    testWidgets('玻璃主题下 GlassCard 是磨砂白 70%＋圆角 22，默认主题仍是底色 65%＋圆角 16',
+        (tester) async {
+      Future<List<Container>> pumpCard(AppThemeDefinition theme) async {
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: theme.themeData,
+            home: const Scaffold(body: GlassCard(child: Text('x'))),
+          ),
+        );
+        await tester.pumpAndSettle();
+        return tester.widgetList<Container>(find.byType(Container)).toList();
+      }
+
+      List<double> radii(List<Container> containers) => containers
+          .map((c) => c.decoration)
+          .whereType<BoxDecoration>()
+          .map((d) => d.borderRadius)
+          .whereType<BorderRadius>()
+          .map((r) => r.topLeft.x)
+          .toList();
+      List<Color?> fills(List<Container> containers) => containers
+          .map((c) => c.decoration)
+          .whereType<BoxDecoration>()
+          .map((d) => d.color)
+          .toList();
+
+      final glassContainers = await pumpCard(AppThemes.glassDay);
+      expect(radii(glassContainers), contains(22));
+      expect(fills(glassContainers), contains(const Color(0xB3FFFFFF)));
+
+      final dayContainers = await pumpCard(AppThemes.day);
+      expect(radii(dayContainers), contains(16));
+      expect(radii(dayContainers), isNot(contains(22)));
+      expect(
+        fills(dayContainers),
+        contains(const Color(0xFFFAF7F0).withValues(alpha: 0.65)),
+      );
     });
   });
 

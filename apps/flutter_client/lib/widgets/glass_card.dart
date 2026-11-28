@@ -13,13 +13,18 @@ import '../core/app_tokens.dart';
 /// 0.1.14 做强：模糊 16→24、夜晚填充白 8%→12%、边框 15%→20%，
 /// 白天填充 60%→65%、边框 65%→70%，玻璃感更明显，底色透出来
 /// 的层次还在（不是实色卡片）。
+/// 0.1.18 玻璃拟物主题：圆角与填充改走主题 token 覆盖值
+/// （[AppThemeTokens.cardRadius]／[AppThemeTokens.surfaceGlass]）：
+/// 没传 borderRadius 时，玻璃主题圆角 22、填充磨砂白 70%，
+/// 其他主题仍是圆角 16、填充底色 65%；显式传了 borderRadius 的
+/// 调用方不受影响。
 class GlassCard extends StatelessWidget {
   const GlassCard({
     super.key,
     required this.child,
     this.padding,
     this.margin,
-    this.borderRadius = AppTokens.radiusLarge,
+    this.borderRadius,
     this.height,
   });
 
@@ -31,8 +36,9 @@ class GlassCard extends StatelessWidget {
   /// 卡片外边距。
   final EdgeInsetsGeometry? margin;
 
-  /// 圆角（全端统一，默认 16，见 [AppTokens.radiusLarge]）。
-  final double borderRadius;
+  /// 圆角（不传时走主题覆盖值，玻璃主题 22、其他主题 16，
+  /// 见 [AppTokens.radiusLarge]）。
+  final double? borderRadius;
 
   /// 固定高度（不传时由 child 内容定高）。首页状态卡与流量格用它
   /// 统一高度：内容超长时内部省略，不把卡片撑高。
@@ -42,7 +48,9 @@ class GlassCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final tokens = appThemeTokensOf(context);
     final dark = Theme.of(context).brightness == Brightness.dark;
-    final radius = BorderRadius.circular(borderRadius);
+    final radius = BorderRadius.circular(
+      borderRadius ?? tokens.cardRadius ?? AppTokens.radiusLarge,
+    );
     return Container(
       height: height,
       margin: margin,
@@ -65,9 +73,11 @@ class GlassCard extends StatelessWidget {
             decoration: BoxDecoration(
               // 白天是象牙白半透明、夜晚是白 12% 半透明（品牌色走，
               // 毛玻璃效果保留：半透明＋背景模糊＋细边框＋柔和阴影）。
+              // 玻璃拟物主题（0.1.18）用磨砂白 surfaceGlass 作填充。
               color: dark
                   ? Colors.white.withValues(alpha: 0.12)
-                  : tokens.background.withValues(alpha: 0.65),
+                  : tokens.surfaceGlass ??
+                      tokens.background.withValues(alpha: 0.65),
               borderRadius: radius,
               border: Border.all(
                 color: dark

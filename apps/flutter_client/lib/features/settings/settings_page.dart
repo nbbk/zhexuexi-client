@@ -539,7 +539,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
             title: const Text('检查应用更新'),
             content: Text(
               '检查失败，请检查网络后重试。\n${result.failureMessage}'
-              '\n检查走手机直连，不走代理，开关开了也帮不上。',
+              '\n核心开着时先走本机代理，代理不通回落直连；核心没开时直接直连。',
             ),
             actions: [
               TextButton(

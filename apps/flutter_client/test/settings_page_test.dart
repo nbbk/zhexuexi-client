@@ -199,8 +199,8 @@ void main() {
     expect(find.text('规则模式'), findsOneWidget);
     expect(find.text('订阅自动更新'), findsOneWidget);
     expect(find.text('客户端版本'), findsOneWidget);
-    // 关于行显示的客户端版本与 pubspec / appVersion 常量一致（0.1.17）。
-    expect(find.text('0.1.17'), findsOneWidget);
+    // 关于行显示的客户端版本与 pubspec / appVersion 常量一致（0.1.18）。
+    expect(find.text('0.1.18'), findsOneWidget);
     // 高级默认折叠：TUN、DNS、诊断都在折叠里，不可见。
     expect(find.text('TUN 模式'), findsNothing);
     expect(find.text('导出诊断包'), findsNothing);
@@ -403,7 +403,7 @@ void main() {
       ],
     );
     await tapAsync(tester, find.text('检查更新'));
-    expect(find.textContaining('当前版本 0.1.17'), findsOneWidget);
+    expect(find.textContaining('当前版本 0.1.18'), findsOneWidget);
     expect(find.textContaining('检查失败，请检查网络后重试'), findsOneWidget);
   });
 
@@ -440,7 +440,7 @@ void main() {
       ],
     );
     await tapAsync(tester, find.text('检查更新'));
-    expect(find.textContaining('当前版本 0.1.17'), findsOneWidget);
+    expect(find.textContaining('当前版本 0.1.18'), findsOneWidget);
     expect(find.textContaining('远程配置暂未发布'), findsOneWidget);
     expect(find.textContaining('请检查网络后重试'), findsNothing);
   });
@@ -481,7 +481,7 @@ void main() {
       ],
     );
     await tapAsync(tester, find.text('检查更新'));
-    expect(find.textContaining('当前版本 0.1.17'), findsOneWidget);
+    expect(find.textContaining('当前版本 0.1.18'), findsOneWidget);
     expect(find.textContaining('已更新到配置 v1'), findsOneWidget);
   });
 
@@ -609,8 +609,10 @@ void main() {
     expect(find.textContaining('GitHub 上还没有 Release'), findsOneWidget);
     expect(find.textContaining('自托管：尚未启用'), findsOneWidget);
     expect(find.textContaining('已是最新版本'), findsNothing);
-    // 失败弹窗注明检查走手机直连（开关帮不上）。
-    expect(find.textContaining('检查走手机直连'), findsOneWidget);
+    // 失败弹窗注明代理用法（0.1.18：查版走代理已做进更新器，
+    // 核心开着先走本机代理、不通回落直连）。
+    expect(find.textContaining('先走本机代理'), findsOneWidget);
+    expect(find.textContaining('检查走手机直连'), findsNothing);
   });
 
   testWidgets('检查更新：失败时逐条列原因，并注明代理轮的用法', (tester) async {
@@ -649,8 +651,8 @@ void main() {
     expect(find.textContaining('连不上'), findsOneWidget);
     // 0.1.4：过时尾注“检查走手机直连，不走代理，开关开了也帮不上”
     // 已删，改按实际写代理轮的用法（开关已开且核心已连接时经代理
-    // 再试一轮）。“检查走手机直连”那句只留在“检查应用更新”
-    // （GitHub Release 本来就只走直连）里。
+    // 再试一轮）。0.1.18：“检查应用更新”失败弹窗里的同一句也已
+    // 改成代理用法（查版已走代理，核心开着先走本机代理）。
     expect(find.textContaining('经代理再试一轮'), findsOneWidget);
     expect(find.textContaining('开关开了也帮不上'), findsNothing);
     // 两项弹窗标题可区分：这是“检查更新”（远程配置），不是
