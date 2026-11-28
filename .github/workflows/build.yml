@@ -42,10 +42,10 @@
 # 产物：
 #   Android：分架构三个 APK（arm64-v8a / armeabi-v7a / x86_64，
 #     各带 .sha256），小米手机用 arm64-v8a。
-#   Windows：未签名或已签名的 .exe。
+#   Windows：未签名或已签名的 exe，打成 zip（解压即用：exe＋
+#     flutter_windows.dll＋data/ 都在里面，双击 exe 就能跑）。
 #
-# 注意：本流程此前一次都没跑通过，第一次跑就是测试；跑不通时
-# 先看 Actions 日志，不要声称 CI 跑过。
+# 注意：流程已多次跑绿；跑不通时先看 Actions 日志，不要声称 CI 跑过。
 #
 # 免费说明（§12.0）：本仓是公开仓，GitHub Actions 不计分钟数、免费。
 # 私有仓才有免费额度上限；fork 到别的公开仓，CI 照样免费跑。
@@ -76,7 +76,7 @@ on:
         default: ""
         type: string
       platform:
-        description: "打包平台（all：Windows＋安卓一起打；windows：只打 Windows exe；android：只打安卓 APK）。打 tag 发版时此项为空，按全部处理，两个任务都跑。"
+        description: "打包平台（all：Windows＋安卓一起打；windows：只打 Windows 版（zip，解压即用）；android：只打安卓 APK）。打 tag 发版时此项为空，按全部处理，两个任务都跑。"
         required: false
         default: "all"
         type: choice
@@ -194,18 +194,24 @@ jobs:
           Remove-Item $pfx -Force
 
       - name: 算哈希并上传产物
+        # exe 的 SHA-256 写进 Release 文件夹，随 zip 一起发（与 APK
+        # 每个包带 .sha256 的做法一致）；下载后解压可校验 exe。
         run: |
           Get-ChildItem build\windows\x64\runner\Release\*.exe | ForEach-Object {
             (Get-FileHash $_.FullName -Algorithm SHA256).Hash | Out-File "$($_.FullName).sha256"
           }
 
       - name: 上传 Windows 产物
+        # 整个 Release 文件夹原样上传（exe＋flutter_windows.dll＋
+        # data/ 等全部运行所需文件）。upload-artifact 本身会打 zip，
+        # 下载下来的 artifact 解压就是可直接运行的文件夹，双击 exe
+        # 就能跑；不要再手工打一层 zip（那样用户要解压两次）。
+        # 0.1.18 之前这里只传 *.exe＋*.sha256，缺 dll 和 data/，
+        # exe 单独拿走跑不起来。
         uses: actions/upload-artifact@v4
         with:
           name: windows-${{ inputs.version || github.ref_name }}
-          path: |
-            apps/flutter_client/build/windows/x64/runner/Release/*.exe
-            apps/flutter_client/build/windows/x64/runner/Release/*.sha256
+          path: apps/flutter_client/build/windows/x64/runner/Release/
           retention-days: 90
 
   build-android:

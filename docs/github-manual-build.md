@@ -3,8 +3,8 @@
 不用本地装 Flutter、不用等助手打包。代码更新好以后，你自己在 GitHub
 网页上填几个信息、点一下运行，十几分钟后就能下载到新版 APK 或 Windows exe。
 
-先说一句：这个流程（`.github/workflows/build.yml`）之前一次都没跑通过，
-你第一次跑就是测试。跑不通别慌，照第 4 节查，多数是 Secrets 没填对。
+先说一句：这个流程已经多次跑绿，正常填都能跑通。跑不通别慌，照第 4 节查，
+多数是 Secrets 没填对。
 
 ---
 
@@ -81,7 +81,7 @@ Secrets 页面能看到 4 个名字都在，就行。值看不到、改不了，
 | 版本号 `version` | 比如 `0.1.1` | 不填也行，产物名用分支名代替；**注意：这个版本号只用来给产物起名，不会改应用里显示的版本号** |
 | Logo 图片地址 `logo_url` | Logo 图片直链（PNG/JPG/WebP/BMP/GIF 等） | 用仓里自带的 Logo（哲人侧脸 v1） |
 | 远程配置域名 `remote_config_domain` | 比如 `cc.jiankong.cf`，只填域名 | 用仓里默认值 |
-| 打包平台 `platform` | 下拉选一个：`all`（Windows＋安卓一起打）、`windows`（只打 Windows exe）、`android`（只打安卓 APK） | 默认 `all`，两个一起打 |
+| 打包平台 `platform` | 下拉选一个：`all`（Windows＋安卓一起打）、`windows`（只打 Windows 版，zip，解压即用）、`android`（只打安卓 APK） | 默认 `all`，两个一起打 |
 
    只打一个平台时，另一个任务会显示“已跳过”（Skipped），这是正常的，
    不是失败：你没选它，它就不跑，Artifacts 里也只有你选的那个平台的包。
@@ -107,7 +107,9 @@ Android 那边从拉代码到出包一般 10–20 分钟，第一次跑要下载
 
 ---
 
-## 3. 下载 APK
+## 3. 下载 APK 和 Windows 压缩包
+
+### 下载 APK
 
 1. 等你选的那个方块变绿勾（只打一个平台时另一个是“已跳过”，不用等它），拉到详情页最底部，找到 **Artifacts**。
 2. 里面有一个压缩包，名字是 `android-` 开头：
@@ -136,6 +138,39 @@ Get-FileHash .\app-arm64-v8a-release.apk -Algorithm SHA256
 > 如果 Artifacts 里只有一个 `app-debug.apk`、没有上面三个 release 包，
 > 说明 keystore 的 Secrets 没填（流程自动降级编了 debug 包）。回去
 > 看第 1 节，4 个 Android Secrets 有没有都建好，建好再跑一次。
+
+### 下载 Windows 压缩包
+
+1. 等 **Windows** 方块变绿勾，拉到详情页最底部，找到 **Artifacts**。
+2. 里面有一个压缩包，名字是 `windows-` 开头：
+   - 版本号填了 `0.1.1` → `windows-0.1.1`
+   - 版本号没填 → `windows-main`
+3. 点它下载，得到一个 zip，解压，里面就是可以直接运行的文件夹：
+
+| 文件 | 说明 |
+|---|---|
+| `zhexuexi_client.exe` | **双击这个就能跑** |
+| `flutter_windows.dll` | 程序要用的库，和 exe 放同一个文件夹，别删 |
+| `data/` 文件夹 | 程序要用的资源文件，和 exe 放同一个文件夹，别删 |
+| `zhexuexi_client.exe.sha256` | 校验用的哈希值（校验方法见下面） |
+
+解压后别把 exe 单独拷走：exe、dll、`data/` 必须在同一个文件夹里才能跑，
+拷走一个就跑不起来。
+
+### 校验 Windows 的 exe（确认下载的文件没坏）
+
+在 Windows PowerShell 里，进到解压出来的文件夹，跑：
+
+```powershell
+Get-FileHash .\zhexuexi_client.exe -Algorithm SHA256
+```
+
+输出一串哈希值。再打开同名的 `.sha256` 文件（记事本就能开），里面也是一串
+哈希值。两串**完全一样**，文件就是好的；不一样就重新下载。
+
+> Windows 版没填签名证书时出的是未签名包，第一次双击 exe 会弹
+> SmartScreen（“Windows 已保护你的电脑”），点 **更多信息** →
+> **仍要运行** 就能跑。这是没买证书的正常现象，不是文件有问题。
 
 ---
 
@@ -215,6 +250,6 @@ Get-FileHash .\app-arm64-v8a-release.apk -Algorithm SHA256
 - [ ] 第 1.1 步：keystore 转 base64，复制到剪贴板
 - [ ] 第 1.2 步：4 个 Android Secrets 建好
 - [ ] 第 2 步：Actions → build → Run workflow，填好 5 个输入，点运行
-- [ ] 等两个方块变绿勾
-- [ ] 第 3 步：Artifacts 下载 `android-*`，解压，校验 arm64 包的 SHA-256
+- [ ] 等你选的方块变绿勾（只打一个平台时另一个是“已跳过”，不用等它）
+- [ ] 第 3 步：Artifacts 下载 `android-*`（和/或 `windows-*`），解压，校验 SHA-256
 - [ ] 第 5 步：传到小米手机上安装，确认是新版
