@@ -853,15 +853,15 @@ class AppThemes {
     glassDay,
   ];
 
-  /// 默认主题 id。
-  static const String defaultId = 'day';
+  /// 默认主题 id（0.1.21：改回原先的夜晚模式）。
+  static const String defaultId = 'night';
 
   /// 按 id 取主题；id 不存在时回落默认主题（不让坏偏好拖垮界面）。
   static AppThemeDefinition byId(String? id) {
     for (final theme in all) {
       if (theme.id == id) return theme;
     }
-    return day;
+    return all.firstWhere((t) => t.id == defaultId, orElse: () => day);
   }
 }
 
@@ -869,5 +869,5 @@ class AppThemes {
 /// 只能在有 [Theme] 的子树里调；没有时回落默认主题的 token。
 AppThemeTokens appThemeTokensOf(BuildContext context) {
   return Theme.of(context).extension<AppThemeTokens>() ??
-      AppThemes.day.tokens;
+      AppThemes.night.tokens;
 }

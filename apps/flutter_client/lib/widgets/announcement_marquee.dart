@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:material_ui/material_ui.dart';
 
 /// 公告跑马灯（自研，不引包；2026-11-26 0.1.2 第 3 条）。
@@ -83,7 +84,11 @@ class _AnnouncementMarqueeState extends State<AnnouncementMarquee>
   @override
   void didUpdateWidget(AnnouncementMarquee oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.lines != widget.lines) {
+    // 只在公告内容真的变了时重置：父级每秒重建（连接计时、流量采样）
+    // 都会现场造一个内容相同的新 List，身份比较（!=）永远不等，
+    // 会把跑马灯钉死在 1.2 秒静止阶段、开代理就停（0.1.21 修）。
+    // 内容没变时不重置、不取消定时器、不动控制器，动画继续跑。
+    if (!listEquals(oldWidget.lines, widget.lines)) {
       _index = 0;
       _currentLine = '';
       _cancelTimer();

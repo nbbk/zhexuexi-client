@@ -63,13 +63,13 @@ void main() {
           'glass-day',
         ],
       );
-      expect(AppThemes.defaultId, 'day');
+      expect(AppThemes.defaultId, 'night');
       expect(AppThemes.byId('night').name, '夜晚');
-      expect(AppThemes.byId('nope').id, 'day');
-      expect(AppThemes.byId(null).id, 'day');
+      expect(AppThemes.byId('nope').id, 'night');
+      expect(AppThemes.byId(null).id, 'night');
     });
 
-    test('默认主题 token 是定好的品牌色（墨蓝＋香槟金＋象牙白）', () {
+    test('白天主题 token 是定好的品牌色（墨蓝＋香槟金＋象牙白）', () {
       final t = AppThemes.day.tokens;
       expect(t.deepBlue, const Color(0xFF082E63));
       expect(t.deepBlueLight, const Color(0xFF0B3D84));
@@ -419,22 +419,23 @@ void main() {
       );
     });
 
-    test('ThemeNotifier：默认白天，切换持久化，重建读回夜晚', () async {
+    test('ThemeNotifier：默认夜晚，切换持久化，重建读回夜晚', () async {
       SharedPreferences.setMockInitialValues({});
       final container = ProviderContainer();
       addTearDown(container.dispose);
-      expect(container.read(appThemeProvider), 'day');
-      await container.read(appThemeProvider.notifier).setTheme('night');
       expect(container.read(appThemeProvider), 'night');
+      // 切到白天并持久化。
+      await container.read(appThemeProvider.notifier).setTheme('day');
+      expect(container.read(appThemeProvider), 'day');
       final prefs = await SharedPreferences.getInstance();
-      expect(prefs.getString('app_theme_id'), 'night');
+      expect(prefs.getString('app_theme_id'), 'day');
       // 不在注册表里的 id 不接受、不写坏偏好。
       await container.read(appThemeProvider.notifier).setTheme('nope');
-      expect(container.read(appThemeProvider), 'night');
-      expect(prefs.getString('app_theme_id'), 'night');
-      // toggle 切回白天。
-      await container.read(appThemeProvider.notifier).toggle();
       expect(container.read(appThemeProvider), 'day');
+      expect(prefs.getString('app_theme_id'), 'day');
+      // toggle 切回夜晚。
+      await container.read(appThemeProvider.notifier).toggle();
+      expect(container.read(appThemeProvider), 'night');
       // 新 notifier 读回持久化的值（异步读偏好，多等几轮）。
       await container.read(appThemeProvider.notifier).setTheme('night');
       final container2 = ProviderContainer();

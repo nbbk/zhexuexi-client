@@ -12,6 +12,10 @@ import 'package:zhexuexi_client/widgets/announcement_marquee.dart';
 const String _longLine =
     'This is a very long announcement title for marquee scrolling test 0123456789';
 
+// 第二条长文本（0.1.21 回归测试用）：与 _longLine 内容不同、同样触发滚动。
+const String _longLineB =
+    'Second very long announcement title for marquee reset test 9876543210';
+
 double _offset(WidgetTester tester) {
   // 只取跑马灯自己的 Transform（Scaffold/Center 里另有 Transform，
   // 全局找会命中多个）。
@@ -65,6 +69,37 @@ void main() {
     await tester.pump(const Duration(milliseconds: 1200));
     expect(_offset(tester), 0);
     // 再滚 1 秒：速度 50px/s，位移约 -50。
+    await tester.pump(const Duration(seconds: 1));
+    expect(_offset(tester), closeTo(-50, 15));
+  });
+
+  testWidgets('0.1.21：父级重建不重置——内容相同的新 List 继续滚', (tester) async {
+    await _pumpMarquee(tester, [_longLine]);
+    await tester.pump(const Duration(milliseconds: 1200));
+    await tester.pump(const Duration(seconds: 1));
+    expect(_offset(tester), closeTo(-50, 15));
+    // 模拟首页开代理后每秒重建：内容相同、身份不同的新 List，
+    // 连重建 3 次、每次推进 1 秒，位移应一直变大、不回 0。
+    for (var i = 0; i < 3; i++) {
+      await _pumpMarquee(tester, List<String>.of([_longLine]));
+      await tester.pump(const Duration(seconds: 1));
+      expect(_offset(tester), lessThan(-50 - i * 40));
+    }
+  });
+
+  testWidgets('0.1.21：内容真的变了才重置——回到开头滚新内容', (tester) async {
+    await _pumpMarquee(tester, [_longLine]);
+    await tester.pump(const Duration(milliseconds: 1200));
+    await tester.pump(const Duration(seconds: 1));
+    expect(_offset(tester), closeTo(-50, 15));
+    // 换成另一条长公告：重置回开头、显示新内容。
+    await _pumpMarquee(tester, [_longLineB]);
+    expect(_offset(tester), 0);
+    // 单条长文本是循环模式：原文＋副本两份；旧内容已不在。
+    expect(find.text(_longLineB), findsWidgets);
+    expect(find.text(_longLine), findsNothing);
+    // 新内容重新走静止 1.2 秒后开滚。
+    await tester.pump(const Duration(milliseconds: 1200));
     await tester.pump(const Duration(seconds: 1));
     expect(_offset(tester), closeTo(-50, 15));
   });
