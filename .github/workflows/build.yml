@@ -76,7 +76,7 @@ on:
         default: ""
         type: string
       platform:
-        description: "打包平台（all：Windows＋安卓一起打；windows：只打 Windows exe；android：只打安卓 APK）"
+        description: "打包平台（all：Windows＋安卓一起打；windows：只打 Windows exe；android：只打安卓 APK）。打 tag 发版时此项为空，按全部处理，两个任务都跑。"
         required: false
         default: "all"
         type: choice
